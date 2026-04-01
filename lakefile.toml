@@ -1,0 +1,10 @@
+name = "db-app-program-logic"
+version = "0.1.0"
+defaultTargets = ["db-app-program-logic"]
+
+[[lean_lib]]
+name = "DbAppProgramLogic"
+
+[[lean_exe]]
+name = "db-app-program-logic"
+root = "Main"
