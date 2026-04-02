@@ -398,6 +398,119 @@ def collectUpdated (db : Database) (txnId : TxnId) (x : VarName)
           pure rest
   go db
 
+theorem mem_collectDeleted_go_iff {db : Database} {txnId : TxnId} {x : VarName} {predicate : Expr}
+    {rows : Database} {row : Row}
+    (hCollect : collectDeleted.go txnId x predicate db = some rows) :
+    row ∈ rows ↔
+      ∃ sourceRow, sourceRow ∈ db ∧
+        satisfiesPredicate x predicate sourceRow.visible = some true ∧
+        row = sourceRow.markDeleted txnId := by
+  induction db generalizing rows with
+  | nil =>
+      simp [collectDeleted.go] at hCollect
+      cases hCollect
+      simp
+  | cons head tail ih =>
+      cases hKeep : satisfiesPredicate x predicate head.visible with
+      | none =>
+          have : False := by
+            simpa [collectDeleted.go, hKeep] using hCollect
+          exact False.elim this
+      | some keep =>
+          cases keep
+          · have hRest : collectDeleted.go txnId x predicate tail = some rows := by
+              simpa [collectDeleted.go, hKeep] using hCollect
+            simp [ih hRest, hKeep]
+          · cases hRest : collectDeleted.go txnId x predicate tail with
+            | none =>
+                have : False := by
+                  simpa [collectDeleted.go, hKeep, hRest] using hCollect
+                exact False.elim this
+            | some rest =>
+                have hRows : head.markDeleted txnId :: rest = rows := by
+                  simpa [collectDeleted.go, hKeep, hRest] using hCollect
+                symm at hRows
+                subst hRows
+                simp [ih hRest, hKeep]
+
+theorem mem_collectDeleted_iff {db : Database} {txnId : TxnId} {x : VarName} {predicate : Expr}
+    {rows : Database} {row : Row}
+    (hCollect : collectDeleted db txnId x predicate = some rows) :
+    row ∈ rows ↔
+      ∃ sourceRow, sourceRow ∈ db ∧
+        satisfiesPredicate x predicate sourceRow.visible = some true ∧
+        row = sourceRow.markDeleted txnId := by
+  simpa [collectDeleted] using
+    (mem_collectDeleted_go_iff (db := db) (txnId := txnId) (x := x) (predicate := predicate)
+      (rows := rows) (row := row) hCollect)
+
+theorem mem_collectUpdated_go_iff {db : Database} {txnId : TxnId} {x : VarName}
+    {updateExpr predicate : Expr} {rows : Database} {row : Row}
+    (hCollect : collectUpdated.go txnId x updateExpr predicate db = some rows) :
+    row ∈ rows ↔
+      ∃ sourceRow, sourceRow ∈ db ∧
+        satisfiesPredicate x predicate sourceRow.visible = some true ∧
+        ∃ updated,
+          Expr.eval (instantiateRecord x sourceRow.visible updateExpr) = some (.record updated) ∧
+          row = sourceRow.overwrite txnId updated := by
+  induction db generalizing rows with
+  | nil =>
+      simp [collectUpdated.go] at hCollect
+      cases hCollect
+      simp
+  | cons head tail ih =>
+      cases hKeep : satisfiesPredicate x predicate head.visible with
+      | none =>
+          have : False := by
+            simpa [collectUpdated.go, hKeep] using hCollect
+          exact False.elim this
+      | some keep =>
+          cases keep
+          · have hRest : collectUpdated.go txnId x updateExpr predicate tail = some rows := by
+              simpa [collectUpdated.go, hKeep] using hCollect
+            simp [ih hRest, hKeep]
+          · cases hEval : Expr.eval (instantiateRecord x head.visible updateExpr) with
+            | none =>
+                have : False := by
+                  simpa [collectUpdated.go, hKeep, hEval] using hCollect
+                exact False.elim this
+            | some value =>
+                cases value with
+                | scalar scalar =>
+                    have : False := by
+                      simpa [collectUpdated.go, hKeep, hEval] using hCollect
+                    exact False.elim this
+                | set records =>
+                    have : False := by
+                      simpa [collectUpdated.go, hKeep, hEval] using hCollect
+                    exact False.elim this
+                | record updated =>
+                    cases hRest : collectUpdated.go txnId x updateExpr predicate tail with
+                    | none =>
+                        have : False := by
+                          simpa [collectUpdated.go, hKeep, hEval, hRest] using hCollect
+                        exact False.elim this
+                    | some rest =>
+                        have hRows : head.overwrite txnId updated :: rest = rows := by
+                          simpa [collectUpdated.go, hKeep, hEval, hRest] using hCollect
+                        symm at hRows
+                        subst hRows
+                        simp [ih hRest, hKeep, hEval]
+
+theorem mem_collectUpdated_iff {db : Database} {txnId : TxnId} {x : VarName}
+    {updateExpr predicate : Expr} {rows : Database} {row : Row}
+    (hCollect : collectUpdated db txnId x updateExpr predicate = some rows) :
+    row ∈ rows ↔
+      ∃ sourceRow, sourceRow ∈ db ∧
+        satisfiesPredicate x predicate sourceRow.visible = some true ∧
+        ∃ updated,
+          Expr.eval (instantiateRecord x sourceRow.visible updateExpr) = some (.record updated) ∧
+          row = sourceRow.overwrite txnId updated := by
+  simpa [collectUpdated] using
+    (mem_collectUpdated_go_iff (db := db) (txnId := txnId) (x := x)
+      (updateExpr := updateExpr) (predicate := predicate)
+      (rows := rows) (row := row) hCollect)
+
 def insertFresh (snapshot localDb : Database) (record : RecordLit) : Prop :=
   match record.id? with
   | some id => ¬ Database.hasId (snapshot ++ localDb) id

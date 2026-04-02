@@ -1,9 +1,12 @@
+import DbAppProgramLogic.Semantics
 import DbAppProgramLogic.Logic
+import DbAppProgramLogic.SetLanguage
 
 namespace DbAppProgramLogic
 
 abbrev Env := List (VarName × Value)
 abbrev TxnEffect := Database → Option Database
+abbrev SetEffect := Database → Option SetLanguage.SetExpr
 
 namespace Env
 
@@ -219,6 +222,230 @@ def vcg (R : Rely) (I : Assertion) (G : Guarantee)
 
 def vcgForTxn (R : Rely) (I : Assertion) (G : Guarantee) : Semantics.Program → Option TransactionVCG
   | .txn txnId isolation body => some (vcg R I G txnId isolation body)
+  | _ => none
+
+def reifyEffect (F : TxnEffect) : SetEffect :=
+  fun db => SetLanguage.ofRows <$> F db
+
+def denotesRows (ρ : SetLanguage.Env) (s : SetLanguage.SetExpr) (rows : Database) : Prop :=
+  ∀ row, SetLanguage.denote ρ s row ↔ row ∈ rows
+
+theorem denotesRows_ofRows (ρ : SetLanguage.Env) (rows : Database) :
+    denotesRows ρ (SetLanguage.ofRows rows) rows := by
+  intro row
+  simp [denotesRows]
+
+theorem reifyEffect_sound (F : TxnEffect) (visibleDb localDb : Database)
+    (hEffect : F visibleDb = some localDb) :
+    ∃ s, reifyEffect F visibleDb = some s ∧
+      denotesRows (SetLanguage.Env.ofDatabases localDb visibleDb) s localDb := by
+  refine ⟨SetLanguage.ofRows localDb, ?_, ?_⟩
+  · simp [reifyEffect, hEffect]
+  · exact denotesRows_ofRows _ _
+
+theorem vcg_reify_sound {R : Rely} {I : Assertion} {G : Guarantee}
+    (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (visibleDb localDb : Database)
+    (hEffect : (vcg R I G txnId isolation body).effect visibleDb = some localDb) :
+    ∃ s, reifyEffect (vcg R I G txnId isolation body).effect visibleDb = some s ∧
+      denotesRows (SetLanguage.Env.ofDatabases localDb visibleDb) s localDb := by
+  exact reifyEffect_sound _ _ _ hEffect
+
+def rowPredicateFormula (env : Env) (source : VarName) (predicate : Expr) : SetLanguage.Formula0 :=
+  fun ρ =>
+    match ρ.lookupElem? source with
+    | some row =>
+        Semantics.satisfiesPredicate source (instantiateExpr env [source] predicate) row.visible = some true
+    | none => False
+
+def insertSetExpr (txnId : TxnId) (env : Env) (expr : Expr) : Option SetLanguage.SetExpr := do
+  let .record record ← evalInEnv env expr | none
+  pure (SetLanguage.singleton (Row.fromInsert txnId record))
+
+def deleteSetExprWith (outVar : VarName) (txnId : TxnId) (env : Env) (source : VarName) (predicate : Expr) :
+    SetLanguage.SetExpr :=
+  .bind .globalDb source
+    (.ite
+      (rowPredicateFormula env source predicate)
+      (.comprehension outVar (fun ρ =>
+        match ρ.lookupElem? outVar, ρ.lookupElem? source with
+        | some out, some src => out = src.markDeleted txnId
+        | _, _ => False))
+      SetLanguage.empty)
+
+def defaultOutVar (source : VarName) : VarName :=
+  if source = "__out" then "__out0" else "__out"
+
+theorem defaultOutVar_ne (source : VarName) :
+    defaultOutVar source ≠ source := by
+  unfold defaultOutVar
+  by_cases h : source = "__out"
+  · subst h
+    simp
+  · simp [h]
+    intro hEq
+    exact h hEq.symm
+
+def deleteSetExpr (txnId : TxnId) (env : Env) (source : VarName) (predicate : Expr) :
+    SetLanguage.SetExpr :=
+  deleteSetExprWith (defaultOutVar source) txnId env source predicate
+
+def updateSetExprWith (outVar : VarName) (txnId : TxnId) (env : Env) (source : VarName)
+    (updateExpr predicate : Expr) : SetLanguage.SetExpr :=
+  .bind .globalDb source
+    (.ite
+      (rowPredicateFormula env source predicate)
+      (.comprehension outVar (fun ρ =>
+        match ρ.lookupElem? outVar, ρ.lookupElem? source with
+        | some out, some src =>
+            ∃ updated,
+              Expr.eval (Semantics.instantiateRecord source src.visible
+                (instantiateExpr env [source] updateExpr)) = some (.record updated) ∧
+              out = src.overwrite txnId updated
+        | _, _ => False))
+      SetLanguage.empty)
+
+def updateSetExpr (txnId : TxnId) (env : Env) (source : VarName)
+    (updateExpr predicate : Expr) : SetLanguage.SetExpr :=
+  updateSetExprWith (defaultOutVar source) txnId env source updateExpr predicate
+
+theorem insertSetExpr_sound (txnId : TxnId) (env : Env) (expr : Expr)
+    (s : SetLanguage.SetExpr) (hInsert : insertSetExpr txnId env expr = some s) :
+    ∃ record, s = SetLanguage.singleton (Row.fromInsert txnId record) ∧
+      evalInEnv env expr = some (.record record) := by
+  unfold insertSetExpr at hInsert
+  cases hEval : evalInEnv env expr with
+  | none =>
+      simp [hEval] at hInsert
+  | some value =>
+      cases value with
+      | scalar scalar =>
+          simp [hEval] at hInsert
+      | set records =>
+          simp [hEval] at hInsert
+      | record record =>
+          simp [hEval] at hInsert
+          exact ⟨record, hInsert.symm, rfl⟩
+
+theorem deleteSetExprWith_sound (outVar : VarName) (txnId : TxnId) (env : Env)
+    (source : VarName) (predicate : Expr)
+    (db rows : Database) (row : Row)
+    (hNe : outVar ≠ source)
+    (hCollect : Semantics.collectDeleted db txnId source (instantiateExpr env [source] predicate) = some rows) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
+      (deleteSetExprWith outVar txnId env source predicate) row ↔
+      row ∈ rows := by
+  have hNe' : source ≠ outVar := by
+    intro hEq
+    exact hNe hEq.symm
+  rw [Semantics.mem_collectDeleted_iff hCollect]
+  constructor
+  · intro h
+    simp [deleteSetExprWith, rowPredicateFormula, SetLanguage.denote, SetLanguage.empty] at h
+    rcases h with ⟨mid, hMid, hPred, hMatch⟩
+    refine ⟨mid, ?_, hPred, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMid
+    · have hLookup :
+          (((SetLanguage.Env.ofDatabases [] db).bindElem source mid).bindElem outVar row).lookupElem? source =
+            some mid := by
+          unfold SetLanguage.Env.lookupElem? SetLanguage.Env.bindElem
+          by_cases hEq : outVar = source
+          · exact False.elim (hNe hEq)
+          · simp [SetLanguage.Env.lookupElemList?, hEq]
+      rw [hLookup] at hMatch
+      simpa using hMatch
+  · intro h
+    simp [deleteSetExprWith, rowPredicateFormula, SetLanguage.denote, SetLanguage.empty]
+    rcases h with ⟨mid, hMid, hPred, hEq⟩
+    refine ⟨mid, ?_, hPred, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMid
+    · have hLookup :
+          (((SetLanguage.Env.ofDatabases [] db).bindElem source mid).bindElem outVar row).lookupElem? source =
+            some mid := by
+          unfold SetLanguage.Env.lookupElem? SetLanguage.Env.bindElem
+          by_cases hEq : outVar = source
+          · exact False.elim (hNe hEq)
+          · simp [SetLanguage.Env.lookupElemList?, hEq]
+      rw [hLookup]
+      simpa using hEq
+
+theorem deleteSetExpr_sound (txnId : TxnId) (env : Env)
+    (source : VarName) (predicate : Expr)
+    (db rows : Database) (row : Row)
+    (hCollect : Semantics.collectDeleted db txnId source (instantiateExpr env [source] predicate) = some rows) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
+      (deleteSetExpr txnId env source predicate) row ↔
+      row ∈ rows := by
+  simpa [deleteSetExpr] using
+    deleteSetExprWith_sound (defaultOutVar source) txnId env source predicate db rows row
+      (defaultOutVar_ne source) hCollect
+
+theorem updateSetExprWith_sound (outVar : VarName) (txnId : TxnId) (env : Env)
+    (source : VarName) (updateExpr predicate : Expr)
+    (db rows : Database) (row : Row)
+    (hNe : outVar ≠ source)
+    (hCollect :
+      Semantics.collectUpdated db txnId source
+        (instantiateExpr env [source] updateExpr)
+        (instantiateExpr env [source] predicate) = some rows) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
+      (updateSetExprWith outVar txnId env source updateExpr predicate) row ↔
+      row ∈ rows := by
+  unfold Semantics.collectUpdated at hCollect
+  rw [Semantics.mem_collectUpdated_go_iff hCollect]
+  constructor
+  · intro h
+    simp [updateSetExprWith, rowPredicateFormula, SetLanguage.denote, SetLanguage.empty] at h
+    rcases h with ⟨mid, hMid, hPred, hMatch⟩
+    have hLookup :
+        (((SetLanguage.Env.ofDatabases [] db).bindElem source mid).bindElem outVar row).lookupElem? source =
+          some mid := by
+        unfold SetLanguage.Env.lookupElem? SetLanguage.Env.bindElem
+        by_cases hEq : outVar = source
+        · exact False.elim (hNe hEq)
+        · simp [SetLanguage.Env.lookupElemList?, hEq]
+    rw [hLookup] at hMatch
+    rcases hMatch with ⟨updated, hEval, hEq⟩
+    refine ⟨mid, ?_, hPred, updated, hEval, hEq⟩
+    simpa [SetLanguage.Env.ofDatabases] using hMid
+  · intro h
+    simp [updateSetExprWith, rowPredicateFormula, SetLanguage.denote, SetLanguage.empty]
+    rcases h with ⟨mid, hMid, hPred, updated, hEval, hEq⟩
+    refine ⟨mid, ?_, hPred, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMid
+    · have hLookup :
+          (((SetLanguage.Env.ofDatabases [] db).bindElem source mid).bindElem outVar row).lookupElem? source =
+            some mid := by
+          unfold SetLanguage.Env.lookupElem? SetLanguage.Env.bindElem
+          by_cases hEq' : outVar = source
+          · exact False.elim (hNe hEq')
+          · simp [SetLanguage.Env.lookupElemList?, hEq']
+      rw [hLookup]
+      exact ⟨updated, hEval, hEq⟩
+
+theorem updateSetExpr_sound (txnId : TxnId) (env : Env)
+    (source : VarName) (updateExpr predicate : Expr)
+    (db rows : Database) (row : Row)
+    (hCollect :
+      Semantics.collectUpdated db txnId source
+        (instantiateExpr env [source] updateExpr)
+        (instantiateExpr env [source] predicate) = some rows) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
+      (updateSetExpr txnId env source updateExpr predicate) row ↔
+      row ∈ rows := by
+  simpa [updateSetExpr] using
+    updateSetExprWith_sound (defaultOutVar source) txnId env source updateExpr predicate db rows row
+      (defaultOutVar_ne source) hCollect
+
+def inferWriteSetExpr (txnId : TxnId) (env : Env) : Semantics.Program → Option SetLanguage.SetExpr
+  | .skip => some SetLanguage.empty
+  | .seq left right => do
+      let sLeft ← inferWriteSetExpr txnId env left
+      let sRight ← inferWriteSetExpr txnId env right
+      pure (.union sLeft sRight)
+  | .insert expr => insertSetExpr txnId env expr
+  | .delete source predicate => some (deleteSetExpr txnId env source predicate)
+  | .update source updateExpr predicate => some (updateSetExpr txnId env source updateExpr predicate)
   | _ => none
 
 def effectPost (I : Assertion) (F : TxnEffect) : BiAssertion :=
@@ -575,6 +802,70 @@ theorem infer_seq_sound (txnId : TxnId) (env : Env) (left right : Semantics.Prog
               simp [inferEffect, unionEffect, hLeft, hRight] at h
               exact h
           exact ⟨deltaLeft, deltaRight, rfl, rfl, hEq.symm⟩
+
+theorem inferWriteSetExpr_sound (txnId : TxnId) (env : Env)
+    (body : Semantics.Program) (s : SetLanguage.SetExpr)
+    (db rows : Database) (row : Row)
+    (hSet : inferWriteSetExpr txnId env body = some s)
+    (hEffect : inferEffect txnId env body db = some rows) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] db) s row ↔ row ∈ rows := by
+  induction body generalizing env s db rows row with
+  | skip =>
+      simp [inferWriteSetExpr, inferEffect, emptyEffect] at hSet hEffect
+      subst s
+      subst rows
+      simp [SetLanguage.empty, SetLanguage.denote]
+  | letE x expr body ih =>
+      simp [inferWriteSetExpr] at hSet
+  | ite cond thenBranch elseBranch ihThen ihElse =>
+      simp [inferWriteSetExpr] at hSet
+  | seq left right ihLeft ihRight =>
+      cases hLeftSet : inferWriteSetExpr txnId env left with
+      | none =>
+          simp [inferWriteSetExpr, hLeftSet] at hSet
+      | some sLeft =>
+          cases hRightSet : inferWriteSetExpr txnId env right with
+          | none =>
+              simp [inferWriteSetExpr, hLeftSet, hRightSet] at hSet
+          | some sRight =>
+              simp [inferWriteSetExpr, hLeftSet, hRightSet] at hSet
+              subst s
+              rcases infer_seq_sound txnId env left right db rows hEffect with
+                ⟨rowsLeft, rowsRight, hLeftEff, hRightEff, hRows⟩
+              have hDenLeft := ihLeft env sLeft db rowsLeft row hLeftSet hLeftEff
+              have hDenRight := ihRight env sRight db rowsRight row hRightSet hRightEff
+              simp [SetLanguage.denote_union, hDenLeft, hDenRight, hRows]
+  | insert expr =>
+      rcases insertSetExpr_sound txnId env expr s hSet with ⟨record, rfl, hEval⟩
+      rcases infer_insert_sound txnId env expr db rows hEffect with ⟨record', hEval', hRows⟩
+      have hEvalExpr : Expr.eval (instantiateExpr env [] expr) = some (.record record) := by
+        simpa [evalInEnv] using hEval
+      rw [hEvalExpr] at hEval'
+      injection hEval' with hRecord
+      cases hRecord
+      simp [SetLanguage.denote_singleton, hRows]
+  | delete source predicate =>
+      simp [inferWriteSetExpr] at hSet
+      subst s
+      exact deleteSetExpr_sound txnId env source predicate db rows row
+        (by simpa [inferEffect] using hEffect)
+  | select binder source predicate body ih =>
+      simp [inferWriteSetExpr] at hSet
+  | update source updateExpr predicate =>
+      simp [inferWriteSetExpr] at hSet
+      subst s
+      exact updateSetExpr_sound txnId env source updateExpr predicate db rows row
+        (by simpa [inferEffect] using hEffect)
+  | foreach source doneVar elemVar body ih =>
+      simp [inferWriteSetExpr] at hSet
+  | foreachRuntime done remaining doneVar elemVar body ih =>
+      simp [inferWriteSetExpr] at hSet
+  | txn txnId' isolation body ih =>
+      simp [inferWriteSetExpr] at hSet
+  | txnRuntime txnId' isolation localDb snapshot body ih =>
+      simp [inferWriteSetExpr] at hSet
+  | par left right ihLeft ihRight =>
+      simp [inferWriteSetExpr] at hSet
 
 theorem inferenceSoundEnv_seq (txnId : TxnId) (env : Env)
     (left right : Semantics.Program)
