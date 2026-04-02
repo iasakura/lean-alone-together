@@ -50,6 +50,10 @@ def ofDatabases (localDb globalDb : Database) : Env :=
     (ρ.bindSet x rows).lookupSet? x = some rows := by
   simp [lookupSet?, bindSet, lookupSetList?]
 
+@[simp] theorem lookupSet_bindSet_ne (ρ : Env) (x y : VarName) (rows : SetDenotation) (hxy : x ≠ y) :
+    (ρ.bindSet x rows).lookupSet? y = ρ.lookupSet? y := by
+  simp [lookupSet?, bindSet, lookupSetList?, hxy]
+
 end Env
 
 abbrev Formula0 := Env → Prop
@@ -128,6 +132,9 @@ def singleton (row₀ : Row) : SetExpr :=
 @[simp] theorem abstractGlobal_globalDb (x : VarName) :
     abstractGlobal x .globalDb = .var x := rfl
 
+@[simp] theorem abstractGlobal_comprehension (x y : VarName) (φ : Formula0) :
+    abstractGlobal x (.comprehension y φ) = .comprehension y φ := rfl
+
 @[simp] theorem abstractGlobal_existsSet (x y : VarName) (I : Formula1) (s : SetExpr) :
     abstractGlobal x (.existsSet y I s) = .existsSet y I (abstractGlobal x s) := rfl
 
@@ -153,6 +160,10 @@ def singleton (row₀ : Row) : SetExpr :=
 
 @[simp] theorem denote_union (ρ : Env) (s₁ s₂ : SetExpr) (row : Row) :
     denote ρ (.union s₁ s₂) row ↔ denote ρ s₁ row ∨ denote ρ s₂ row := Iff.rfl
+
+@[simp] theorem denote_var_bindSet_eq (ρ : Env) (x : VarName) (rows : SetDenotation) (row : Row) :
+    denote (ρ.bindSet x rows) (.var x) row ↔ rows row := by
+  simp [denote]
 
 theorem denote_ite_true (ρ : Env) (φ : Formula0) (s₁ s₂ : SetExpr) (hφ : φ ρ) :
     denote ρ (.ite φ s₁ s₂) = denote ρ s₁ := by

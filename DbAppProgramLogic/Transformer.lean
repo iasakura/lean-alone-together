@@ -239,6 +239,21 @@ def reifyEffect (F : TxnEffect) : SetEffect :=
 def denotesRows (ρ : SetLanguage.Env) (s : SetLanguage.SetExpr) (rows : Database) : Prop :=
   ∀ row, SetLanguage.denote ρ s row ↔ row ∈ rows
 
+def assertionFormula (I : Assertion) : SetLanguage.Formula1 :=
+  fun _ rows => ∃ db : Database, I db ∧ ∀ row, rows row ↔ row ∈ db
+
+def currentGlobalBinding (db : Database) : SetLanguage.SetDenotation :=
+  fun row => row ∈ db
+
+def setEnvOfDatabase (x : VarName) (db : Database) : SetLanguage.Env :=
+  (SetLanguage.Env.ofDatabases [] db).bindSet x (currentGlobalBinding db)
+
+theorem assertionFormula_current (I : Assertion) (x : VarName) (db : Database) (hI : I db) :
+    assertionFormula I (setEnvOfDatabase x db) (currentGlobalBinding db) := by
+  refine ⟨db, hI, ?_⟩
+  intro row
+  rfl
+
 theorem denotesRows_ofRows (ρ : SetLanguage.Env) (rows : Database) :
     denotesRows ρ (SetLanguage.ofRows rows) rows := by
   intro row
@@ -445,6 +460,96 @@ theorem updateSetExpr_sound (txnId : TxnId) (env : Env)
   simpa [updateSetExpr] using
     updateSetExprWith_sound (defaultOutVar source) txnId env source updateExpr predicate db rows row
       (defaultOutVar_ne source) hCollect
+
+theorem deleteSetExpr_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (env : Env)
+    (source : VarName) (predicate : Expr)
+    (db rows : Database) (row : Row)
+    (hCollect : Semantics.collectDeleted db txnId source (instantiateExpr env [source] predicate) = some rows) :
+    SetLanguage.denote (setEnvOfDatabase absVar db)
+      (SetLanguage.abstractGlobal absVar (deleteSetExpr txnId env source predicate)) row ↔
+      row ∈ rows := by
+  have hNe : defaultOutVar source ≠ source := defaultOutVar_ne source
+  rw [Semantics.mem_collectDeleted_iff hCollect]
+  constructor
+  · intro h
+    simp [deleteSetExpr, deleteSetExprWith, rowPredicateFormula, setEnvOfDatabase,
+      currentGlobalBinding, SetLanguage.abstractGlobal, SetLanguage.denote, SetLanguage.empty] at h
+    rcases h with ⟨mid, hMid, hPred, hMatch⟩
+    refine ⟨mid, ?_, hPred, ?_⟩
+    · simpa [currentGlobalBinding] using hMid
+    · have hLookup :
+          ((((SetLanguage.Env.ofDatabases [] db).bindSet absVar (currentGlobalBinding db)).bindElem source mid).bindElem
+            (defaultOutVar source) row).lookupElem? source =
+            some mid := by
+          unfold SetLanguage.Env.lookupElem? SetLanguage.Env.bindElem
+          by_cases hEq : defaultOutVar source = source
+          · exact False.elim (hNe hEq)
+          · simp [SetLanguage.Env.lookupElemList?, hEq]
+      rw [hLookup] at hMatch
+      simpa using hMatch
+  · intro h
+    simp [deleteSetExpr, deleteSetExprWith, rowPredicateFormula, setEnvOfDatabase,
+      currentGlobalBinding, SetLanguage.abstractGlobal, SetLanguage.denote, SetLanguage.empty]
+    rcases h with ⟨mid, hMid, hPred, hEq⟩
+    refine ⟨mid, ?_, hPred, ?_⟩
+    · simpa [currentGlobalBinding] using hMid
+    · have hLookup :
+          ((((SetLanguage.Env.ofDatabases [] db).bindSet absVar (currentGlobalBinding db)).bindElem source mid).bindElem
+            (defaultOutVar source) row).lookupElem? source =
+            some mid := by
+          unfold SetLanguage.Env.lookupElem? SetLanguage.Env.bindElem
+          by_cases hEq' : defaultOutVar source = source
+          · exact False.elim (hNe hEq')
+          · simp [SetLanguage.Env.lookupElemList?, hEq']
+      rw [hLookup]
+      simpa using hEq
+
+theorem updateSetExpr_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (env : Env)
+    (source : VarName) (updateExpr predicate : Expr)
+    (db rows : Database) (row : Row)
+    (hCollect :
+      Semantics.collectUpdated db txnId source
+        (instantiateExpr env [source] updateExpr)
+        (instantiateExpr env [source] predicate) = some rows) :
+    SetLanguage.denote (setEnvOfDatabase absVar db)
+      (SetLanguage.abstractGlobal absVar (updateSetExpr txnId env source updateExpr predicate)) row ↔
+      row ∈ rows := by
+  have hNe : defaultOutVar source ≠ source := defaultOutVar_ne source
+  unfold Semantics.collectUpdated at hCollect
+  rw [Semantics.mem_collectUpdated_go_iff hCollect]
+  constructor
+  · intro h
+    simp [updateSetExpr, updateSetExprWith, rowPredicateFormula, setEnvOfDatabase,
+      currentGlobalBinding, SetLanguage.abstractGlobal, SetLanguage.denote, SetLanguage.empty] at h
+    rcases h with ⟨mid, hMid, hPred, hMatch⟩
+    have hLookup :
+        ((((SetLanguage.Env.ofDatabases [] db).bindSet absVar (currentGlobalBinding db)).bindElem source mid).bindElem
+          (defaultOutVar source) row).lookupElem? source =
+          some mid := by
+      unfold SetLanguage.Env.lookupElem? SetLanguage.Env.bindElem
+      by_cases hEq : defaultOutVar source = source
+      · exact False.elim (hNe hEq)
+      · simp [SetLanguage.Env.lookupElemList?, hEq]
+    rw [hLookup] at hMatch
+    rcases hMatch with ⟨updated, hEval, hEq⟩
+    refine ⟨mid, ?_, hPred, updated, hEval, hEq⟩
+    simpa [currentGlobalBinding] using hMid
+  · intro h
+    simp [updateSetExpr, updateSetExprWith, rowPredicateFormula, setEnvOfDatabase,
+      currentGlobalBinding, SetLanguage.abstractGlobal, SetLanguage.denote, SetLanguage.empty]
+    rcases h with ⟨mid, hMid, hPred, updated, hEval, hEq⟩
+    refine ⟨mid, ?_, hPred, ?_⟩
+    · simpa [currentGlobalBinding] using hMid
+    · have hLookup :
+          ((((SetLanguage.Env.ofDatabases [] db).bindSet absVar (currentGlobalBinding db)).bindElem source mid).bindElem
+            (defaultOutVar source) row).lookupElem? source =
+            some mid := by
+          unfold SetLanguage.Env.lookupElem? SetLanguage.Env.bindElem
+          by_cases hEq' : defaultOutVar source = source
+          · exact False.elim (hNe hEq')
+          · simp [SetLanguage.Env.lookupElemList?, hEq']
+      rw [hLookup]
+      exact ⟨updated, hEval, hEq⟩
 
 def inferWriteSetExpr (txnId : TxnId) (env : Env) : Semantics.Program → Option SetLanguage.SetExpr
   | .skip => some SetLanguage.empty
@@ -1520,6 +1625,185 @@ theorem inferSetEffect_sound (txnId : TxnId) (env : Env)
   | par left right ihLeft ihRight =>
       simp [inferSetEffect] at hSet
 
+theorem inferSetForeach_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (env : Env)
+    (doneVar elemVar : VarName) (body : Semantics.Program) (db : Database)
+    (hBody :
+      ∀ (env' : Env) (s : SetLanguage.SetExpr) (rows : Database) (row : Row),
+        inferSetEffect txnId env' body db = some s →
+        inferEffect txnId env' body db = some rows →
+        (SetLanguage.denote (setEnvOfDatabase absVar db) (SetLanguage.abstractGlobal absVar s) row ↔
+          row ∈ rows))
+    (done remaining : SetLit) (s : SetLanguage.SetExpr) (rows : Database) (row : Row)
+    (hSet : inferSetForeach txnId env doneVar elemVar body done remaining db = some s)
+    (hEffect : inferForeach txnId env doneVar elemVar body done remaining db = some rows) :
+    SetLanguage.denote (setEnvOfDatabase absVar db) (SetLanguage.abstractGlobal absVar s) row ↔
+      row ∈ rows := by
+  induction remaining generalizing done s rows row with
+  | nil =>
+      simp [inferSetForeach] at hSet
+      simp [inferForeach] at hEffect
+      subst s
+      subst rows
+      simp [SetLanguage.empty, SetLanguage.denote, SetLanguage.abstractGlobal]
+  | cons current rest ih =>
+      cases hCurrentSet :
+          inferSetEffect txnId (foreachEnv env doneVar elemVar done current) body db with
+      | none =>
+          simp [inferSetForeach, hCurrentSet] at hSet
+      | some sCurrent =>
+          cases hRestSet :
+              inferSetForeach txnId env doneVar elemVar body (done ++ [current]) rest db with
+          | none =>
+              simp [inferSetForeach, hCurrentSet, hRestSet] at hSet
+          | some sRest =>
+              simp [inferSetForeach, hCurrentSet, hRestSet] at hSet
+              cases hSet
+              rcases infer_foreachRuntime_cons_sound txnId env done current rest doneVar elemVar body
+                  db rows (by simpa [inferEffect] using hEffect) with
+                ⟨rowsCurrent, rowsRest, hCurrentEff, hRestEff, hRows⟩
+              have hRestForeach :
+                  inferForeach txnId env doneVar elemVar body (done ++ [current]) rest db =
+                    some rowsRest := by
+                simpa [inferEffect, inferForeach] using hRestEff
+              have hDenCurrent := hBody (foreachEnv env doneVar elemVar done current)
+                sCurrent rowsCurrent row hCurrentSet hCurrentEff
+              have hDenRest := ih (done ++ [current]) sRest rowsRest row hRestSet hRestForeach
+              simp [SetLanguage.abstractGlobal_union, SetLanguage.denote_union, hDenCurrent, hDenRest, hRows]
+
+theorem inferSetEffect_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (env : Env)
+    (body : Semantics.Program) (db : Database) (s : SetLanguage.SetExpr)
+    (rows : Database) (row : Row)
+    (hSet : inferSetEffect txnId env body db = some s)
+    (hEffect : inferEffect txnId env body db = some rows) :
+    SetLanguage.denote (setEnvOfDatabase absVar db) (SetLanguage.abstractGlobal absVar s) row ↔
+      row ∈ rows := by
+  induction body generalizing env s rows row with
+  | skip =>
+      simp [inferSetEffect, emptySetEffect, inferEffect, emptyEffect] at hSet hEffect
+      subst s
+      subst rows
+      simp [SetLanguage.empty, SetLanguage.denote, SetLanguage.abstractGlobal]
+  | letE x expr body ih =>
+      rcases infer_let_sound txnId env x expr body db rows hEffect with
+        ⟨value, hEval, hBodyEff⟩
+      simp [inferSetEffect, hEval] at hSet
+      exact ih (env.insert x value) s rows row hSet hBodyEff
+  | ite cond thenBranch elseBranch ihThen ihElse =>
+      rcases infer_ite_sound txnId env cond thenBranch elseBranch db rows hEffect with
+        ⟨hCond, hThenEff⟩ | ⟨hCond, hElseEff⟩
+      · simp [inferSetEffect, hCond] at hSet
+        simpa [SetLanguage.abstractGlobal_ite] using ihThen env s rows row hSet hThenEff
+      · simp [inferSetEffect, hCond] at hSet
+        simpa [SetLanguage.abstractGlobal_ite] using ihElse env s rows row hSet hElseEff
+  | seq left right ihLeft ihRight =>
+      cases hLeftSet : inferSetEffect txnId env left db with
+      | none =>
+          simp [inferSetEffect, unionSetEffect, hLeftSet] at hSet
+      | some sLeft =>
+          cases hRightSet : inferSetEffect txnId env right db with
+          | none =>
+              simp [inferSetEffect, unionSetEffect, hLeftSet, hRightSet] at hSet
+          | some sRight =>
+              simp [inferSetEffect, unionSetEffect, hLeftSet, hRightSet] at hSet
+              cases hSet
+              rcases infer_seq_sound txnId env left right db rows hEffect with
+                ⟨rowsLeft, rowsRight, hLeftEff, hRightEff, hRows⟩
+              have hDenLeft := ihLeft env sLeft rowsLeft row hLeftSet hLeftEff
+              have hDenRight := ihRight env sRight rowsRight row hRightSet hRightEff
+              simp [SetLanguage.abstractGlobal_union, SetLanguage.denote_union, hDenLeft, hDenRight, hRows]
+  | insert expr =>
+      rcases insertSetExpr_sound txnId env expr s (by simpa [inferSetEffect] using hSet) with
+        ⟨record, rfl, hEval⟩
+      rcases infer_insert_sound txnId env expr db rows hEffect with ⟨record', hEval', hRows⟩
+      have hEvalExpr : Expr.eval (instantiateExpr env [] expr) = some (.record record) := by
+        simpa [evalInEnv] using hEval
+      rw [hEvalExpr] at hEval'
+      injection hEval' with hRecord
+      cases hRecord
+      simp [SetLanguage.singleton, SetLanguage.denote, SetLanguage.abstractGlobal, hRows]
+  | delete source predicate =>
+      simp [inferSetEffect] at hSet
+      subst s
+      exact deleteSetExpr_abstractGlobal_sound absVar txnId env source predicate db rows row
+        (by simpa [inferEffect] using hEffect)
+  | select binder source predicate body ih =>
+      rcases infer_select_sound txnId env binder source predicate body db rows hEffect with
+        ⟨selected, hSelect, hBodyEff⟩
+      simp [inferSetEffect, hSelect] at hSet
+      exact ih (env.insert binder (.set selected)) s rows row hSet hBodyEff
+  | update source updateExpr predicate =>
+      simp [inferSetEffect] at hSet
+      subst s
+      exact updateSetExpr_abstractGlobal_sound absVar txnId env source updateExpr predicate db rows row
+        (by simpa [inferEffect] using hEffect)
+  | foreach source doneVar elemVar body ih =>
+      rcases infer_foreach_sound txnId env source doneVar elemVar body db rows hEffect with
+        ⟨records, hSourceEval, hRuntimeEff⟩
+      simp [inferSetEffect, hSourceEval] at hSet
+      have hForeachEff :
+          inferForeach txnId env doneVar elemVar body [] records db = some rows := by
+        simpa [inferEffect, inferForeach] using hRuntimeEff
+      have hBodySound :
+          ∀ (env' : Env) (s : SetLanguage.SetExpr) (rows : Database) (row : Row),
+            inferSetEffect txnId env' body db = some s →
+            inferEffect txnId env' body db = some rows →
+            (SetLanguage.denote (setEnvOfDatabase absVar db) (SetLanguage.abstractGlobal absVar s) row ↔
+              row ∈ rows) := by
+        intro env' s rows row hSetBody hEffectBody
+        exact ih env' s rows row hSetBody hEffectBody
+      exact inferSetForeach_abstractGlobal_sound absVar txnId env doneVar elemVar body db
+        hBodySound [] records s rows row hSet hForeachEff
+  | foreachRuntime done remaining doneVar elemVar body ih =>
+      rcases infer_foreachRuntime_sound txnId env done remaining doneVar elemVar body db rows hEffect with
+        ⟨doneRecords, remainingRecords, hDoneEval, hRemainingEval, hRuntimeEff⟩
+      simp [inferSetEffect, hDoneEval, hRemainingEval] at hSet
+      have hForeachEff :
+          inferForeach txnId env doneVar elemVar body doneRecords remainingRecords db = some rows := by
+        simpa [inferEffect, inferForeach] using hRuntimeEff
+      have hBodySound :
+          ∀ (env' : Env) (s : SetLanguage.SetExpr) (rows : Database) (row : Row),
+            inferSetEffect txnId env' body db = some s →
+            inferEffect txnId env' body db = some rows →
+            (SetLanguage.denote (setEnvOfDatabase absVar db) (SetLanguage.abstractGlobal absVar s) row ↔
+              row ∈ rows) := by
+        intro env' s rows row hSetBody hEffectBody
+        exact ih env' s rows row hSetBody hEffectBody
+      exact inferSetForeach_abstractGlobal_sound absVar txnId env doneVar elemVar body db
+        hBodySound doneRecords remainingRecords s rows row hSet hForeachEff
+  | txn txnId' isolation body ih =>
+      simp [inferSetEffect] at hSet
+  | txnRuntime txnId' isolation localDb snapshot body ih =>
+      simp [inferSetEffect] at hSet
+  | par left right ihLeft ihRight =>
+      simp [inferSetEffect] at hSet
+
+theorem weakenToInvariant_of_abstractGlobal (I : Assertion) (absVar : VarName)
+    (db : Database) (s : SetLanguage.SetExpr) (row : Row)
+    (hInv : I db)
+    (hAbs :
+      SetLanguage.denote (setEnvOfDatabase absVar db)
+        (SetLanguage.abstractGlobal absVar s) row) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
+      (SetLanguage.weakenToInvariant absVar (assertionFormula I) s) row := by
+  refine ⟨currentGlobalBinding db, ?_, ?_⟩
+  · exact assertionFormula_current I absVar db hInv
+  · simpa [setEnvOfDatabase, currentGlobalBinding]
+
+theorem inferSetEffect_weaken_sound (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (env : Env) (body : Semantics.Program) (db : Database)
+    (s : SetLanguage.SetExpr) (rows : Database) (row : Row)
+    (hInv : I db)
+    (hSet : inferSetEffect txnId env body db = some s)
+    (hEffect : inferEffect txnId env body db = some rows)
+    (hRow : row ∈ rows) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
+      (SetLanguage.weakenToInvariant absVar (assertionFormula I) s) row := by
+  have hAbs :
+      SetLanguage.denote (setEnvOfDatabase absVar db)
+        (SetLanguage.abstractGlobal absVar s) row := by
+    exact (inferSetEffect_abstractGlobal_sound absVar txnId env body db s rows row hSet hEffect).2 hRow
+  exact weakenToInvariant_of_abstractGlobal I absVar db s row hInv hAbs
+
 theorem inferenceSoundEnv_foreachRuntime_lit (txnId : TxnId) (env : Env)
     (done : SetLit) (remaining : SetLit) (doneVar elemVar : VarName)
     (body : Semantics.Program)
@@ -1892,6 +2176,32 @@ theorem vcgForTxn_setSound {R : Rely} {I : Assertion} {G : Guarantee}
   simp [vcgForTxn] at hInfo
   subst info
   exact vcg_setSound txnId isolation body visibleDb localDb s hSet hEffect
+
+theorem vcg_setWeaken_sound {R : Rely} {I : Assertion} {G : Guarantee}
+    (absVar : VarName) (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (visibleDb localDb : Database) (s : SetLanguage.SetExpr) (row : Row)
+    (hInv : I visibleDb)
+    (hSet : inferSetEffect txnId [] body visibleDb = some s)
+    (hEffect : (vcg R I G txnId isolation body).effect visibleDb = some localDb)
+    (hRow : row ∈ localDb) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
+      (SetLanguage.weakenToInvariant absVar (assertionFormula I) s) row := by
+  exact inferSetEffect_weaken_sound I absVar txnId [] body visibleDb s localDb row hInv hSet
+    (by simpa [vcg] using hEffect) hRow
+
+theorem vcgForTxn_setWeaken_sound {R : Rely} {I : Assertion} {G : Guarantee}
+    (absVar : VarName) (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (info : TransactionVCG) (visibleDb localDb : Database) (s : SetLanguage.SetExpr) (row : Row)
+    (hInfo : vcgForTxn R I G (.txn txnId isolation body) = some info)
+    (hInv : I visibleDb)
+    (hSet : inferSetEffect txnId [] body visibleDb = some s)
+    (hEffect : info.effect visibleDb = some localDb)
+    (hRow : row ∈ localDb) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
+      (SetLanguage.weakenToInvariant absVar (assertionFormula I) s) row := by
+  simp [vcgForTxn] at hInfo
+  subst info
+  exact vcg_setWeaken_sound absVar txnId isolation body visibleDb localDb s row hInv hSet hEffect hRow
 
 theorem effectStable_false (F : TxnEffect) :
     effectStable (fun _ _ _ => False) F := by
