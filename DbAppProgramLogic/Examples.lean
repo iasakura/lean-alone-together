@@ -293,6 +293,58 @@ theorem addInterest_rowPredicateFO_holds :
   rw [FirstOrder.denote_rowPredicateFormula]
   native_decide
 
+def addInterestUpdateEnv : DbAppProgramLogic.Env :=
+  [("acct", .record interestBaseRecord)]
+
+def addInterestUpdateExpr : Expr :=
+  .withUpdates (.var "r")
+    [("bal", .binop .add (.proj (.var "acct") "bal") (.int 1))]
+
+def addInterestUpdatePredicate : Expr :=
+  .binop .eq (.proj (.var "r") "id") (.proj (.var "acct") "id")
+
+theorem addInterest_updateMembershipFO_holds :
+    FirstOrder.denoteMembership
+      ((SetLanguage.Env.ofDatabases [] [interestBaseRow]).bindElem "x" interestUpdatedRow)
+      (FirstOrder.encodeUpdateMembership
+        "x" 1 addInterestUpdateEnv "r" addInterestUpdateExpr addInterestUpdatePredicate) := by
+  have hNe : ("x" : VarName) ≠ "r" := by
+    decide
+  rw [FirstOrder.encodeUpdateMembership_sound
+    "x" 1 addInterestUpdateEnv "r" addInterestUpdateExpr addInterestUpdatePredicate
+    [interestBaseRow] interestUpdatedRow hNe]
+  simp [Transformer.updateSetExpr, Transformer.updateSetExprWith, Transformer.rowPredicateFormula,
+    SetLanguage.denote, SetLanguage.empty, addInterestUpdateEnv, addInterestUpdateExpr,
+    addInterestUpdatePredicate, interestBaseRow, interestBaseRecord, interestUpdatedRow,
+    interestUpdatedRecord, Row.fromInsert, Row.overwrite, RecordLit.lookup?]
+  refine ⟨interestBaseRow, ?_, ?_, ?_⟩
+  · simp [SetLanguage.Env.ofDatabases]
+    rfl
+  · native_decide
+  · have hLookup :
+        (((SetLanguage.Env.ofDatabases [] [interestBaseRow]).bindElem "r" interestBaseRow).bindElem
+          (Transformer.defaultOutVar "r") interestUpdatedRow).lookupElem? "r" = some interestBaseRow := by
+      simp [Transformer.defaultOutVar, SetLanguage.Env.lookupElem?, SetLanguage.Env.lookupElemList?,
+        SetLanguage.Env.bindElem]
+    have hExists :
+        ∃ updated,
+          Expr.eval
+              (Semantics.instantiateRecord "r" interestBaseRow.visible
+                (Transformer.instantiateExpr addInterestUpdateEnv ["r"] addInterestUpdateExpr)) =
+            some (.record updated) ∧
+          interestUpdatedRow = interestBaseRow.overwrite 1 updated := by
+      refine ⟨interestUpdatedRecord, ?_, ?_⟩
+      · native_decide
+      · simp [interestUpdatedRow, interestUpdatedRecord, interestBaseRow, Row.overwrite]
+    simpa [hLookup] using hExists
+
+theorem zeroBalance_singletonMembershipFO_holds :
+    FirstOrder.denoteMembership
+      ((SetLanguage.Env.ofDatabases [] []).bindElem "x" zeroBalanceRow)
+      (FirstOrder.encodeSingletonMembership "x" zeroBalanceRow) := by
+  rw [FirstOrder.encodeSingletonMembership_denote]
+  simp [SetLanguage.denote, SetLanguage.singleton]
+
 end Examples
 
 end DbAppProgramLogic
