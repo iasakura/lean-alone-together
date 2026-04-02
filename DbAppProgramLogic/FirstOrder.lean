@@ -229,6 +229,35 @@ def encodeUpdateMembership (elemVar : VarName) (txnId : TxnId) (env : DbAppProgr
         (.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate))
         (.eqUpdated elemVar source txnId (Transformer.instantiateExpr env [source] updateExpr))))
 
+def inferWriteMembership (txnId : TxnId) (env : DbAppProgramLogic.Env)
+    (elemVar : VarName) : Semantics.Program → Option MembershipFormula
+  | .skip => some .bot
+  | .letE x expr body => do
+      let value ← Transformer.evalInEnv env expr
+      inferWriteMembership txnId (env.insert x value) elemVar body
+  | .ite cond thenBranch elseBranch => do
+      let .scalar (.bool b) ← Transformer.evalInEnv env cond | none
+      if b then inferWriteMembership txnId env elemVar thenBranch
+      else inferWriteMembership txnId env elemVar elseBranch
+  | .seq left right => do
+      let φLeft ← inferWriteMembership txnId env elemVar left
+      let φRight ← inferWriteMembership txnId env elemVar right
+      pure (.or φLeft φRight)
+  | .insert expr => do
+      let .record record ← Transformer.evalInEnv env expr | none
+      pure (encodeSingletonMembership elemVar (Row.fromInsert txnId record))
+  | .delete source predicate =>
+      if elemVar = source then
+        none
+      else
+        some (encodeDeleteMembership elemVar txnId env source predicate)
+  | .update source updateExpr predicate =>
+      if elemVar = source then
+        none
+      else
+        some (encodeUpdateMembership elemVar txnId env source updateExpr predicate)
+  | _ => none
+
 def encodeSetExprMembership (elemVar : VarName) : SetLanguage.SetExpr → Option MembershipFormula
   | .var setVar => some (.inVar elemVar setVar)
   | .localDb => some (.inLocalDb elemVar)
@@ -415,6 +444,100 @@ theorem encodeUpdateMembership_sound (elemVar : VarName) (txnId : TxnId)
     refine ⟨mid, ?_, hPred, ?_⟩
     · simpa [SetLanguage.Env.bindElem, SetLanguage.Env.ofDatabases] using hMid
     · simpa [hLookup] using hRow
+
+theorem inferWriteMembership_sound (txnId : TxnId) (env : DbAppProgramLogic.Env)
+    (elemVar : VarName) (body : Semantics.Program) (φ : MembershipFormula)
+    (db rows : Database) (row : Row)
+    (hFormula : inferWriteMembership txnId env elemVar body = some φ)
+    (hEffect : Transformer.inferEffect txnId env body db = some rows) :
+    denoteMembership ((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row) φ ↔
+      row ∈ rows := by
+  induction body generalizing env φ db rows row with
+  | skip =>
+      simp [inferWriteMembership, Transformer.inferEffect, Transformer.emptyEffect] at hFormula hEffect
+      subst φ
+      subst rows
+      simp [denoteMembership]
+  | letE x expr body ih =>
+      rcases Transformer.infer_let_sound txnId env x expr body db rows hEffect with
+        ⟨value, hEval, hBodyEff⟩
+      simp [inferWriteMembership, hEval] at hFormula
+      exact ih (env.insert x value) φ db rows row hFormula hBodyEff
+  | ite cond thenBranch elseBranch ihThen ihElse =>
+      rcases Transformer.infer_ite_sound txnId env cond thenBranch elseBranch db rows hEffect with
+        ⟨hCond, hThenEff⟩ | ⟨hCond, hElseEff⟩
+      · simp [inferWriteMembership, hCond] at hFormula
+        exact ihThen env φ db rows row hFormula hThenEff
+      · simp [inferWriteMembership, hCond] at hFormula
+        exact ihElse env φ db rows row hFormula hElseEff
+  | seq left right ihLeft ihRight =>
+      cases hLeft : inferWriteMembership txnId env elemVar left with
+      | none =>
+          simp [inferWriteMembership, hLeft] at hFormula
+      | some φLeft =>
+          cases hRight : inferWriteMembership txnId env elemVar right with
+          | none =>
+              simp [inferWriteMembership, hLeft, hRight] at hFormula
+          | some φRight =>
+              simp [inferWriteMembership, hLeft, hRight] at hFormula
+              subst φ
+              rcases Transformer.infer_seq_sound txnId env left right db rows hEffect with
+                ⟨rowsLeft, rowsRight, hLeftEff, hRightEff, hRows⟩
+              have hDenLeft := ihLeft env φLeft db rowsLeft row hLeft hLeftEff
+              have hDenRight := ihRight env φRight db rowsRight row hRight hRightEff
+              simp [denoteMembership_or, hDenLeft, hDenRight, hRows]
+  | insert expr =>
+      cases hEval : Transformer.evalInEnv env expr with
+      | none =>
+          simp [inferWriteMembership, hEval] at hFormula
+      | some value =>
+          cases value with
+          | scalar scalar =>
+              simp [inferWriteMembership, hEval] at hFormula
+          | set records =>
+              simp [inferWriteMembership, hEval] at hFormula
+          | record record =>
+              simp [inferWriteMembership, hEval] at hFormula
+              subst φ
+              rcases Transformer.infer_insert_sound txnId env expr db rows hEffect with
+                ⟨record', hEval', hRows⟩
+              have hEvalExpr :
+                  Expr.eval (Transformer.instantiateExpr env [] expr) = some (.record record) := by
+                simpa [Transformer.evalInEnv] using hEval
+              rw [hEvalExpr] at hEval'
+              injection hEval' with hRecord
+              cases hRecord
+              simp [encodeSingletonMembership_sound, hRows]
+  | delete source predicate =>
+      by_cases hNe : elemVar = source
+      · simp [inferWriteMembership, hNe] at hFormula
+      · simp [inferWriteMembership, hNe] at hFormula
+        subst φ
+        have hCollect := Transformer.infer_delete_sound txnId env source predicate db rows hEffect
+        exact Iff.trans
+          (encodeDeleteMembership_sound elemVar txnId env source predicate db row hNe)
+          (Transformer.deleteSetExpr_sound txnId env source predicate db rows row hCollect)
+  | select binder source predicate body ih =>
+      simp [inferWriteMembership] at hFormula
+  | update source updateExpr predicate =>
+      by_cases hNe : elemVar = source
+      · simp [inferWriteMembership, hNe] at hFormula
+      · simp [inferWriteMembership, hNe] at hFormula
+        subst φ
+        have hCollect := Transformer.infer_update_sound txnId env source updateExpr predicate db rows hEffect
+        exact Iff.trans
+          (encodeUpdateMembership_sound elemVar txnId env source updateExpr predicate db row hNe)
+          (Transformer.updateSetExpr_sound txnId env source updateExpr predicate db rows row hCollect)
+  | foreach source doneVar elemVar' body ih =>
+      simp [inferWriteMembership] at hFormula
+  | foreachRuntime done remaining doneVar elemVar' body ih =>
+      simp [inferWriteMembership] at hFormula
+  | txn txnId' isolation body ih =>
+      simp [inferWriteMembership] at hFormula
+  | txnRuntime txnId' isolation localDb snapshot body ih =>
+      simp [inferWriteMembership] at hFormula
+  | par left right ihLeft ihRight =>
+      simp [inferWriteMembership] at hFormula
 
 theorem encodeSetExprMembership_sound (ρ : SetLanguage.Env) (elemVar : VarName)
     (s : SetLanguage.SetExpr) (φ : MembershipFormula) (row : Row)

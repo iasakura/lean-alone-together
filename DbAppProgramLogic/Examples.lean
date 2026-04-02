@@ -129,6 +129,29 @@ theorem zeroBalance_symbolicVcg_contains_row (visibleDb : Database)
       zeroBalanceRow := by
   exact zeroBalance_symbolicVcg_overapprox visibleDb hInv zeroBalanceRow (by simp)
 
+def zeroBalanceWriteMembership : FirstOrder.MembershipFormula :=
+  Option.get! (FirstOrder.inferWriteMembership 0 [] "x" zeroBalanceInsertBody)
+
+theorem zeroBalance_inferWriteMembership :
+    FirstOrder.inferWriteMembership 0 [] "x" zeroBalanceInsertBody =
+      some zeroBalanceWriteMembership := by
+  unfold zeroBalanceWriteMembership
+  simp [FirstOrder.inferWriteMembership, zeroBalanceInsertBody, Transformer.evalInEnv,
+    Transformer.instantiateExpr_nil]
+  rw [zeroBalance_insert_eval]
+  rfl
+
+theorem zeroBalance_inferWriteMembership_contains_row (visibleDb : Database) :
+    FirstOrder.denoteMembership
+      ((SetLanguage.Env.ofDatabases [] visibleDb).bindElem "x" zeroBalanceRow)
+      zeroBalanceWriteMembership := by
+  have hSound :=
+    FirstOrder.inferWriteMembership_sound 0 [] "x" zeroBalanceInsertBody
+      zeroBalanceWriteMembership visibleDb [zeroBalanceRow] zeroBalanceRow
+      zeroBalance_inferWriteMembership
+      (by simpa [Transformer.vcg] using zeroBalance_effect visibleDb)
+  exact hSound.2 (by simp)
+
 def interestBaseRecord : RecordLit :=
   ⟨[("id", .int 1), ("bal", .int 4)]⟩
 
