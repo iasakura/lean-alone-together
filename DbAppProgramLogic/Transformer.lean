@@ -248,6 +248,11 @@ def currentGlobalBinding (db : Database) : SetLanguage.SetDenotation :=
 def setEnvOfDatabase (x : VarName) (db : Database) : SetLanguage.Env :=
   (SetLanguage.Env.ofDatabases [] db).bindSet x (currentGlobalBinding db)
 
+def weakenSetEffect (I : Assertion) (absVar : VarName) (F : SetEffect) : SetEffect :=
+  fun db => do
+    let s ← F db
+    pure (SetLanguage.weakenToInvariant absVar (assertionFormula I) s)
+
 theorem assertionFormula_current (I : Assertion) (x : VarName) (db : Database) (hI : I db) :
     assertionFormula I (setEnvOfDatabase x db) (currentGlobalBinding db) := by
   refine ⟨db, hI, ?_⟩
@@ -2202,6 +2207,45 @@ theorem vcgForTxn_setWeaken_sound {R : Rely} {I : Assertion} {G : Guarantee}
   simp [vcgForTxn] at hInfo
   subst info
   exact vcg_setWeaken_sound absVar txnId isolation body visibleDb localDb s row hInv hSet hEffect hRow
+
+def symbolicVcg (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (body : Semantics.Program) : SetEffect :=
+  weakenSetEffect I absVar (inferSetEffect txnId [] body)
+
+def symbolicVcgForTxn (I : Assertion) (absVar : VarName) : Semantics.Program → Option SetEffect
+  | .txn txnId _isolation body => some (symbolicVcg I absVar txnId body)
+  | _ => none
+
+theorem symbolicVcg_sound (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (body : Semantics.Program)
+    (visibleDb localDb : Database) (s : SetLanguage.SetExpr) (row : Row)
+    (hInv : I visibleDb)
+    (hSet : inferSetEffect txnId [] body visibleDb = some s)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb)
+    (hRow : row ∈ localDb) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
+      (Option.get! (symbolicVcg I absVar txnId body visibleDb)) row := by
+  have hSym :
+      symbolicVcg I absVar txnId body visibleDb =
+        some (SetLanguage.weakenToInvariant absVar (assertionFormula I) s) := by
+    simp [symbolicVcg, weakenSetEffect, hSet]
+  rw [hSym]
+  simp
+  exact inferSetEffect_weaken_sound I absVar txnId [] body visibleDb s localDb row hInv hSet hEffect hRow
+
+theorem symbolicVcgForTxn_sound (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (info : SetEffect) (visibleDb localDb : Database) (s : SetLanguage.SetExpr) (row : Row)
+    (hInfo : symbolicVcgForTxn I absVar (.txn txnId isolation body) = some info)
+    (hInv : I visibleDb)
+    (hSet : inferSetEffect txnId [] body visibleDb = some s)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb)
+    (hRow : row ∈ localDb) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
+      (Option.get! (info visibleDb)) row := by
+  simp [symbolicVcgForTxn] at hInfo
+  subst info
+  exact symbolicVcg_sound I absVar txnId body visibleDb localDb s row hInv hSet hEffect hRow
 
 theorem effectStable_false (F : TxnEffect) :
     effectStable (fun _ _ _ => False) F := by
