@@ -239,6 +239,9 @@ def reifyEffect (F : TxnEffect) : SetEffect :=
 def denotesRows (ρ : SetLanguage.Env) (s : SetLanguage.SetExpr) (rows : Database) : Prop :=
   ∀ row, SetLanguage.denote ρ s row ↔ row ∈ rows
 
+def overapproximatesRows (ρ : SetLanguage.Env) (s : SetLanguage.SetExpr) (rows : Database) : Prop :=
+  ∀ row, row ∈ rows → SetLanguage.denote ρ s row
+
 def assertionFormula (I : Assertion) : SetLanguage.Formula1 :=
   fun _ rows => ∃ db : Database, I db ∧ ∀ row, rows row ↔ row ∈ db
 
@@ -263,6 +266,12 @@ theorem denotesRows_ofRows (ρ : SetLanguage.Env) (rows : Database) :
     denotesRows ρ (SetLanguage.ofRows rows) rows := by
   intro row
   simp [denotesRows]
+
+theorem overapproximatesRows_of_denotesRows (ρ : SetLanguage.Env) (s : SetLanguage.SetExpr)
+    (rows : Database) (hDenote : denotesRows ρ s rows) :
+    overapproximatesRows ρ s rows := by
+  intro row hRow
+  exact (hDenote row).2 hRow
 
 theorem reifyEffect_sound (F : TxnEffect) (visibleDb localDb : Database)
     (hEffect : F visibleDb = some localDb) :
@@ -1809,6 +1818,17 @@ theorem inferSetEffect_weaken_sound (I : Assertion) (absVar : VarName)
     exact (inferSetEffect_abstractGlobal_sound absVar txnId env body db s rows row hSet hEffect).2 hRow
   exact weakenToInvariant_of_abstractGlobal I absVar db s row hInv hAbs
 
+theorem inferSetEffect_weaken_overapprox (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (env : Env) (body : Semantics.Program) (db : Database)
+    (s : SetLanguage.SetExpr) (rows : Database)
+    (hInv : I db)
+    (hSet : inferSetEffect txnId env body db = some s)
+    (hEffect : inferEffect txnId env body db = some rows) :
+    overapproximatesRows (SetLanguage.Env.ofDatabases [] db)
+      (SetLanguage.weakenToInvariant absVar (assertionFormula I) s) rows := by
+  intro row hRow
+  exact inferSetEffect_weaken_sound I absVar txnId env body db s rows row hInv hSet hEffect hRow
+
 theorem inferenceSoundEnv_foreachRuntime_lit (txnId : TxnId) (env : Env)
     (done : SetLit) (remaining : SetLit) (doneVar elemVar : VarName)
     (body : Semantics.Program)
@@ -2233,6 +2253,16 @@ theorem symbolicVcg_sound (I : Assertion) (absVar : VarName)
   simp
   exact inferSetEffect_weaken_sound I absVar txnId [] body visibleDb s localDb row hInv hSet hEffect hRow
 
+theorem symbolicVcg_overapprox_sound (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (body : Semantics.Program)
+    (visibleDb localDb : Database) (s : SetLanguage.SetExpr)
+    (hInv : I visibleDb)
+    (hSet : inferSetEffect txnId [] body visibleDb = some s)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb) :
+    overapproximatesRows (SetLanguage.Env.ofDatabases [] visibleDb)
+      (SetLanguage.weakenToInvariant absVar (assertionFormula I) s) localDb := by
+  exact inferSetEffect_weaken_overapprox I absVar txnId [] body visibleDb s localDb hInv hSet hEffect
+
 theorem symbolicVcgForTxn_sound (I : Assertion) (absVar : VarName)
     (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
     (info : SetEffect) (visibleDb localDb : Database) (s : SetLanguage.SetExpr) (row : Row)
@@ -2246,6 +2276,20 @@ theorem symbolicVcgForTxn_sound (I : Assertion) (absVar : VarName)
   simp [symbolicVcgForTxn] at hInfo
   subst info
   exact symbolicVcg_sound I absVar txnId body visibleDb localDb s row hInv hSet hEffect hRow
+
+theorem symbolicVcgForTxn_overapprox_sound (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (info : SetEffect) (visibleDb localDb : Database) (s : SetLanguage.SetExpr)
+    (hInfo : symbolicVcgForTxn I absVar (.txn txnId isolation body) = some info)
+    (hInv : I visibleDb)
+    (hSet : inferSetEffect txnId [] body visibleDb = some s)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb) :
+    overapproximatesRows (SetLanguage.Env.ofDatabases [] visibleDb)
+      (SetLanguage.weakenToInvariant absVar (assertionFormula I) s) localDb := by
+  have hInfo' := hInfo
+  simp [symbolicVcgForTxn] at hInfo'
+  subst info
+  exact symbolicVcg_overapprox_sound I absVar txnId body visibleDb localDb s hInv hSet hEffect
 
 theorem effectStable_false (F : TxnEffect) :
     effectStable (fun _ _ _ => False) F := by

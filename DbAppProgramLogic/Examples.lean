@@ -47,6 +47,14 @@ theorem zeroBalance_effect (visibleDb : Database) :
   rw [zeroBalance_insert_eval]
   rfl
 
+theorem zeroBalance_setEffect (visibleDb : Database) :
+    Transformer.inferSetEffect 0 [] zeroBalanceInsertBody visibleDb =
+      some (SetLanguage.singleton zeroBalanceRow) := by
+  simp [Transformer.inferSetEffect, Transformer.insertSetExpr, Transformer.evalInEnv,
+    Transformer.instantiateExpr_nil, zeroBalanceInsertBody]
+  rw [zeroBalance_insert_eval]
+  rfl
+
 theorem zeroBalance_effect_defined :
     Transformer.effectDefinedOn nonnegativeBalances
       ((Transformer.vcg (fun _ _ => False) nonnegativeBalances zeroBalanceGuarantee
@@ -82,6 +90,44 @@ theorem zeroBalanceInsert_valid :
     zeroBalance_effect_defined
     zeroBalance_guarantee_ok
     zeroBalance_preserves_invariant
+
+theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
+    Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =
+      some
+        (SetLanguage.weakenToInvariant "__inv"
+          (Transformer.assertionFormula nonnegativeBalances)
+          (SetLanguage.singleton zeroBalanceRow)) := by
+  simp [Transformer.symbolicVcg, Transformer.weakenSetEffect, zeroBalance_setEffect]
+
+theorem zeroBalance_symbolicVcg_overapprox (visibleDb : Database)
+    (hInv : nonnegativeBalances visibleDb) :
+    Transformer.overapproximatesRows
+      (SetLanguage.Env.ofDatabases [] visibleDb)
+      (SetLanguage.weakenToInvariant "__inv"
+        (Transformer.assertionFormula nonnegativeBalances)
+        (SetLanguage.singleton zeroBalanceRow))
+      [zeroBalanceRow] := by
+  exact Transformer.symbolicVcg_overapprox_sound
+    nonnegativeBalances
+    "__inv"
+    0
+    zeroBalanceInsertBody
+    visibleDb
+    [zeroBalanceRow]
+    (SetLanguage.singleton zeroBalanceRow)
+    hInv
+    (zeroBalance_setEffect visibleDb)
+    (by simpa [Transformer.vcg] using zeroBalance_effect visibleDb)
+
+theorem zeroBalance_symbolicVcg_contains_row (visibleDb : Database)
+    (hInv : nonnegativeBalances visibleDb) :
+    SetLanguage.denote
+      (SetLanguage.Env.ofDatabases [] visibleDb)
+      (SetLanguage.weakenToInvariant "__inv"
+        (Transformer.assertionFormula nonnegativeBalances)
+        (SetLanguage.singleton zeroBalanceRow))
+      zeroBalanceRow := by
+  exact zeroBalance_symbolicVcg_overapprox visibleDb hInv zeroBalanceRow (by simp)
 
 end Examples
 
