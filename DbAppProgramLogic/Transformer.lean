@@ -1198,6 +1198,21 @@ mutual
 
 end
 
+def SetInferable : Semantics.Program → Prop
+  | .skip => True
+  | .letE _ _ body => SetInferable body
+  | .ite _ thenBranch elseBranch => SetInferable thenBranch ∧ SetInferable elseBranch
+  | .seq left right => SetInferable left ∧ SetInferable right
+  | .insert _ => True
+  | .delete _ _ => True
+  | .select _ _ _ body => SetInferable body
+  | .update _ _ _ => True
+  | .foreach _ _ _ body => SetInferable body
+  | .foreachRuntime _ _ _ _ body => SetInferable body
+  | .txn _ _ _ => False
+  | .txnRuntime _ _ _ _ _ => False
+  | .par _ _ => False
+
 theorem inferenceSoundEnv_select (txnId : TxnId) (env : Env) (binder source : VarName)
     (predicate : Expr) (body : Semantics.Program)
     (hBody :
@@ -1486,6 +1501,132 @@ theorem infer_foreachRuntime_sound (txnId : TxnId) (env : Env) (done remaining :
                   · rfl
                   · rfl
                   · simpa [inferEffect, hDone, hRemaining] using h
+
+mutual
+
+  theorem inferSetForeach_some_of_inferForeach_some (txnId : TxnId) (env : Env)
+      (doneVar elemVar : VarName) (body : Semantics.Program) (db : Database)
+      (hBody :
+        ∀ (env' : Env) (rows : Database),
+          inferEffect txnId env' body db = some rows →
+          ∃ s, inferSetEffect txnId env' body db = some s)
+      (done remaining : SetLit) (rows : Database)
+      (hEffect : inferForeach txnId env doneVar elemVar body done remaining db = some rows) :
+      ∃ s, inferSetForeach txnId env doneVar elemVar body done remaining db = some s := by
+    induction remaining generalizing done rows with
+    | nil =>
+        refine ⟨SetLanguage.empty, ?_⟩
+        simp [inferSetForeach]
+    | cons current rest ih =>
+        rcases infer_foreachRuntime_cons_sound txnId env done current rest doneVar elemVar body db rows
+            (by simpa [inferEffect] using hEffect) with
+          ⟨rowsCurrent, rowsRest, hCurrentEff, hRestEff, hRows⟩
+        rcases hBody (foreachEnv env doneVar elemVar done current) rowsCurrent hCurrentEff with
+          ⟨sCurrent, hCurrentSet⟩
+        have hRestForeach :
+            inferForeach txnId env doneVar elemVar body (done ++ [current]) rest db =
+              some rowsRest := by
+          simpa [inferEffect, inferForeach] using hRestEff
+        rcases ih (done ++ [current]) rowsRest hRestForeach with ⟨sRest, hRestSet⟩
+        refine ⟨.union sCurrent sRest, ?_⟩
+        simp [inferSetForeach, hCurrentSet, hRestSet]
+
+theorem inferSetEffect_some_of_inferEffect_some (txnId : TxnId) (env : Env)
+      (body : Semantics.Program) (db rows : Database)
+      (hInferable : SetInferable body)
+      (hEffect : inferEffect txnId env body db = some rows) :
+      ∃ s, inferSetEffect txnId env body db = some s := by
+    induction body generalizing env rows with
+    | skip =>
+        refine ⟨SetLanguage.empty, ?_⟩
+        simp [inferSetEffect, emptySetEffect]
+    | letE x expr body ih =>
+        simp [SetInferable] at hInferable
+        rcases infer_let_sound txnId env x expr body db rows hEffect with
+          ⟨value, hEval, hBodyEff⟩
+        rcases ih (env.insert x value) rows hInferable hBodyEff with ⟨s, hSet⟩
+        exact ⟨s, by simp [inferSetEffect, hEval, hSet]⟩
+    | ite cond thenBranch elseBranch ihThen ihElse =>
+        simp [SetInferable] at hInferable
+        rcases hInferable with ⟨hThenInferable, hElseInferable⟩
+        rcases infer_ite_sound txnId env cond thenBranch elseBranch db rows hEffect with
+          ⟨hCond, hThenEff⟩ | ⟨hCond, hElseEff⟩
+        · rcases ihThen env rows hThenInferable hThenEff with ⟨s, hSet⟩
+          exact ⟨s, by simp [inferSetEffect, hCond, hSet]⟩
+        · rcases ihElse env rows hElseInferable hElseEff with ⟨s, hSet⟩
+          exact ⟨s, by simp [inferSetEffect, hCond, hSet]⟩
+    | seq left right ihLeft ihRight =>
+        simp [SetInferable] at hInferable
+        rcases hInferable with ⟨hLeftInferable, hRightInferable⟩
+        rcases infer_seq_sound txnId env left right db rows hEffect with
+          ⟨rowsLeft, rowsRight, hLeftEff, hRightEff, hRows⟩
+        rcases ihLeft env rowsLeft hLeftInferable hLeftEff with ⟨sLeft, hLeftSet⟩
+        rcases ihRight env rowsRight hRightInferable hRightEff with ⟨sRight, hRightSet⟩
+        exact ⟨.union sLeft sRight, by simp [inferSetEffect, unionSetEffect, hLeftSet, hRightSet]⟩
+    | insert expr =>
+        rcases infer_insert_sound txnId env expr db rows hEffect with ⟨record, hEval, hRows⟩
+        refine ⟨SetLanguage.singleton (Row.fromInsert txnId record), ?_⟩
+        simp [inferSetEffect, insertSetExpr, evalInEnv, hEval]
+    | delete source predicate =>
+        exact ⟨deleteSetExpr txnId env source predicate, by simp [inferSetEffect]⟩
+    | select binder source predicate body ih =>
+        simp [SetInferable] at hInferable
+        rcases infer_select_sound txnId env binder source predicate body db rows hEffect with
+          ⟨selected, hSelect, hBodyEff⟩
+        rcases ih (env.insert binder (.set selected)) rows hInferable hBodyEff with ⟨s, hSet⟩
+        exact ⟨s, by simp [inferSetEffect, hSelect, hSet]⟩
+    | update source updateExpr predicate =>
+        exact ⟨updateSetExpr txnId env source updateExpr predicate, by simp [inferSetEffect]⟩
+    | foreach source doneVar elemVar body ih =>
+        simp [SetInferable] at hInferable
+        rcases infer_foreach_sound txnId env source doneVar elemVar body db rows hEffect with
+          ⟨records, hEval, hRuntimeEff⟩
+        have hBody :
+            ∀ (env' : Env) (rows' : Database),
+              inferEffect txnId env' body db = some rows' →
+              ∃ s, inferSetEffect txnId env' body db = some s := by
+          intro env' rows' hBodyEff
+          exact ih env' rows' hInferable hBodyEff
+        have hForeach :
+            inferForeach txnId env doneVar elemVar body [] records db = some rows := by
+          simpa [inferEffect, inferForeach] using hRuntimeEff
+        rcases inferSetForeach_some_of_inferForeach_some txnId env doneVar elemVar body db
+            hBody [] records rows hForeach with ⟨s, hSet⟩
+        exact ⟨s, by simp [inferSetEffect, hEval, hSet]⟩
+    | foreachRuntime done remaining doneVar elemVar body ih =>
+        simp [SetInferable] at hInferable
+        rcases infer_foreachRuntime_sound txnId env done remaining doneVar elemVar body db rows hEffect with
+          ⟨doneRecords, remainingRecords, hDoneEval, hRemainingEval, hRuntimeEff⟩
+        have hBody :
+            ∀ (env' : Env) (rows' : Database),
+              inferEffect txnId env' body db = some rows' →
+              ∃ s, inferSetEffect txnId env' body db = some s := by
+          intro env' rows' hBodyEff
+          exact ih env' rows' hInferable hBodyEff
+        have hForeach :
+            inferForeach txnId env doneVar elemVar body doneRecords remainingRecords db =
+              some rows := by
+          simpa [inferEffect, inferForeach] using hRuntimeEff
+        rcases inferSetForeach_some_of_inferForeach_some txnId env doneVar elemVar body db
+            hBody doneRecords remainingRecords rows hForeach with ⟨s, hSet⟩
+        exact ⟨s, by simp [inferSetEffect, hDoneEval, hRemainingEval, hSet]⟩
+    | txn txnId' isolation body =>
+        simp [SetInferable] at hInferable
+    | txnRuntime txnId' isolation localDb snapshot body =>
+        simp [SetInferable] at hInferable
+    | par left right =>
+        simp [SetInferable] at hInferable
+
+end
+
+theorem option_eq_some_get! {α : Type} [Inhabited α] {o : Option α}
+    (hSome : o ≠ none) :
+    o = some (Option.get! o) := by
+  cases h : o with
+  | none =>
+      contradiction
+  | some value =>
+      simp [Option.get!, h]
 
 theorem inferSetForeach_sound (txnId : TxnId) (env : Env)
     (doneVar elemVar : VarName) (body : Semantics.Program) (db : Database)

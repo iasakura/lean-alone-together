@@ -129,6 +129,90 @@ theorem zeroBalance_symbolicVcg_contains_row (visibleDb : Database)
       zeroBalanceRow := by
   exact zeroBalance_symbolicVcg_overapprox visibleDb hInv zeroBalanceRow (by simp)
 
+def interestBaseRecord : RecordLit :=
+  ⟨[("id", .int 1), ("bal", .int 4)]⟩
+
+def interestBaseRow : Row :=
+  Row.fromInsert 0 interestBaseRecord
+
+def interestUpdatedRecord : RecordLit :=
+  ⟨[("id", .int 1), ("bal", .int 5)]⟩
+
+def interestUpdatedRow : Row :=
+  interestBaseRow.overwrite 1 interestUpdatedRecord
+
+def addInterestBody : Semantics.Program :=
+  .select "selected" "r"
+    (.binop .eq (.proj (.var "r") "id") (.int 1))
+    (.foreach (.var "selected") "done" "acct"
+      (.update "r"
+        (.withUpdates (.var "r")
+          [("bal", .binop .add (.proj (.var "acct") "bal") (.int 1))])
+        (.binop .eq (.proj (.var "r") "id") (.proj (.var "acct") "id"))))
+
+def addInterestSetExpr : SetLanguage.SetExpr :=
+  Option.get! (Transformer.inferSetEffect 1 [] addInterestBody [interestBaseRow])
+
+theorem interestBase_nonnegative :
+    nonnegativeBalances [interestBaseRow] := by
+  intro row hMem
+  rcases List.mem_singleton.mp hMem with rfl
+  simp [interestBaseRow, interestBaseRecord, Row.fromInsert, RecordLit.lookup?]
+
+theorem addInterest_effect :
+    Transformer.inferEffect 1 [] addInterestBody [interestBaseRow] = some [interestUpdatedRow] := by
+  native_decide
+
+theorem addInterest_inferable :
+    Transformer.SetInferable addInterestBody := by
+  simp [Transformer.SetInferable, addInterestBody]
+
+theorem addInterest_setEffect :
+    Transformer.inferSetEffect 1 [] addInterestBody [interestBaseRow] = some addInterestSetExpr := by
+  apply Transformer.option_eq_some_get!
+  intro hNone
+  rcases Transformer.inferSetEffect_some_of_inferEffect_some
+      1 [] addInterestBody [interestBaseRow] [interestUpdatedRow]
+      addInterest_inferable addInterest_effect with ⟨s, hSet⟩
+  rw [hNone] at hSet
+  cases hSet
+
+theorem addInterest_symbolicVcg_shape :
+    Transformer.symbolicVcg nonnegativeBalances "__inv" 1 addInterestBody [interestBaseRow] =
+      some
+        (SetLanguage.weakenToInvariant "__inv"
+          (Transformer.assertionFormula nonnegativeBalances)
+          addInterestSetExpr) := by
+  simp [Transformer.symbolicVcg, Transformer.weakenSetEffect, addInterest_setEffect]
+
+theorem addInterest_symbolicVcg_overapprox :
+    Transformer.overapproximatesRows
+      (SetLanguage.Env.ofDatabases [] [interestBaseRow])
+      (SetLanguage.weakenToInvariant "__inv"
+        (Transformer.assertionFormula nonnegativeBalances)
+        addInterestSetExpr)
+      [interestUpdatedRow] := by
+  exact Transformer.symbolicVcg_overapprox_sound
+    nonnegativeBalances
+    "__inv"
+    1
+    addInterestBody
+    [interestBaseRow]
+    [interestUpdatedRow]
+    addInterestSetExpr
+    interestBase_nonnegative
+    addInterest_setEffect
+    addInterest_effect
+
+theorem addInterest_symbolicVcg_contains_updatedRow :
+    SetLanguage.denote
+      (SetLanguage.Env.ofDatabases [] [interestBaseRow])
+      (SetLanguage.weakenToInvariant "__inv"
+        (Transformer.assertionFormula nonnegativeBalances)
+        addInterestSetExpr)
+      interestUpdatedRow := by
+  exact addInterest_symbolicVcg_overapprox interestUpdatedRow (by simp)
+
 end Examples
 
 end DbAppProgramLogic
