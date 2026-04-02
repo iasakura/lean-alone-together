@@ -266,6 +266,25 @@ theorem addInterest_symbolicVcgForTxn_contains_updatedRow :
     addInterest_effect
     (by simp)
 
+theorem addInterest_symbolicPostForTxn_contains_updatedRow :
+    SetLanguage.denote
+      (SetLanguage.Env.ofDatabases [] [interestBaseRow])
+      (Option.get! (Transformer.symbolicPostForTxn nonnegativeBalances "__inv" addInterestTxn [interestBaseRow]))
+      interestUpdatedRow := by
+  exact Transformer.symbolicPostForTxn_sound_of_inferEffect_some
+    nonnegativeBalances
+    "__inv"
+    1
+    Database.snapshotIsolation
+    addInterestBody
+    [interestBaseRow]
+    [interestUpdatedRow]
+    interestUpdatedRow
+    addInterest_inferable
+    interestBase_nonnegative
+    addInterest_effect
+    (by simp)
+
 end Examples
 
 end DbAppProgramLogic

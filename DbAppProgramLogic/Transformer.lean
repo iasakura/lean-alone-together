@@ -2377,6 +2377,11 @@ def symbolicVcgForTxn (I : Assertion) (absVar : VarName) : Semantics.Program →
   | .txn txnId _isolation body => some (symbolicVcg I absVar txnId body)
   | _ => none
 
+def symbolicPostForTxn (I : Assertion) (absVar : VarName)
+    (program : Semantics.Program) (visibleDb : Database) : Option SetLanguage.SetExpr := do
+  let info ← symbolicVcgForTxn I absVar program
+  info visibleDb
+
 theorem symbolicVcg_sound (I : Assertion) (absVar : VarName)
     (txnId : TxnId) (body : Semantics.Program)
     (visibleDb localDb : Database) (s : SetLanguage.SetExpr) (row : Row)
@@ -2506,6 +2511,40 @@ theorem symbolicVcgForTxn_eq_some_get!_at_visibleDb_of_inferEffect_some
   subst info
   exact symbolicVcg_eq_some_get!_of_inferEffect_some I absVar txnId body visibleDb localDb
     hInferable hEffect
+
+theorem symbolicPostForTxn_sound_of_inferEffect_some (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (visibleDb localDb : Database) (row : Row)
+    (hInferable : SetInferable body)
+    (hInv : I visibleDb)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb)
+    (hRow : row ∈ localDb) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
+      (Option.get! (symbolicPostForTxn I absVar (.txn txnId isolation body) visibleDb)) row := by
+  have hInfo :
+      symbolicVcgForTxn I absVar (.txn txnId isolation body) =
+        some (symbolicVcg I absVar txnId body) := by
+    simp [symbolicVcgForTxn]
+  have hShape :
+      symbolicPostForTxn I absVar (.txn txnId isolation body) visibleDb =
+        symbolicVcg I absVar txnId body visibleDb := by
+    simp [symbolicPostForTxn, symbolicVcgForTxn]
+  rw [hShape]
+  exact symbolicVcgForTxn_sound_of_inferEffect_some I absVar txnId isolation body
+    (symbolicVcg I absVar txnId body) visibleDb localDb row hInfo hInferable hInv hEffect hRow
+
+theorem symbolicPostForTxn_overapprox_of_inferEffect_some (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (visibleDb localDb : Database)
+    (hInferable : SetInferable body)
+    (hInv : I visibleDb)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb) :
+    overapproximatesRows (SetLanguage.Env.ofDatabases [] visibleDb)
+      (Option.get! (symbolicPostForTxn I absVar (.txn txnId isolation body) visibleDb))
+      localDb := by
+  intro row hRow
+  exact symbolicPostForTxn_sound_of_inferEffect_some I absVar txnId isolation body
+    visibleDb localDb row hInferable hInv hEffect hRow
 
 theorem symbolicVcgForTxn_overapprox_sound (I : Assertion) (absVar : VarName)
     (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
