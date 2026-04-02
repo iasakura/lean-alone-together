@@ -5,9 +5,9 @@
 - コア取引言語 `T`
 - small-step operational semantics
 - Sec. 4 の rely-guarantee logic
-- Sec. 5 の state-transformer ベースの検証
+- Sec. 5 の state-transformer / 集合言語 `S` ベースの検証
 
-現状の実装はすでに有用ですが、論文の全内容をそのまま end-to-end で mechanize したものではありません。特に、現在の VCG は Fig. 7 の集合言語 `S` の構文木を直接作るのではなく、意味論的な effect 関数として実装されています。また、Sec. 5.2 の SMT 向け変換もまだ入っていません。
+現状の実装はすでに有用ですが、論文の全内容をそのまま end-to-end で mechanize したものではありません。Fig. 7 に対応する集合言語 `S` と weakening の層はすでに入っていますが、formula 部分は shallow encoding で、Sec. 5.2 の `S -> FOL` 変換や SMT 向け自動化はまだ入っていません。
 
 ## リポジトリ構成
 
@@ -23,9 +23,14 @@
   - local/global judgment の意味論
   - local/global rely-guarantee rule
   - soundness theorem
+- `DbAppProgramLogic/SetLanguage.lean`
+  - Fig. 7 に対応する集合言語 `S` の構文
+  - `S` の denotation
+  - weakening に使う `abstractGlobal`, `weakenToInvariant`
 - `DbAppProgramLogic/Transformer.lean`
-  - state-transformer inference
-  - 簡約版 VCG
+  - semantic effect inference (`inferEffect`)
+  - symbolic set-language inference (`inferSetEffect`)
+  - 簡約版 VCG と symbolic VCG
   - inference と semantics / global validity をつなぐ soundness 補題
 - `DbAppProgramLogic/Examples.lean`
   - 現状の基盤を使った小さな検証例
@@ -53,10 +58,14 @@
 | local/global interleaving | `Logic.lean` の `localInterleavedStep`, `globalInterleavedStep` | 実際の machine step と interference step を合成しています |
 | Sec. 4 の stability | `Logic.lean` の `stableAssertion`, `stableBiAssertion`, `stableIsolation`, `relyMod` | 論文中の stability family に対応します |
 | Theorem 4.3 | `Logic.lean` の `localRG_sound`, `globalRG_sound` | RG rule が semantic validity を含意することを示します |
-| Fig. 8 の state transformer inference | `Transformer.lean` の `inferEffect` | ただし現在は `S` の構文ではなく effect 関数を直接返します |
-| Theorem 5.1 | `Transformer.lean` の `inferenceSound*`, `vcg_effect_sound` | 実際の証明本体は `inferenceSoundEnv_*` 群です |
+| Fig. 7 の集合言語 `S` | `SetLanguage.lean` の `SetExpr` | ただし `φ`, `ϕ` は深い構文ではなく shallow な predicate として表現しています |
+| Fig. 7 の `T·U⟨R, I⟩` に相当する weakening | `SetLanguage.lean` の `abstractGlobal`, `weakenToInvariant` | 論文の existential abstraction を object language に入れた部分です |
+| Fig. 8 の semantic transformer | `Transformer.lean` の `inferEffect` | `Database → Option Database` を返す意味論的な推論器です |
+| Fig. 8 の symbolic transformer | `Transformer.lean` の `inferSetEffect` | `SetExpr` を返す論文寄りの推論器です |
+| Theorem 5.1 相当 | `Transformer.lean` の `inferenceSound*`, `vcg_effect_sound`, `inferSetEffect_sound` | semantic / symbolic の両方について soundness を出しています |
+| weakened symbolic VCG | `Transformer.lean` の `symbolicVcg`, `symbolicVcgForTxn`, `symbolicPostForTxn` | symbolic postcondition を transaction に持ち上げる入口です |
 | Sec. 5 の transaction-level bridge | `Logic.lean` の `txnGlobalValid_of_localValid` と `Transformer.lean` の `vcg_sound`, `vcg_sound_false` | 推論した effect を `GlobalValid` に戻します |
-| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid` | 現状の VCG を end-to-end で使う最小例です |
+| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `addInterest*` | insert-only 例と `select + foreach + update` 例があります |
 
 ## Lean 側でどうエンコードしたか
 
@@ -151,7 +160,7 @@ rely relation 自体は:
 
 を導入しています。ここは論文より Lean の方が operational に細かく書かれている部分です。
 
-### 5. 今の VCG は `S` の構文木ではなく意味論的 effect を持つ
+### 5. semantic effect と explicit `S` の 2 層を持っている
 
 ここが論文との最大の差分です。
 
@@ -163,25 +172,37 @@ rely relation 自体は:
 
 という流れです。
 
-しかし現在の Lean では:
+Lean 側では現在、これを 2 段に分けています。
 
-- `TxnEffect := Database -> Option Database`
-- `inferEffect` がこの effect を直接返す
-- `TransactionVCG.effect` にその関数を入れる
+- `inferEffect : Database -> Option Database`
+  - 実際の local write-set を直接計算する semantic な推論器
+- `inferSetEffect : Database -> Option SetExpr`
+  - 同じ transaction body から `S` の式を返す symbolic な推論器
 
-という構成になっています。
+この 2 つは独立ではなく、`inferSetEffect_sound` で
 
-つまり今の実装は:
+- symbolic `S` の denotation
+- semantic effect の concrete result
 
-- 「`S` を構文として作る」
+が一致することを示しています。
 
-よりも
+さらに weakening についても、
 
-- 「effect をそのまま意味論的に計算する」
+- `abstractGlobal`
+- `weakenToInvariant`
+- `symbolicVcg`
+- `symbolicVcgForTxn`
+- `symbolicPostForTxn`
 
-に近いです。
+が入り、`inferSetEffect_weaken_sound` や `symbolicVcg*_sound` で soundness を出しています。
 
-この方針にしたことで soundness proof 自体はかなり進めやすくなりましたが、Fig. 7 と Fig. 10 の mechanization としてはまだ不完全です。
+ただし、論文の Fig. 7 / Fig. 10 を完全に mechanize したわけではありません。特に、
+
+- `φ`, `ϕ` は shallow encoding
+- `S` から first-order logic への変換は未実装
+- SMT 連携も未実装
+
+です。なので現状は「semantic effect 先行で進めつつ、Fig. 7/8 に対応する symbolic 層もかなり入った」という段階です。
 
 ### 6. `foreach` は現在 deterministic
 
@@ -222,8 +243,13 @@ rely relation 自体は:
 
 - transaction body に対する effect inference:
   - `inferEffect`
+- transaction body に対する symbolic set-language inference:
+  - `inferSetEffect`
 - 各構文ケースの soundness:
   - `inferenceSoundEnv_*`
+- symbolic inference の soundness:
+  - `inferSetEffect_sound`
+  - `inferSetEffect_weaken_sound`
 - whole-body inference soundness:
   - `inferenceSound_all`
   - `vcg_effect_sound`
@@ -233,6 +259,12 @@ rely relation 自体は:
   - `vcg_sound`
 - no-rely special case の end-to-end theorem:
   - `vcg_sound_false`
+- weakened symbolic VCG:
+  - `symbolicVcg`
+  - `symbolicVcgForTxn`
+  - `symbolicPostForTxn`
+  - `symbolicVcg*_sound`
+  - `symbolicVcg*_overapprox_*`
 
 ### Example
 
@@ -245,47 +277,55 @@ rely relation 自体は:
 
 これはかなり小さい例ですが、いまの infrastructure が実際に end-to-end で使えることの確認にはなっています。
 
+加えて `Examples.addInterest*` では:
+
+- `SELECT`
+- `FOREACH`
+- `UPDATE`
+- snapshot isolation transaction wrapper
+- weakened symbolic VCG
+
+を通る read/write 例を入れています。論文 Fig. 9 の `add_interest` そのものではありませんが、同系統の「読んだ値に基づいて更新する」例です。
+
 ## 論文どおりに実際のアプリを検証するために足りないもの
 
 ここが一番重要です。いまのリポジトリは「かなり進んだ基盤」ではありますが、論文のように本格的な weak isolation app verification を行うにはまだ足りないものがあります。
 
-### 1. Fig. 7 の集合言語 `S` の syntax AST がまだない
+### 1. Fig. 7 の `S` は部分的に入ったが、まだ shallow
 
-現状では、Lean に次のような datatype がまだありません。
+現在は `SetLanguage.SetExpr` があり、少なくとも次は入っています。
 
-- 変数 `x`, `delta`, `Delta`
-- comprehension `{x | phi}`
-- `exists(Delta, phi, s)`
-- bind `s1 >>= fun x => s2`
+- set variable
+- `localDb`, `globalDb`
+- comprehension
+- existential set binder
+- bind
 - conditional
 - union
 
-これがないため、論文の Sec. 5 を「そのまま構文付きで mechanize した」とはまだ言えません。
+ただし `phi`, `ϕ` は deep embedding ではなく、Lean の predicate をそのまま持つ shallow encoding です。したがって:
 
-### 2. weakening operator `T_U<R, I>` が object language に入っていない
+- 純粋な構文木としての `S`
+- syntax-directed な `S -> FOL` 変換
+- formula 変形のメタ理論
+
+はまだ未実装です。
+
+### 2. weakening は入ったが、論文の inference algorithm 全体ではない
 
 論文では、unstable な transformer を existential abstraction によって stable にする weakening operator がかなり重要です。特に Fig. 9 の `add_interest` のような例では、これが効いてはじめて proof が通る構図になっています。
 
-現状の Lean では、それに対応するものは:
+Lean では現在、これに対応する object-language の演算子として:
 
-- `execStable`
-- `commitStable`
-- `guaranteeOk`
-- `preservesInvariant`
+- `abstractGlobal`
+- `weakenToInvariant`
 
-のような proof obligation として表現されています。
+が入っています。さらに `symbolicVcg` は `inferSetEffect` の結果をこの weakening で包んだ symbolic postcondition を返します。
 
-つまり今は:
+ただし、まだ次はありません。
 
-- weakening を「構文として計算する」
-
-のではなく、
-
-- VCG がそのために必要な条件を field として持つ
-
-という形です。
-
-これは soundness を示すには十分ですが、論文の inference algorithm をそのまま mechanize した形ではありません。
+- unstable transformer から weakest な weakened transformer を組み立てる完全な計算規則
+- その FOL 変換まで含めた end-to-end な mechanization
 
 ### 3. Fig. 10 の `S` から first-order logic への変換がない
 
@@ -325,24 +365,25 @@ rely relation 自体は:
 
 という状態です。
 
-### 5. `vcg_sound` はまだ最終形ではない
+### 5. `vcg_sound` と symbolic VCG はあるが、自動化パイプラインは未完成
 
-`vcg_sound` は現在、transaction body に対する適切な `LocalValid` 仮定を受け取る形になっています。
+現在は:
 
-これは内部 bridge theorem としては自然ですが、論文の最終的な使い方として欲しいのは:
+- semantic VCG の soundness (`vcg_sound`, `vcg_sound_false`)
+- symbolic VCG の soundness (`symbolicVcg*_sound`)
+- visible DB に対する symbolic postcondition (`symbolicPostForTxn`)
+
+まではあります。
+
+ただし論文の最終的な使い方として欲しいのは:
 
 - `vcg` を回す
-- field obligation を解く
+- `S` / FOL obligation を solver に流す
 - そのまま transaction 全体の正しさが出る
 
 という形です。
 
-現状は:
-
-- `vcg_sound_false` が no-rely case ではかなりそれに近い
-- しかし一般の rely ではまだ helper theorem 止まり
-
-です。
+今は soundness 定理自体はかなり揃っていますが、obligation discharge はまだ Lean 内で手作業です。
 
 ### 6. モデルはまだ single-table core model
 
@@ -355,19 +396,24 @@ rely relation 自体は:
 - 実際のアプリに近い data model
 - transaction family 単位の proof library
 
-### 7. 論文の実アプリ寄り examples がまだない
+### 7. 実アプリ寄り examples はまだ少ない
 
-現状まだ Lean で入っていない代表例:
+すでに入っているもの:
 
-- Fig. 9 の `add_interest`
-- その後の application-shaped な例
+- insert-only の invariant preservation 例
+- `select + foreach + update` の `add_interest` 系 read/write 例
+
+まだ入っていない代表例:
+
+- 論文 Fig. 9 をより忠実に写した family
+- endpoint 群をまとめた transaction family の証明
 - TPC-C 系の transaction family
 
 これらが重要なのは、まさにそこで:
 
 - weakening が必要になり
 - stability が非自明になり
-- semantic effect 直書きではなく `S` の構文が欲しくなる
+- `S -> FOL` 変換と solver が欲しくなる
 
 からです。
 
@@ -376,12 +422,13 @@ rely relation 自体は:
 このリポジトリは、現時点では次のように読むのが正確です。
 
 - POPL'18 の core operational semantics と RG logic の Lean 形式化
-- soundness 付きの簡約版 state-transformer / VCG
-- 将来的に Fig. 7, Fig. 8, Fig. 10 をより忠実に mechanize するための基盤
+- soundness 付きの semantic VCG
+- Fig. 7/8 にかなり寄せた symbolic set-language / weakened symbolic VCG
+- 将来的に Fig. 10 と solver 連携を mechanize するための基盤
 
 逆に、まだ次のものとして読むべきではありません。
 
-- Fig. 7 の `S` を完全に mechanize した実装
+- Fig. 7 の `S` を deep embedding で完全に mechanize した実装
 - Sec. 5.2 まで含めた fully automated verifier
 - 論文中の realistic app verification をそのまま回せる完成版
 
@@ -392,15 +439,16 @@ Lean の実装順に読むなら:
 1. `Syntax.lean`
 2. `Semantics.lean`
 3. `Logic.lean`
-4. `Transformer.lean`
-5. `Examples.lean`
+4. `SetLanguage.lean`
+5. `Transformer.lean`
+6. `Examples.lean`
 
 論文順に読むなら:
 
 1. Fig. 5 と `Syntax.lean`, `Semantics.lean`
 2. Fig. 6 と `Logic.lean`
 3. Theorem 4.3 と `localRG_sound`, `globalRG_sound`
-4. Fig. 8 と `inferEffect`
-5. Theorem 5.1 と `inferenceSound*`
-6. transaction-level bridge としての `txnGlobalValid_of_localValid`, `vcg_sound`, `vcg_sound_false`
-
+4. Fig. 7 と `SetLanguage.lean`
+5. Fig. 8 と `inferEffect`, `inferSetEffect`
+6. Theorem 5.1 と `inferenceSound*`, `inferSetEffect_sound`
+7. transaction-level bridge としての `txnGlobalValid_of_localValid`, `vcg_sound`, `symbolicVcg`, `symbolicPostForTxn`
