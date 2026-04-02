@@ -213,6 +213,24 @@ theorem addInterest_symbolicVcg_contains_updatedRow :
       interestUpdatedRow := by
   exact addInterest_symbolicVcg_overapprox interestUpdatedRow (by simp)
 
+theorem addInterest_symbolicVcg_contains_updatedRow_direct :
+    SetLanguage.denote
+      (SetLanguage.Env.ofDatabases [] [interestBaseRow])
+      (Option.get! (Transformer.symbolicVcg nonnegativeBalances "__inv" 1 addInterestBody [interestBaseRow]))
+      interestUpdatedRow := by
+  exact Transformer.symbolicVcg_sound_of_inferEffect_some
+    nonnegativeBalances
+    "__inv"
+    1
+    addInterestBody
+    [interestBaseRow]
+    [interestUpdatedRow]
+    interestUpdatedRow
+    addInterest_inferable
+    interestBase_nonnegative
+    addInterest_effect
+    (by simp)
+
 end Examples
 
 end DbAppProgramLogic
