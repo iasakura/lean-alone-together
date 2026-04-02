@@ -361,6 +361,34 @@ theorem addInterest_updateMembershipFO_holds :
       · simp [interestUpdatedRow, interestUpdatedRecord, interestBaseRow, Row.overwrite]
     simpa [hLookup] using hExists
 
+def addInterestFullMembership : FirstOrder.MembershipFormula :=
+  Option.get! (FirstOrder.inferMembershipFull 1 [] "x" addInterestBody [interestBaseRow])
+
+theorem addInterest_membershipEncodable :
+    FirstOrder.MembershipEncodable "x" addInterestBody := by
+  simp [FirstOrder.MembershipEncodable, addInterestBody]
+
+theorem addInterest_inferMembershipFull :
+    FirstOrder.inferMembershipFull 1 [] "x" addInterestBody [interestBaseRow] =
+      some addInterestFullMembership := by
+  apply Transformer.option_eq_some_get!
+  intro hNone
+  rcases FirstOrder.inferMembershipFull_some_of_inferEffect_some
+      1 [] "x" addInterestBody [interestBaseRow] [interestUpdatedRow]
+      addInterest_membershipEncodable addInterest_effect with ⟨φ, hFormula⟩
+  rw [hNone] at hFormula
+  cases hFormula
+
+theorem addInterest_inferMembershipFull_contains_updatedRow :
+    FirstOrder.denoteMembership
+      ((SetLanguage.Env.ofDatabases [] [interestBaseRow]).bindElem "x" interestUpdatedRow)
+      addInterestFullMembership := by
+  have hSound :=
+    FirstOrder.inferMembershipFull_sound 1 [] "x" addInterestBody [interestBaseRow]
+      addInterestFullMembership [interestUpdatedRow] interestUpdatedRow
+      addInterest_inferMembershipFull addInterest_effect
+  exact hSound.2 (by simp)
+
 theorem zeroBalance_singletonMembershipFO_holds :
     FirstOrder.denoteMembership
       ((SetLanguage.Env.ofDatabases [] []).bindElem "x" zeroBalanceRow)
