@@ -3,4 +3,5 @@ import DbAppProgramLogic.Semantics
 import DbAppProgramLogic.SetLanguage
 import DbAppProgramLogic.Logic
 import DbAppProgramLogic.Transformer
+import DbAppProgramLogic.FirstOrder
 import DbAppProgramLogic.Examples

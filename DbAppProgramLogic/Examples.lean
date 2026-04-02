@@ -1,4 +1,4 @@
-import DbAppProgramLogic.Transformer
+import DbAppProgramLogic.FirstOrder
 
 namespace DbAppProgramLogic
 
@@ -284,6 +284,14 @@ theorem addInterest_symbolicPostForTxn_contains_updatedRow :
     interestBase_nonnegative
     addInterest_effect
     (by simp)
+
+theorem addInterest_rowPredicateFO_holds :
+    FirstOrder.denote
+      (DbAppProgramLogic.Env.insert [] "r" (.record interestBaseRecord))
+      (FirstOrder.rowPredicateFormula [] "r"
+        (.binop .eq (.proj (.var "r") "id") (.int 1))) := by
+  rw [FirstOrder.denote_rowPredicateFormula]
+  native_decide
 
 end Examples
 
