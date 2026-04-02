@@ -1374,6 +1374,52 @@ theorem infer_foreach_sound (txnId : TxnId) (env : Env) (source : Expr)
           · rfl
           · simpa [inferEffect, inferForeach] using hRuntime
 
+theorem infer_foreachRuntime_sound (txnId : TxnId) (env : Env) (done remaining : Expr)
+    (doneVar elemVar : VarName) (body : Semantics.Program) (db delta : Database)
+    (h : inferEffect txnId env (.foreachRuntime done remaining doneVar elemVar body) db = some delta) :
+    ∃ doneRecords remainingRecords,
+      evalInEnv env done = some (.set doneRecords) ∧
+      evalInEnv env remaining = some (.set remainingRecords) ∧
+      inferEffect txnId env
+        (.foreachRuntime (Expr.setLit doneRecords) (Expr.setLit remainingRecords) doneVar elemVar body)
+        db = some delta := by
+  cases hDone : evalInEnv env done with
+  | none =>
+      have : False := by
+        simp [inferEffect, hDone] at h
+      exact False.elim this
+  | some doneValue =>
+      cases doneValue with
+      | scalar s =>
+          have : False := by
+            simp [inferEffect, hDone] at h
+          exact False.elim this
+      | record record =>
+          have : False := by
+            simp [inferEffect, hDone] at h
+          exact False.elim this
+      | set doneRecords =>
+          cases hRemaining : evalInEnv env remaining with
+          | none =>
+              have : False := by
+                simp [inferEffect, hDone, hRemaining] at h
+              exact False.elim this
+          | some remainingValue =>
+              cases remainingValue with
+              | scalar s =>
+                  have : False := by
+                    simp [inferEffect, hDone, hRemaining] at h
+                  exact False.elim this
+              | record record =>
+                  have : False := by
+                    simp [inferEffect, hDone, hRemaining] at h
+                  exact False.elim this
+              | set remainingRecords =>
+                  refine ⟨doneRecords, remainingRecords, ?_, ?_, ?_⟩
+                  · rfl
+                  · rfl
+                  · simpa [inferEffect, hDone, hRemaining] using h
+
 theorem inferenceSoundEnv_foreachRuntime_lit (txnId : TxnId) (env : Env)
     (done : SetLit) (remaining : SetLit) (doneVar elemVar : VarName)
     (body : Semantics.Program)
