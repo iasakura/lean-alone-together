@@ -150,6 +150,9 @@ def addInterestBody : Semantics.Program :=
           [("bal", .binop .add (.proj (.var "acct") "bal") (.int 1))])
         (.binop .eq (.proj (.var "r") "id") (.proj (.var "acct") "id"))))
 
+def addInterestTxn : Semantics.Program :=
+  .txn 1 Database.snapshotIsolation addInterestBody
+
 def addInterestSetExpr : SetLanguage.SetExpr :=
   Option.get! (Transformer.inferSetEffect 1 [] addInterestBody [interestBaseRow])
 
@@ -226,6 +229,38 @@ theorem addInterest_symbolicVcg_contains_updatedRow_direct :
     [interestBaseRow]
     [interestUpdatedRow]
     interestUpdatedRow
+    addInterest_inferable
+    interestBase_nonnegative
+    addInterest_effect
+    (by simp)
+
+theorem addInterest_symbolicVcgForTxn_info :
+    ∃ info, Transformer.symbolicVcgForTxn nonnegativeBalances "__inv" addInterestTxn = some info := by
+  refine ⟨Transformer.symbolicVcg nonnegativeBalances "__inv" 1 addInterestBody, ?_⟩
+  simp [Transformer.symbolicVcgForTxn, addInterestTxn]
+
+theorem addInterest_symbolicVcgForTxn_contains_updatedRow :
+    SetLanguage.denote
+      (SetLanguage.Env.ofDatabases [] [interestBaseRow])
+      (Option.get!
+        ((Option.get! (Transformer.symbolicVcgForTxn nonnegativeBalances "__inv" addInterestTxn))
+          [interestBaseRow]))
+      interestUpdatedRow := by
+  have hInfo :
+      Transformer.symbolicVcgForTxn nonnegativeBalances "__inv" addInterestTxn =
+        some (Transformer.symbolicVcg nonnegativeBalances "__inv" 1 addInterestBody) := by
+    simp [Transformer.symbolicVcgForTxn, addInterestTxn]
+  exact Transformer.symbolicVcgForTxn_sound_of_inferEffect_some
+    nonnegativeBalances
+    "__inv"
+    1
+    Database.snapshotIsolation
+    addInterestBody
+    (Transformer.symbolicVcg nonnegativeBalances "__inv" 1 addInterestBody)
+    [interestBaseRow]
+    [interestUpdatedRow]
+    interestUpdatedRow
+    hInfo
     addInterest_inferable
     interestBase_nonnegative
     addInterest_effect

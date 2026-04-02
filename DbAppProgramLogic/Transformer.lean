@@ -2407,6 +2407,31 @@ theorem symbolicVcg_sound_of_inferEffect_some (I : Assertion) (absVar : VarName)
     ⟨s, hSet⟩
   exact symbolicVcg_sound I absVar txnId body visibleDb localDb s row hInv hSet hEffect hRow
 
+theorem symbolicVcg_some_of_inferEffect_some (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (body : Semantics.Program)
+    (visibleDb localDb : Database)
+    (hInferable : SetInferable body)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb) :
+    ∃ s, symbolicVcg I absVar txnId body visibleDb = some s := by
+  rcases inferSetEffect_some_of_inferEffect_some txnId [] body visibleDb localDb hInferable hEffect with
+    ⟨s, hSet⟩
+  refine ⟨SetLanguage.weakenToInvariant absVar (assertionFormula I) s, ?_⟩
+  simp [symbolicVcg, weakenSetEffect, hSet]
+
+theorem symbolicVcg_eq_some_get!_of_inferEffect_some (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (body : Semantics.Program)
+    (visibleDb localDb : Database)
+    (hInferable : SetInferable body)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb) :
+    symbolicVcg I absVar txnId body visibleDb =
+      some (Option.get! (symbolicVcg I absVar txnId body visibleDb)) := by
+  rcases symbolicVcg_some_of_inferEffect_some I absVar txnId body visibleDb localDb hInferable hEffect with
+    ⟨s, hSome⟩
+  apply option_eq_some_get!
+  intro hNone
+  rw [hNone] at hSome
+  cases hSome
+
 theorem symbolicVcg_overapprox_sound (I : Assertion) (absVar : VarName)
     (txnId : TxnId) (body : Semantics.Program)
     (visibleDb localDb : Database) (s : SetLanguage.SetExpr)
@@ -2457,6 +2482,30 @@ theorem symbolicVcgForTxn_sound_of_inferEffect_some (I : Assertion) (absVar : Va
   subst info
   exact symbolicVcg_sound_of_inferEffect_some I absVar txnId body visibleDb localDb row
     hInferable hInv hEffect hRow
+
+theorem symbolicVcgForTxn_some_at_visibleDb_of_inferEffect_some (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (info : SetEffect) (visibleDb localDb : Database)
+    (hInfo : symbolicVcgForTxn I absVar (.txn txnId isolation body) = some info)
+    (hInferable : SetInferable body)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb) :
+    ∃ s, info visibleDb = some s := by
+  simp [symbolicVcgForTxn] at hInfo
+  subst info
+  exact symbolicVcg_some_of_inferEffect_some I absVar txnId body visibleDb localDb hInferable hEffect
+
+theorem symbolicVcgForTxn_eq_some_get!_at_visibleDb_of_inferEffect_some
+    (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
+    (info : SetEffect) (visibleDb localDb : Database)
+    (hInfo : symbolicVcgForTxn I absVar (.txn txnId isolation body) = some info)
+    (hInferable : SetInferable body)
+    (hEffect : inferEffect txnId [] body visibleDb = some localDb) :
+    info visibleDb = some (Option.get! (info visibleDb)) := by
+  simp [symbolicVcgForTxn] at hInfo
+  subst info
+  exact symbolicVcg_eq_some_get!_of_inferEffect_some I absVar txnId body visibleDb localDb
+    hInferable hEffect
 
 theorem symbolicVcgForTxn_overapprox_sound (I : Assertion) (absVar : VarName)
     (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
