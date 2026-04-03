@@ -404,6 +404,18 @@ theorem zeroBalanceVerifiedServer_sound
             (DbAppProgramLogic.Server.VerifiedRequestServer.requestTrace zeroBalanceVerifiedServer events) := by
   exact DbAppProgramLogic.Server.VerifiedRequestServer.sound zeroBalanceVerifiedServer hDb hRun
 
+theorem zeroBalanceVerifiedServer_events_exact
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    ∃ events : List Server.CommitEvent,
+      ∀ event ∈ events,
+        event.after = zeroBalanceRequestApply (zeroBalanceRequestOf event.txnId) event.before := by
+  exact DbAppProgramLogic.Server.VerifiedRequestServer.requestEvents
+    zeroBalanceVerifiedServer
+    hDb
+    hRun
+
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =
       some

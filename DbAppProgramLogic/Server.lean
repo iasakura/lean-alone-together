@@ -199,6 +199,14 @@ theorem graphAssign_implies_foldl_requests {Req : Type} {requestOf : TxnId → R
       rcases hHead with rfl
       simp [requests, ih, RequestSpec.graphAssign, RequestSpec.assign]
 
+theorem graphAssign_implies_eventEq {Req : Type} {requestOf : TxnId → Req}
+    {fs : RequestTransformer Req}
+    {db db' : Database} {events : List CommitEvent}
+    (hLog : CommitLog (RequestSpec.graphAssign requestOf fs) db events db') :
+    ∀ event ∈ events, event.after = fs (requestOf event.txnId) event.before := by
+  intro event hMem
+  exact events_match_specs hLog event hMem
+
 theorem requests_match_specs {Req : Type} {requestOf : TxnId → Req}
     {specs : RequestSpec Req}
     {db db' : Database} {events : List CommitEvent}
@@ -1049,6 +1057,16 @@ theorem commitLog {Req : Type} (server : VerifiedRequestServer Req)
     ∃ events,
       CommitLog (RequestSpec.graphAssign server.requestOf server.transformer) db events finalCfg.globalDb := by
   exact parallelValid_commitLog server.silent server.valid hDb hRun
+
+theorem requestEvents {Req : Type} (server : VerifiedRequestServer Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg) :
+    ∃ events : List CommitEvent,
+      ∀ event ∈ events,
+        event.after = server.transformer (server.requestOf event.txnId) event.before := by
+  rcases server.commitLog hDb hRun with ⟨events, hLog⟩
+  exact ⟨events, CommitLog.graphAssign_implies_eventEq hLog⟩
 
 end VerifiedRequestServer
 
