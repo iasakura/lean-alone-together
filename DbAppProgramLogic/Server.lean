@@ -48,6 +48,54 @@ inductive TxnCommitStep :
       TxnCommitStep txnId right db right' db' →
       TxnCommitStep txnId (.par left right) db (.par left right') db'
 
+inductive CommitSequence (specs : TxnId → StateSpec) :
+    Database → List TxnId → Database → Prop where
+  | nil {db : Database} :
+      CommitSequence specs db [] db
+  | cons {db db' db'' : Database} {txnId : TxnId} {rest : List TxnId} :
+      specs txnId db db' →
+      CommitSequence specs db' rest db'' →
+      CommitSequence specs db (txnId :: rest) db''
+
+namespace CommitSequence
+
+theorem snoc {specs : TxnId → StateSpec}
+    {db db' db'' : Database} {commits : List TxnId} {txnId : TxnId}
+    (hSeq : CommitSequence specs db commits db')
+    (hSpec : specs txnId db' db'') :
+    CommitSequence specs db (commits ++ [txnId]) db'' := by
+  induction hSeq with
+  | nil =>
+      simpa using CommitSequence.cons hSpec CommitSequence.nil
+  | @cons db0 db1 db2 txnId' rest hHead hTail ih =>
+      simp
+      exact CommitSequence.cons hHead (ih hSpec)
+
+theorem graph_iff_foldl {fs : TxnId → StateTransformer}
+    {db db' : Database} {commits : List TxnId} :
+    CommitSequence (fun txnId => StateSpec.graph (fs txnId)) db commits db' ↔
+      db' = List.foldl (fun current txnId => fs txnId current) db commits := by
+  constructor
+  · intro hSeq
+    induction hSeq with
+    | nil =>
+        simp
+    | @cons db0 db1 db2 txnId rest hHead hTail ih =>
+        rcases hHead with rfl
+        simp [ih]
+  · intro hEq
+    induction commits generalizing db with
+    | nil =>
+        simp at hEq
+        cases hEq
+        exact CommitSequence.nil
+    | cons txnId rest ih =>
+        simp at hEq
+        refine CommitSequence.cons ?_ (ih hEq)
+        rfl
+
+end CommitSequence
+
 theorem TxnCommitStep.step {txnId : TxnId}
     {program program' : Semantics.Program} {db db' : Database}
     (h : TxnCommitStep txnId program db program' db') :
@@ -130,6 +178,20 @@ theorem globalInterleavedStep_preservesInvariant_of_commitSpecs
   | inr hRely =>
       rcases hRely with ⟨_hProgram, hRespect⟩
       exact hStable _ _ hI (respectsRely_implies hRespect)
+
+theorem globalInterleavedStep_sameDb_or_commit {R : Rely}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStep R cfg cfg') :
+    cfg'.globalDb = cfg.globalDb ∨
+      ∃ txnId, TxnCommitStep txnId cfg.program cfg.globalDb cfg'.program cfg'.globalDb := by
+  cases hStep with
+  | inl hActual =>
+      exact step_sameDb_or_commit hActual
+  | inr hRely =>
+      rcases hRely with ⟨_hProgram, hRespect⟩
+      left
+      exact hSilent _ _ (respectsRely_implies hRespect)
 
 theorem globalMultiStep_preservesInvariant_of_commitSpecs
     {I : Assertion} {R : Rely} {specs : TxnId → StateSpec}
@@ -264,6 +326,39 @@ theorem ParallelValid.commitSpec {Ipre : Assertion} {R : Rely}
     (hCommit : TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb) :
     specs txnId midCfg.globalDb nextDb := by
   exact (h db hDb).2 midCfg nextProgram nextDb txnId hRun hCommit
+
+theorem parallelValid_commitSequence {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValid Ipre R program specs Ipost)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ commits, CommitSequence specs db commits finalCfg.globalDb := by
+  induction hRun with
+  | refl =>
+      exact ⟨[], CommitSequence.nil⟩
+  | tail hPrev hLast ih =>
+      rcases ih with ⟨commits, hSeq⟩
+      cases globalInterleavedStep_sameDb_or_commit hSilent hLast with
+      | inl hEq =>
+          refine ⟨commits, ?_⟩
+          simpa [hEq] using hSeq
+      | inr hCommit =>
+          rcases hCommit with ⟨txnId, hCommit⟩
+          refine ⟨commits ++ [txnId], ?_⟩
+          exact CommitSequence.snoc hSeq (ParallelValid.commitSpec hValid hDb hPrev hCommit)
+
+theorem parallelValid_foldl_of_graphSpecs {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {fs : TxnId → StateTransformer} {Ipost : Assertion}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValid Ipre R program (fun txnId => StateSpec.graph (fs txnId)) Ipost)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ commits, finalCfg.globalDb = List.foldl (fun current txnId => fs txnId current) db commits := by
+  rcases parallelValid_commitSequence hSilent hValid hDb hRun with ⟨commits, hSeq⟩
+  refine ⟨commits, (CommitSequence.graph_iff_foldl.mp hSeq)⟩
 
 theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
     {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
