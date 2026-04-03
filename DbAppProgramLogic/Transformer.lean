@@ -4,8 +4,23 @@ import DbAppProgramLogic.SetLanguage
 
 namespace DbAppProgramLogic
 
+/-!
+Effect inference and VCG layer.
+
+The development keeps two parallel views of inferred transaction effects:
+
+* `inferEffect` computes a concrete database delta.
+* `inferSetEffect` computes an explicit symbolic set-language expression.
+
+Most soundness proofs in this file first relate syntax-directed inference back to the operational
+semantics, and only then package the result into VCG-style obligations.
+-/
+
+/-- Concrete environment used by effect inference and by the later first-order encodings. -/
 abbrev Env := List (VarName × Value)
+/-- A semantic transaction effect maps the visible database to the rows written by the transaction. -/
 abbrev TxnEffect := Database → Option Database
+/-- Symbolic counterpart of `TxnEffect`, phrased in the explicit set language from `SetLanguage`. -/
 abbrev SetEffect := Database → Option SetLanguage.SetExpr
 
 namespace Env
@@ -51,6 +66,8 @@ end Env
 
 namespace Transformer
 
+/-- Instantiate free variables in an expression from the current environment, except for names that
+are intentionally blocked because they are rebound by the surrounding command. -/
 def instantiateExpr (env : Env) (blocked : List VarName) (expr : Expr) : Expr :=
   env.foldr
     (fun (binding : VarName × Value) acc =>
@@ -60,6 +77,8 @@ def instantiateExpr (env : Env) (blocked : List VarName) (expr : Expr) : Expr :=
         Expr.subst binding.1 binding.2.toExpr acc)
     expr
 
+/-- Environment-aware instantiation of commands. Binder forms erase the bound variable before
+descending so that later substitutions do not capture it. -/
 def instantiateCommand (env : Env) : Command ι Database → Command ι Database
   | .skip => .skip
   | .letE x expr body =>
@@ -147,6 +166,8 @@ mutual
             let deltaRest ← inferForeach txnId env doneVar elemVar body (done ++ [current]) rest db
             pure (deltaCurrent ++ deltaRest)
 
+  /-- Syntax-directed semantic effect inference for transaction bodies. The result is concrete: a
+  successful run returns the rows that should be appended to the local delta. -/
   def inferEffect (txnId : TxnId) (env : Env) : Semantics.Program → TxnEffect
     | .skip => emptyEffect
     | .letE x expr body =>
@@ -213,6 +234,7 @@ def inferenceSound (txnId : TxnId) (body : Semantics.Program) (F : TxnEffect) : 
     Logic.LocalValid (fun _ _ _ => False) txnId (fun localDb visible => localDb = [] ∧ visible = visibleDb) body
       (fun localDb visible => localDb = localDb' ∧ visible = visibleDb)
 
+/-- The obligations discharged by the concrete VCG for one transaction body. -/
 structure TransactionVCG where
   effect : TxnEffect
   execStable : Prop
@@ -220,6 +242,7 @@ structure TransactionVCG where
   guaranteeOk : Prop
   preservesInvariant : Prop
 
+/-- Build the concrete VCG obligations for a transaction body. -/
 def vcg (R : Rely) (I : Assertion) (G : Guarantee)
     (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program) : TransactionVCG :=
   let effect := inferEffect txnId [] body
@@ -1163,6 +1186,8 @@ mutual
             let sRest ← inferSetForeach txnId env doneVar elemVar body (done ++ [current]) rest db
             pure (.union sCurrent sRest)
 
+  /-- Symbolic effect inference returning a `SetExpr`. This is the explicit-set-language companion
+  of `inferEffect` and is the closest Lean analogue of the paper's Fig. 8 transformer. -/
   def inferSetEffect (txnId : TxnId) (env : Env) : Semantics.Program → SetEffect
     | .skip => emptySetEffect
     | .letE x expr body =>
@@ -2369,6 +2394,8 @@ theorem vcgForTxn_setWeaken_sound {R : Rely} {I : Assertion} {G : Guarantee}
   subst info
   exact vcg_setWeaken_sound absVar txnId isolation body visibleDb localDb s row hInv hSet hEffect hRow
 
+/-- The weakened symbolic postcondition used at the transaction interface. This packages the exact
+symbolic effect together with existential abstraction over the current global database. -/
 def symbolicVcg (I : Assertion) (absVar : VarName)
     (txnId : TxnId) (body : Semantics.Program) : SetEffect :=
   weakenSetEffect I absVar (inferSetEffect txnId [] body)
@@ -2377,6 +2404,7 @@ def symbolicVcgForTxn (I : Assertion) (absVar : VarName) : Semantics.Program →
   | .txn txnId _isolation body => some (symbolicVcg I absVar txnId body)
   | _ => none
 
+/-- Convenience wrapper for evaluating `symbolicVcgForTxn` on a concrete visible database. -/
 def symbolicPostForTxn (I : Assertion) (absVar : VarName)
     (program : Semantics.Program) (visibleDb : Database) : Option SetLanguage.SetExpr := do
   let info ← symbolicVcgForTxn I absVar program

@@ -4,8 +4,18 @@ namespace DbAppProgramLogic
 
 namespace SetLanguage
 
+/-!
+Partial explicit syntax for the paper's set language `S`.
+
+The development uses this file as the symbolic layer between transaction bodies and the later
+first-order encoding. The set combinators are represented explicitly, while the formula fragments
+remain shallow predicates over environments.
+-/
+
 abbrev SetDenotation := Row → Prop
 
+/-- Runtime environment for the set language: element variables, set variables, and the two
+distinguished databases used by the denotation function. -/
 structure Env where
   elemVars : List (VarName × Row) := []
   setVars : List (VarName × SetDenotation) := []
@@ -86,9 +96,12 @@ def abstractGlobal (x : VarName) : SetExpr → SetExpr
   | .ite φ s₁ s₂ => .ite φ (abstractGlobal x s₁) (abstractGlobal x s₂)
   | .union s₁ s₂ => .union (abstractGlobal x s₁) (abstractGlobal x s₂)
 
+/-- Replace the distinguished global database by a fresh symbolic set and existentially quantify it
+under an invariant. This is the object-language counterpart of the paper's weakening step. -/
 def weakenToInvariant (x : VarName) (I : Formula1) (s : SetExpr) : SetExpr :=
   .existsSet x I (abstractGlobal x s)
 
+/-- Denotational semantics for symbolic set expressions. -/
 noncomputable def denote (ρ : Env) : SetExpr → SetDenotation
   | .var x =>
       match ρ.lookupSet? x with

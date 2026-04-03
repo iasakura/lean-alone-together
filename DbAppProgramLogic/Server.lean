@@ -2,6 +2,15 @@ import DbAppProgramLogic.Logic
 
 namespace DbAppProgramLogic
 
+/-!
+Server-level and request-level correctness wrappers.
+
+The core POPL'18 formalization stops at transaction programs and top-level RG validity. This file
+adds a thin layer for talking about handlers, request families, commit logs, and server-style
+parallel executions. The main results here explain final states in terms of commit-order traces.
+-/
+
+/-- Relational specification for one committed handler: pre-state to post-state. -/
 abbrev StateSpec := Database → Database → Prop
 abbrev StateTransformer := Database → Database
 abbrev RequestSpec (Req : Type) := Req → StateSpec
@@ -47,6 +56,7 @@ inductive SingleTxnProgram (txnId : TxnId) : Semantics.Program → Prop where
   | skip :
       SingleTxnProgram txnId (Command.skip : Semantics.Program)
 
+/-- Quiescent programs for the server layer: all running branches have terminated. -/
 inductive ProgramDone : Semantics.Program → Prop where
   | skip :
       ProgramDone (Command.skip : Semantics.Program)
@@ -55,6 +65,8 @@ inductive ProgramDone : Semantics.Program → Prop where
       ProgramDone right →
       ProgramDone (.par left right : Semantics.Program)
 
+/-- A commit event lifted through nested `par` structure. This is the server-layer notion of "one
+transaction has just committed". -/
 inductive TxnCommitStep :
     TxnId → Semantics.Program → Database → Semantics.Program → Database → Prop where
   | root {txnId : TxnId} {isolation : IsolationSpec Database}
@@ -508,6 +520,8 @@ theorem commitFreeGlobalMultiStep_project_right {R : Rely}
             ⟨nextLeft, nextRight, hNextProgram, hRightStep⟩
           exact ⟨nextLeft, nextRight, hNextProgram, MultiStep.trans hRightRun hRightStep⟩
 
+/-- Server-layer semantic validity. Besides invariant preservation at quiescent states, this records
+which state relation every commit step must satisfy. -/
 def ParallelValid (Ipre : Assertion) (R : Rely)
     (program : Semantics.Program) (specs : TxnId → StateSpec) (Ipost : Assertion) : Prop :=
   ∀ db,
@@ -533,6 +547,8 @@ def ReachableCommitSpecs (Ipre : Assertion) (R : Rely)
 def CombinedSpecs (leftSpecs rightSpecs : TxnId → StateSpec) : TxnId → StateSpec :=
   fun txnId db db' => leftSpecs txnId db db' ∨ rightSpecs txnId db db'
 
+/-- Compatibility condition saying that `program` can treat every spec in `specs` as allowed
+environment interference. This is the current server-level surrogate for a standard RG `par` rule. -/
 def ProgramAcceptsSpecs (R : Rely) (specs : TxnId → StateSpec) :
     Semantics.Program → Prop
   | .txn txnId isolation _body =>
@@ -550,6 +566,7 @@ def ProgramAcceptsSpecs (R : Rely) (specs : TxnId → StateSpec) :
         specs otherTxn db db' →
         respectsRely R program db db'
 
+/-- Mutual version of `ProgramAcceptsSpecs` for two parallel components. -/
 def ParallelCompatible (R : Rely)
     (left : Semantics.Program) (leftSpecs : TxnId → StateSpec)
     (right : Semantics.Program) (rightSpecs : TxnId → StateSpec) : Prop :=
@@ -562,10 +579,13 @@ theorem parallelCompatible_symm {R : Rely}
     ParallelCompatible R right rightSpecs left leftSpecs := by
   exact ⟨h.2, h.1⟩
 
+/-- Convenient name for the top-level refinement judgment used by handler proofs. -/
 def HandlerRefines (P : Assertion) (R : Rely)
     (program : Semantics.Program) (spec : StateSpec) (Q : Assertion) : Prop :=
   GlobalValid P R program spec Q
 
+/-- A verified server with relational request specifications. This is the main object to use when a
+handler spec is not naturally a pure state transformer. -/
 structure VerifiedRequestServerSpec (Req : Type) where
   invariant : Assertion
   rely : Rely
@@ -575,6 +595,8 @@ structure VerifiedRequestServerSpec (Req : Type) where
   program : Semantics.Program
   valid : ParallelValid invariant rely program (RequestSpec.assign requestOf specs) invariant
 
+/-- Same as `VerifiedRequestServerSpec`, but keeps the exact transaction identifier in the internal
+specification. This is useful when the external request spec intentionally hides txn ids. -/
 structure VerifiedTxnIndexedRequestServerSpec (Req : Type) where
   invariant : Assertion
   rely : Rely
@@ -587,6 +609,7 @@ structure VerifiedTxnIndexedRequestServerSpec (Req : Type) where
       (fun txnId => specs (requestOf txnId) txnId)
       invariant
 
+/-- Server object specialized to pure `state -> state` request transformers. -/
 structure VerifiedRequestServer (Req : Type) where
   invariant : Assertion
   rely : Rely
@@ -598,6 +621,8 @@ structure VerifiedRequestServer (Req : Type) where
   preserve : ∀ req db, invariant db → invariant (transformer req db)
   valid : ParallelValid invariant rely program (RequestSpec.graphAssign requestOf transformer) invariant
 
+/-- Family of handlers together with relational specs. This is the intended entry point when
+modeling an API with one handler per request shape. -/
 structure HandlerFamilySpec (Req : Type) where
   invariant : Assertion
   rely : Rely
@@ -607,6 +632,7 @@ structure HandlerFamilySpec (Req : Type) where
     ∀ req txnId,
       HandlerRefines invariant rely (handlers req txnId) (specs req) invariant
 
+/-- Transformer-based variant of `HandlerFamilySpec` for state-transformer request specs. -/
 structure HandlerFamily (Req : Type) where
   invariant : Assertion
   rely : Rely

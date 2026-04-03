@@ -1,5 +1,13 @@
 namespace DbAppProgramLogic
 
+/-!
+Surface and runtime syntax for the core language `T`.
+
+The same `Command` datatype contains both user-facing constructors such as `txn` and `foreach`, and
+runtime-only constructors such as `txnRuntime` and `foreachRuntime` that appear only in the small-
+step semantics.
+-/
+
 abbrev VarName := String
 abbrev FieldName := String
 abbrev TxnId := Nat

@@ -5,6 +5,16 @@ namespace DbAppProgramLogic
 
 namespace Examples
 
+/-!
+Small end-to-end examples for the current development.
+
+The `zeroBalance` fragment is the recommended first example: it shows how a simple transaction proof
+feeds into handler and server-level results. The later `addInterest` fragment exercises the symbolic
+set-language and first-order layers on a transaction that both reads and writes.
+-/
+
+/-! ## Zero-balance insert example -/
+
 def nonnegativeBalances : Assertion :=
   fun db =>
     ∀ row, row ∈ db →
@@ -550,6 +560,8 @@ theorem zeroBalance_inferWriteMembership_contains_row (visibleDb : Database) :
       zeroBalance_inferWriteMembership
       (by simpa [Transformer.vcg] using zeroBalance_effect visibleDb)
   exact hSound.2 (by simp)
+
+/-! ## Read/write symbolic example (`addInterest`) -/
 
 def interestBaseRecord : RecordLit :=
   ⟨[("id", .int 1), ("bal", .int 4)]⟩

@@ -4,8 +4,17 @@ namespace DbAppProgramLogic
 
 namespace FirstOrder
 
+/-!
+First-order-style encodings for symbolic postconditions.
+
+This file is the current bridge toward Sec. 5.2 of the paper. It does not yet implement the full
+deep embedding and solver pipeline, but it does provide a deep formula language for row-membership
+queries and syntax-directed encoders from transaction bodies to those formulas.
+-/
+
 abbrev Env := DbAppProgramLogic.Env
 
+/-- A lightweight deep embedding of first-order formulas over the existing expression language. -/
 inductive Formula where
   | top
   | bot
@@ -144,6 +153,8 @@ def rowPredicateFormula (env : DbAppProgramLogic.Env) (source : VarName) (predic
     case scalar lit =>
       cases lit <;> simp
 
+/-- Row-membership formulas are the target used by the current `S -> FOL` bridge. They talk about a
+single candidate output row and characterize when that row belongs to a symbolic effect. -/
 inductive MembershipFormula where
   | top
   | bot
@@ -682,6 +693,8 @@ mutual
           (done ++ [current]) rest
         pure (.or φCurrent φRest)
 
+  /-- Compile a full transaction body into a row-membership formula. The encoding is still
+  db-dependent because `select` and `foreach` inspect the current visible database. -/
   def inferMembershipFull (txnId : TxnId) (env : DbAppProgramLogic.Env)
       (outVar : VarName) (body : Semantics.Program) (db : Database) : Option MembershipFormula :=
     match body with

@@ -2,17 +2,28 @@ import DbAppProgramLogic.Semantics
 
 namespace DbAppProgramLogic
 
+/-!
+Semantic judgments and soundness proofs for the rely-guarantee layer.
+
+This file sits between the operational semantics and the symbolic/VCG layer. It defines
+interleaved executions with explicit rely steps, semantic validity for local and global judgments,
+and then proves the inductive RG systems sound.
+-/
+
 abbrev Assertion := Database → Prop
 abbrev BiAssertion := Database → Database → Prop
 abbrev Rely := Database → Database → Prop
 abbrev LocalRely := Database → Database → Database → Prop
 abbrev Guarantee := Database → Database → Prop
 
+/-- Local configurations track the command under execution, its private delta, and the database view
+currently visible to the transaction. -/
 structure LocalConfig (ι : Type) where
   cmd : Command ι Database
   localDb : Database
   visibleDb : Database
 
+/-- Global configurations are the top-level machine states used by `globalInterleavedStep`. -/
 structure GlobalConfig where
   program : Semantics.Program
   globalDb : Database
@@ -27,25 +38,32 @@ inductive MultiStep (step : α → α → Prop) : α → α → Prop where
   | refl {cfg} : MultiStep step cfg cfg
   | tail {cfg₁ cfg₂ cfg₃} : MultiStep step cfg₁ cfg₂ → step cfg₂ cfg₃ → MultiStep step cfg₁ cfg₃
 
+/-- Forward-oriented variant of `MultiStep`. Some proofs over traces are simpler in this shape. -/
 inductive MultiStepFwd (step : α → α → Prop) : α → α → Prop where
   | refl {cfg} : MultiStepFwd step cfg cfg
   | cons {cfg₁ cfg₂ cfg₃} : step cfg₁ cfg₂ → MultiStepFwd step cfg₂ cfg₃ → MultiStepFwd step cfg₁ cfg₃
 
+/-- A standard global stability condition: `P` survives every rely step. -/
 def stableAssertion (R : Rely) (P : Assertion) : Prop :=
   ∀ db db', P db → R db db' → P db'
 
+/-- Local stability for assertions that can mention both the local delta and the visible database. -/
 def stableBiAssertion (R : LocalRely) (P : BiAssertion) : Prop :=
   ∀ localDb visibleDb visibleDb', P localDb visibleDb → R localDb visibleDb visibleDb' → P localDb visibleDb'
 
+/-- Stability for isolation relations when the environment takes an intermediate rely step. -/
 def stableIsolation (R : Rely) (I : Database → Database → Database → Prop) : Prop :=
   ∀ localDb baseDb midDb finalDb,
     I localDb baseDb finalDb →
     R midDb finalDb →
     I localDb baseDb midDb ∧ I localDb midDb finalDb
 
+/-- Restrict a global rely by the isolation guard currently required by a running transaction. -/
 def relyMod (R : Rely) (I : Database → Database → Database → Prop) : LocalRely :=
   fun localDb visibleDb visibleDb' => R visibleDb visibleDb' ∧ I localDb visibleDb visibleDb'
 
+/-- Local executions interleave actual transaction steps with environment steps that only change the
+visible database. -/
 def localInterleavedStep (R : LocalRely) (txnId : TxnId) :
     LocalConfig ι → LocalConfig ι → Prop
   | ⟨cmd, localDb, visibleDb⟩, ⟨cmd', localDb', visibleDb'⟩ =>
@@ -53,6 +71,7 @@ def localInterleavedStep (R : LocalRely) (txnId : TxnId) :
         (cmd' = cmd ∧ localDb' = localDb ∧ cmd ≠ (Command.skip : Command ι Database) ∧
           R localDb visibleDb visibleDb')
 
+/-- Update the cached visible database stored inside runtime transaction nodes after a rely step. -/
 def refreshVisible : Semantics.Program → Database → Semantics.Program
   | .txnRuntime txnId isolation localDb _ body, visibleDb =>
       .txnRuntime txnId isolation localDb visibleDb body
@@ -61,6 +80,8 @@ def refreshVisible : Semantics.Program → Database → Semantics.Program
   | program, _ =>
       program
 
+/-- Check whether a global database transition is acceptable as rely interference for a whole
+runtime program. For transactions, this bundles the rely relation with the active isolation guard. -/
 def respectsRely (R : Rely) : Semantics.Program → Database → Database → Prop
   | .txnRuntime _ isolation localDb snapshot .skip, db, db' =>
       R db db' ∧ isolation.commit localDb snapshot db'
@@ -71,6 +92,8 @@ def respectsRely (R : Rely) : Semantics.Program → Database → Database → Pr
   | _, db, db' =>
       R db db'
 
+/-- Top-level interleaving: either take a real machine step or update the program's visible state by
+an allowed rely step. -/
 def globalInterleavedStep (R : Rely) : GlobalConfig → GlobalConfig → Prop
   | ⟨program, globalDb⟩, ⟨program', globalDb'⟩ =>
       Semantics.Step program globalDb program' globalDb' ∨
@@ -82,6 +105,8 @@ abbrev LocalMultiStep (R : LocalRely) (txnId : TxnId) (ι : Type) :=
 abbrev GlobalMultiStep (R : Rely) :=
   MultiStep (globalInterleavedStep R)
 
+/-- Semantic validity for local judgments: whenever the command reaches `skip`, the postcondition
+holds on the final local/visible databases. -/
 def LocalValid (R : LocalRely) (txnId : TxnId)
     (P : BiAssertion) (c : Command ι Database) (Q : BiAssertion) : Prop :=
   ∀ localDb visibleDb finalCfg,
@@ -90,6 +115,7 @@ def LocalValid (R : LocalRely) (txnId : TxnId)
     finalCfg.cmd = (Command.skip : Command ι Database) →
     Q finalCfg.localDb finalCfg.visibleDb
 
+/-- Semantic guarantee judgment: every transaction commit performed by `program` satisfies `G`. -/
 def txnGuaranteed (R : Rely) (G : Guarantee) (program : Semantics.Program) (db : Database) : Prop :=
   ∀ midCfg nextProgram nextDb,
     GlobalMultiStep R ⟨program, db⟩ midCfg →
@@ -97,6 +123,8 @@ def txnGuaranteed (R : Rely) (G : Guarantee) (program : Semantics.Program) (db :
     nextProgram = (Command.skip : Semantics.Program) →
     G midCfg.globalDb nextDb
 
+/-- Semantic validity for top-level programs: the program preserves the global assertion and its
+commits satisfy the guarantee relation. -/
 def GlobalValid (Ipre : Assertion) (R : Rely)
     (program : Semantics.Program) (G : Guarantee) (Ipost : Assertion) : Prop :=
   ∀ db,
@@ -1453,6 +1481,8 @@ theorem localValid_foreachNext_false (txnId : TxnId) (P Q : BiAssertion)
       | inr hRely =>
           exact False.elim hRely.2.2.2
 
+/-- Inductive local proof system corresponding to the paper's Sec. 4 rules. The soundness theorem
+below shows that derivations in `LocalRG` imply `LocalValid`. -/
 inductive LocalRG (R : LocalRely) (txnId : TxnId) :
     BiAssertion → Command ι Database → BiAssertion → Prop where
   | skip {P} :
@@ -1508,7 +1538,7 @@ inductive LocalRG (R : LocalRely) (txnId : TxnId) :
       stableBiAssertion R P →
       (∀ records,
         Expr.eval source = some (.set records) →
-        LocalRG R txnId P (.foreachRuntime (Expr.setLit []) (Expr.setLit records) doneVar elemVar body) Q) →
+          LocalRG R txnId P (.foreachRuntime (Expr.setLit []) (Expr.setLit records) doneVar elemVar body) Q) →
       LocalRG R txnId P (.foreach source doneVar elemVar body) Q
   | conseq {P P' Q Q' c} :
       stableBiAssertion R P →
@@ -1517,6 +1547,8 @@ inductive LocalRG (R : LocalRely) (txnId : TxnId) :
       (∀ localDb visibleDb, Q' localDb visibleDb → Q localDb visibleDb) →
       LocalRG R txnId P c Q
 
+/-- Inductive top-level proof system. In the current development this handles transactions and
+consequence; server-level parallel reasoning is factored into `Server.lean`. -/
 inductive GlobalRG (R : Rely) :
     Assertion → Semantics.Program → Guarantee → Assertion → Prop where
   | txn {I isolation txnId body P Q G} :

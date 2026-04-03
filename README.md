@@ -8,6 +8,8 @@
 - Sec. 5 の state-transformer / 集合言語 `S` ベースの検証
 - 実アプリ向けの request/handler/server correctness 層
 
+最初のキャッチアップには [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) を先に読むのがおすすめです。README は対応表中心、`WALKTHROUGH.md` は「どこからどう追うか」中心に書いてあります。
+
 現状の実装はすでに有用ですが、論文の全内容をそのまま end-to-end で mechanize したものではありません。Fig. 7 に対応する集合言語 `S` と weakening の層はすでに入り、Sec. 5.2 に向けた first-order membership encoding も `FirstOrder.lean` として部分的にあります。ただし formula 部分はまだ shallow encoding が中心で、Fig. 10 全体の syntax-directed 変換や SMT 向け自動化は未完成です。
 
 ## リポジトリ構成

@@ -2,6 +2,13 @@ import DbAppProgramLogic.Syntax
 
 namespace DbAppProgramLogic
 
+/-!
+Operational semantics and runtime database model.
+
+This file introduces the hidden metadata carried by runtime rows, the isolation specifications used
+by transactions, and the local/top-level small-step relations that the later logic reasons about.
+-/
+
 inductive Value where
   | scalar : ScalarLit → Value
   | record : RecordLit → Value
