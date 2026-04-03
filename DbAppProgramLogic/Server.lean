@@ -1,0 +1,294 @@
+import DbAppProgramLogic.Logic
+
+namespace DbAppProgramLogic
+
+abbrev StateSpec := Database → Database → Prop
+abbrev StateTransformer := Database → Database
+
+namespace StateSpec
+
+def graph (f : StateTransformer) : StateSpec :=
+  fun db db' => db' = f db
+
+end StateSpec
+
+namespace Server
+
+open Logic
+
+def NonParallel : Semantics.Program → Prop
+  | .par _ _ => False
+  | _ => True
+
+inductive ProgramDone : Semantics.Program → Prop where
+  | skip :
+      ProgramDone (Command.skip : Semantics.Program)
+  | par {left right : Semantics.Program} :
+      ProgramDone left →
+      ProgramDone right →
+      ProgramDone (.par left right : Semantics.Program)
+
+inductive TxnCommitStep :
+    TxnId → Semantics.Program → Database → Semantics.Program → Database → Prop where
+  | root {txnId : TxnId} {isolation : IsolationSpec Database}
+      {localDb snapshot currentDb : Database} :
+      isolation.commit localDb snapshot currentDb →
+      TxnCommitStep
+        txnId
+        (.txnRuntime txnId isolation localDb snapshot (Command.skip : Semantics.Program))
+        currentDb
+        (Command.skip : Semantics.Program)
+        (Database.flush localDb currentDb)
+  | parLeft {txnId : TxnId} {left left' right : Semantics.Program}
+      {db db' : Database} :
+      TxnCommitStep txnId left db left' db' →
+      TxnCommitStep txnId (.par left right) db (.par left' right) db'
+  | parRight {txnId : TxnId} {left right right' : Semantics.Program}
+      {db db' : Database} :
+      TxnCommitStep txnId right db right' db' →
+      TxnCommitStep txnId (.par left right) db (.par left right') db'
+
+theorem TxnCommitStep.step {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (h : TxnCommitStep txnId program db program' db') :
+    Semantics.Step program db program' db' := by
+  induction h with
+  | root hCommit =>
+      exact Semantics.Step.txnCommit hCommit
+  | parLeft hCommit ih =>
+      exact Semantics.Step.parLeft ih
+  | parRight hCommit ih =>
+      exact Semantics.Step.parRight ih
+
+theorem respectsRely_implies {R : Rely}
+    {program : Semantics.Program} {db db' : Database}
+    (h : respectsRely R program db db') :
+    R db db' := by
+  induction program generalizing db db' with
+  | txnRuntime txnId isolation localDb snapshot body =>
+      by_cases hBody : body = (Command.skip : Semantics.Program)
+      · subst hBody
+        have hPair : R db db' ∧ isolation.commit localDb snapshot db' := by
+          simpa [respectsRely] using h
+        exact hPair.1
+      · have hPair : R db db' ∧ isolation.exec localDb snapshot db' := by
+          simpa [respectsRely, hBody] using h
+        exact hPair.1
+  | par left right ihLeft ihRight =>
+      have hPair : respectsRely R left db db' ∧ respectsRely R right db db' := by
+        simpa [respectsRely] using h
+      exact ihLeft hPair.1
+  | _ =>
+      simpa [respectsRely] using h
+
+theorem step_sameDb_or_commit
+    {program program' : Semantics.Program} {db db' : Database}
+    (h : Semantics.Step program db program' db') :
+    db' = db ∨ ∃ txnId, TxnCommitStep txnId program db program' db' := by
+  induction h with
+  | txnStart =>
+      exact Or.inl rfl
+  | txnExec =>
+      exact Or.inl rfl
+  | txnCommit hCommit =>
+      exact Or.inr ⟨_, TxnCommitStep.root hCommit⟩
+  | parLeft hStep ih =>
+      cases ih with
+      | inl hEq =>
+          exact Or.inl hEq
+      | inr hCommit =>
+          rcases hCommit with ⟨txnId, hCommit⟩
+          exact Or.inr ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+  | parRight hStep ih =>
+      cases ih with
+      | inl hEq =>
+          exact Or.inl hEq
+      | inr hCommit =>
+          rcases hCommit with ⟨txnId, hCommit⟩
+          exact Or.inr ⟨txnId, TxnCommitStep.parRight hCommit⟩
+
+theorem globalInterleavedStep_preservesInvariant_of_commitSpecs
+    {I : Assertion} {R : Rely} {specs : TxnId → StateSpec}
+    (hStable : stableAssertion R I)
+    (hCommitSpec :
+      ∀ {txnId program db program' db'},
+        TxnCommitStep txnId program db program' db' →
+        specs txnId db db')
+    (hPreserve :
+      ∀ txnId db db', I db → specs txnId db db' → I db')
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStep R cfg cfg') :
+    I cfg.globalDb →
+    I cfg'.globalDb := by
+  intro hI
+  cases hStep with
+  | inl hActual =>
+      rcases step_sameDb_or_commit hActual with hEq | hCommit
+      · simpa [hEq] using hI
+      · rcases hCommit with ⟨txnId, hCommit⟩
+        exact hPreserve txnId _ _ hI (hCommitSpec hCommit)
+  | inr hRely =>
+      rcases hRely with ⟨_hProgram, hRespect⟩
+      exact hStable _ _ hI (respectsRely_implies hRespect)
+
+theorem globalMultiStep_preservesInvariant_of_commitSpecs
+    {I : Assertion} {R : Rely} {specs : TxnId → StateSpec}
+    (hStable : stableAssertion R I)
+    (hCommitSpec :
+      ∀ {txnId program db program' db'},
+        TxnCommitStep txnId program db program' db' →
+        specs txnId db db')
+    (hPreserve :
+      ∀ txnId db db', I db → specs txnId db db' → I db')
+    {program : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg)
+    (hI : I db) :
+    I finalCfg.globalDb := by
+  induction hRun with
+  | refl =>
+      simpa using hI
+  | tail hPrev hLast ih =>
+      exact globalInterleavedStep_preservesInvariant_of_commitSpecs
+        hStable hCommitSpec hPreserve hLast ih
+
+def ParallelValid (Ipre : Assertion) (R : Rely)
+    (program : Semantics.Program) (specs : TxnId → StateSpec) (Ipost : Assertion) : Prop :=
+  ∀ db,
+    Ipre db →
+      (∀ finalCfg,
+        GlobalMultiStep R ⟨program, db⟩ finalCfg →
+        ProgramDone finalCfg.program →
+        Ipost finalCfg.globalDb) ∧
+      (∀ midCfg nextProgram nextDb txnId,
+        GlobalMultiStep R ⟨program, db⟩ midCfg →
+        TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
+        specs txnId midCfg.globalDb nextDb)
+
+def HandlerRefines (P : Assertion) (R : Rely)
+    (program : Semantics.Program) (spec : StateSpec) (Q : Assertion) : Prop :=
+  GlobalValid P R program spec Q
+
+theorem refreshVisible_preserves_nonParallel
+    {program : Semantics.Program} {db : Database}
+    (h : NonParallel program) :
+    NonParallel (refreshVisible program db) := by
+  cases program <;> simp [NonParallel, refreshVisible] at h ⊢
+
+theorem step_preserves_nonParallel
+    {program program' : Semantics.Program} {db db' : Database}
+    (hStep : Semantics.Step program db program' db')
+    (h : NonParallel program) :
+    NonParallel program' := by
+  induction hStep with
+  | txnStart =>
+      simp [NonParallel]
+  | txnExec =>
+      simp [NonParallel]
+  | txnCommit =>
+      simp [NonParallel]
+  | parLeft =>
+      cases h
+  | parRight =>
+      cases h
+
+theorem globalInterleavedStep_preserves_nonParallel {R : Rely}
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStep R cfg cfg')
+    (h : NonParallel cfg.program) :
+    NonParallel cfg'.program := by
+  cases hStep with
+  | inl hActual =>
+      exact step_preserves_nonParallel hActual h
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, _hRespect⟩
+      rw [hProgram]
+      exact refreshVisible_preserves_nonParallel h
+
+theorem globalMultiStep_preserves_nonParallel {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hRun : GlobalMultiStep R cfg₁ cfg₂)
+    (h : NonParallel cfg₁.program) :
+    NonParallel cfg₂.program := by
+  induction hRun with
+  | refl =>
+      exact h
+  | tail hPrev hLast ih =>
+      exact globalInterleavedStep_preserves_nonParallel hLast ih
+
+theorem programDone_eq_skip_of_nonParallel
+    {program : Semantics.Program}
+    (hDone : ProgramDone program)
+    (h : NonParallel program) :
+    program = (Command.skip : Semantics.Program) := by
+  cases hDone with
+  | skip =>
+      rfl
+  | par hLeft hRight =>
+      cases h
+
+theorem txnCommitStep_of_nonParallel {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (h : NonParallel program)
+    (hCommit : TxnCommitStep txnId program db program' db') :
+    ∃ isolation localDb snapshot,
+      program =
+        (.txnRuntime txnId isolation localDb snapshot (Command.skip : Semantics.Program)) ∧
+      program' = (Command.skip : Semantics.Program) ∧
+      db' = Database.flush localDb db ∧
+      isolation.commit localDb snapshot db := by
+  cases hCommit with
+  | root hCommitGuard =>
+      exact ⟨_, _, _, rfl, rfl, rfl, hCommitGuard⟩
+  | parLeft hInner =>
+      cases h
+  | parRight hInner =>
+      cases h
+
+theorem ParallelValid.invariant {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec}
+    (h : ParallelValid I R program specs I)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : I db)
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg)
+    (hDone : ProgramDone finalCfg.program) :
+    I finalCfg.globalDb := by
+  exact (h db hDb).1 finalCfg hRun hDone
+
+theorem ParallelValid.commitSpec {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program specs Ipost)
+    {db : Database} (hDb : Ipre db)
+    {midCfg : GlobalConfig} {nextProgram : Semantics.Program} {nextDb : Database}
+    {txnId : TxnId}
+    (hRun : GlobalMultiStep R ⟨program, db⟩ midCfg)
+    (hCommit : TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb) :
+    specs txnId midCfg.globalDb nextDb := by
+  exact (h db hDb).2 midCfg nextProgram nextDb txnId hRun hCommit
+
+theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
+    {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
+    {spec : StateSpec} {Ipost : Assertion}
+    (h : HandlerRefines Ipre R (.txn txnId isolation body) spec Ipost) :
+    ParallelValid Ipre R (.txn txnId isolation body) (fun _ => spec) Ipost := by
+  intro db hDb
+  rcases h db hDb with ⟨hPost, hTxn⟩
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun hDone
+    have hNonPar : NonParallel finalCfg.program := by
+      exact globalMultiStep_preserves_nonParallel hRun (by simp [NonParallel])
+    have hSkip : finalCfg.program = (Command.skip : Semantics.Program) := by
+      exact programDone_eq_skip_of_nonParallel hDone hNonPar
+    exact hPost finalCfg hRun hSkip
+  · intro midCfg nextProgram nextDb txnId' hRun hCommit
+    have hNonPar : NonParallel midCfg.program := by
+      exact globalMultiStep_preserves_nonParallel hRun (by simp [NonParallel])
+    rcases txnCommitStep_of_nonParallel hNonPar hCommit with
+      ⟨isolation', localDb, snapshot, hProgram, hNext, hDbEq, hCommitGuard⟩
+    have hStep : Semantics.Step midCfg.program midCfg.globalDb nextProgram nextDb := by
+      rw [hProgram, hNext, hDbEq]
+      exact Semantics.Step.txnCommit hCommitGuard
+    exact hTxn midCfg nextProgram nextDb hRun hStep hNext
+
+end Server
+
+end DbAppProgramLogic

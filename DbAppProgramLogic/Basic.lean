@@ -2,6 +2,7 @@ import DbAppProgramLogic.Syntax
 import DbAppProgramLogic.Semantics
 import DbAppProgramLogic.SetLanguage
 import DbAppProgramLogic.Logic
+import DbAppProgramLogic.Server
 import DbAppProgramLogic.Transformer
 import DbAppProgramLogic.FirstOrder
 import DbAppProgramLogic.Examples
