@@ -40,7 +40,7 @@
   - handler-level refinement の別名 `HandlerRefines`
   - parallel / server 実行用の `ProgramDone`, `TxnCommitStep`, `ParallelValid`
   - compatibility 条件 `ProgramAcceptsSpecs`
-  - request family / server object を表す `HandlerFamily{Spec}`, `VerifiedRequestServer{Spec}`
+  - request family / server object を表す `HandlerFamily{Spec}`, `VerifiedRequestServer{Spec}`, `VerifiedTxnIndexedRequestServerSpec`
   - `TxnIndexedRequestSpec` と `RequestSpec.hideTxnIds`
   - commit-order の合成定理と `CommitLog`
 - `DbAppProgramLogic/Examples.lean`
@@ -81,8 +81,8 @@
 | parallel / server の quiescent semantics | `Server.lean` の `ProgramDone`, `TxnCommitStep`, `ParallelValid` | 論文本体にはない追加層で、API サーバーのような並列 handler 群を扱うためのものです |
 | parallel compatibility | `Server.lean` の `ProgramAcceptsSpecs` | sibling handler の commit spec を rely として受けられることを表す追加条件です |
 | commit-order 合成定理 | `Server.lean` の `parallelValid_commitSequence`, `parallelValid_foldl_of_graphSpecs`, `parallelValid_commitLog`, `reachableGraphSpecs_sound`, `parallelValid_requestGraphSpecs_sound` | closed-system 仮定の下で、停止時 state が commit 順の仕様合成になり、各 commit の `txnId / before / after` log も抽出できます |
-| request/server object | `Server.lean` の `VerifiedRequestServerSpec`, `VerifiedRequestServer`, `VerifiedRequestServerSpec.ofTxnIndexedSpecs` | relation spec と `state -> state` spec の両方を request trace つき server object として包み、必要なら内部 txn-id を隠す追加層です |
-| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceServer_*`, `zeroBalanceVerifiedServer*`, `zeroBalanceVerifiedTxnIndexedServerSpec*`, `addInterest*` | transaction 単体、server-level request trace、event-level trace、txn-id を隠した request spec の小例があります |
+| request/server object | `Server.lean` の `VerifiedRequestServerSpec`, `VerifiedRequestServer`, `VerifiedTxnIndexedRequestServerSpec`, `VerifiedRequestServerSpec.ofTxnIndexedSpecs` | relation spec と `state -> state` spec の両方を request trace つき server object として包み、必要なら内部 txn-id 付き exact spec と hidden spec を両方持てる追加層です |
+| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceServer_*`, `zeroBalanceVerifiedServer*`, `zeroBalanceVerifiedTxnIndexedServerSpec*`, `addInterest*` | transaction 単体、server-level request trace、event-level trace、txn-id 付き exact spec とそれを隠した request spec の小例があります |
 
 ## Lean 側でどうエンコードしたか
 
@@ -317,7 +317,8 @@ Lean 側では現在、これを 2 段に分けています。
 
 - transaction ごとの exact spec `Req -> TxnId -> StateSpec`
 - それを `RequestSpec.hideTxnIds` で外部 request spec に落とす層
-- `VerifiedRequestServerSpec.ofTxnIndexedSpecs` で server object に包む流れ
+- `VerifiedTxnIndexedRequestServerSpec` と `hideTxnIds`
+- `VerifiedRequestServerSpec.ofTxnIndexedSpecs` で hidden server object に包む流れ
 
 を確認しています。実アプリで内部 transaction id を spec に使いたいが、外側の API 仕様では隠したい、という用途に向けた最小例です。
 

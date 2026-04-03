@@ -400,6 +400,18 @@ structure VerifiedRequestServerSpec (Req : Type) where
   program : Semantics.Program
   valid : ParallelValid invariant rely program (RequestSpec.assign requestOf specs) invariant
 
+structure VerifiedTxnIndexedRequestServerSpec (Req : Type) where
+  invariant : Assertion
+  rely : Rely
+  silent : ∀ db db', rely db db' → db' = db
+  requestOf : TxnId → Req
+  specs : TxnIndexedRequestSpec Req
+  program : Semantics.Program
+  valid :
+    ParallelValid invariant rely program
+      (fun txnId => specs (requestOf txnId) txnId)
+      invariant
+
 structure VerifiedRequestServer (Req : Type) where
   invariant : Assertion
   rely : Rely
@@ -1122,6 +1134,59 @@ theorem requestEvents {Req : Type} (server : VerifiedRequestServerSpec Req)
   exact ⟨events, CommitLog.requests_match_specs hLog⟩
 
 end VerifiedRequestServerSpec
+
+namespace VerifiedTxnIndexedRequestServerSpec
+
+def hideTxnIds {Req : Type} (server : VerifiedTxnIndexedRequestServerSpec Req) :
+    VerifiedRequestServerSpec Req :=
+  VerifiedRequestServerSpec.ofTxnIndexedSpecs
+    server.invariant
+    server.rely
+    server.silent
+    server.requestOf
+    server.specs
+    server.program
+    server.valid
+
+theorem doneInvariant {Req : Type} (server : VerifiedTxnIndexedRequestServerSpec Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg)
+    (hDone : ProgramDone finalCfg.program) :
+    server.invariant finalCfg.globalDb := by
+  exact ParallelValid.invariant server.valid hDb hRun hDone
+
+theorem commitLog {Req : Type} (server : VerifiedTxnIndexedRequestServerSpec Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg) :
+    ∃ events,
+      CommitLog
+        (fun txnId => server.specs (server.requestOf txnId) txnId)
+        db events finalCfg.globalDb := by
+  exact parallelValid_commitLog server.silent server.valid hDb hRun
+
+theorem requestEventsExact {Req : Type} (server : VerifiedTxnIndexedRequestServerSpec Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg) :
+    ∃ events : List CommitEvent,
+      ∀ event ∈ events,
+        server.specs (server.requestOf event.txnId) event.txnId event.before event.after := by
+  rcases server.commitLog hDb hRun with ⟨events, hLog⟩
+  exact ⟨events, CommitLog.events_match_specs hLog⟩
+
+theorem requestEvents {Req : Type} (server : VerifiedTxnIndexedRequestServerSpec Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg) :
+    ∃ events : List CommitEvent,
+      ∀ event ∈ events,
+        (RequestSpec.hideTxnIds server.requestOf server.specs)
+          (server.requestOf event.txnId) event.before event.after := by
+  simpa using (VerifiedRequestServerSpec.requestEvents (hideTxnIds server) hDb hRun)
+
+end VerifiedTxnIndexedRequestServerSpec
 
 namespace VerifiedRequestServer
 

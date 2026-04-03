@@ -244,15 +244,19 @@ def zeroBalanceVerifiedServerSpec : DbAppProgramLogic.Server.VerifiedRequestServ
     zeroBalanceServer
     zeroBalanceServer_parallelValid_abstract
 
+def zeroBalanceVerifiedTxnIndexedServerSpecExact :
+    DbAppProgramLogic.Server.VerifiedTxnIndexedRequestServerSpec Unit where
+  invariant := nonnegativeBalances
+  rely := fun _ _ => False
+  silent := false_rely_silent
+  requestOf := zeroBalanceRequestOf
+  specs := zeroBalanceTxnSpec
+  program := zeroBalanceServer
+  valid := zeroBalanceServer_parallelValid_txnIndexed
+
 def zeroBalanceVerifiedTxnIndexedServerSpec : DbAppProgramLogic.Server.VerifiedRequestServerSpec Unit :=
-  @DbAppProgramLogic.Server.VerifiedRequestServerSpec.ofTxnIndexedSpecs Unit
-    nonnegativeBalances
-    (fun _ _ => False)
-    false_rely_silent
-    zeroBalanceRequestOf
-    zeroBalanceTxnSpec
-    zeroBalanceServer
-    zeroBalanceServer_parallelValid_txnIndexed
+  DbAppProgramLogic.Server.VerifiedTxnIndexedRequestServerSpec.hideTxnIds
+    zeroBalanceVerifiedTxnIndexedServerSpecExact
 
 theorem zeroBalanceServer_invariant {db : Database} {finalCfg : GlobalConfig}
     (hDb : nonnegativeBalances db)
@@ -419,6 +423,19 @@ theorem zeroBalanceServer_txnIndexed_events
       hRun with
     ⟨events, hLog⟩
   exact ⟨events, Server.CommitLog.events_match_specs hLog⟩
+
+theorem zeroBalanceVerifiedTxnIndexedServerSpec_events_exact
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    ∃ events : List Server.CommitEvent,
+      ∀ event ∈ events,
+        zeroBalanceTxnSpec (zeroBalanceRequestOf event.txnId) event.txnId
+          event.before event.after := by
+  exact DbAppProgramLogic.Server.VerifiedTxnIndexedRequestServerSpec.requestEventsExact
+    zeroBalanceVerifiedTxnIndexedServerSpecExact
+    hDb
+    hRun
 
 theorem zeroBalanceVerifiedTxnIndexedServerSpec_events
     {db : Database} {finalCfg : GlobalConfig}
