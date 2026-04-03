@@ -1127,6 +1127,24 @@ theorem inferMembershipFull_matches_inferSetEffect (txnId : TxnId) (env : DbAppP
     Transformer.inferSetEffect_sound txnId env body db s rows row hSet hEffect
   exact Iff.trans hMembership hSetDenotation.symm
 
+theorem inferMembershipFull_implies_weakened_setEffect (I : Assertion) (absVar : VarName)
+    (txnId : TxnId) (env : DbAppProgramLogic.Env) (outVar : VarName)
+    (body : Semantics.Program) (db : Database)
+    (φ : MembershipFormula) (s : SetLanguage.SetExpr) (rows : Database) (row : Row)
+    (hInv : I db)
+    (hFormula : inferMembershipFull txnId env outVar body db = some φ)
+    (hSet : Transformer.inferSetEffect txnId env body db = some s)
+    (hEffect : Transformer.inferEffect txnId env body db = some rows)
+    (hMem : denoteMembership ((SetLanguage.Env.ofDatabases [] db).bindElem outVar row) φ) :
+    SetLanguage.denote
+      (SetLanguage.Env.ofDatabases [] db)
+      (SetLanguage.weakenToInvariant absVar (Transformer.assertionFormula I) s)
+      row := by
+  have hRows :
+      row ∈ rows := (inferMembershipFull_sound txnId env outVar body db φ rows row hFormula hEffect).1 hMem
+  exact Transformer.inferSetEffect_weaken_overapprox I absVar txnId env body db s rows
+    hInv hSet hEffect row hRows
+
 theorem inferForeachMembership_sound (txnId : TxnId) (env : DbAppProgramLogic.Env)
     (outVar doneVar elemVar : VarName) (body : Semantics.Program) (db : Database)
     (done remaining : SetLit) (φ : MembershipFormula) (rows : Database) (row : Row)

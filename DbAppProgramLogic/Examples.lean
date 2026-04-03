@@ -407,6 +407,31 @@ theorem addInterest_fullMembership_matches_setEffect :
     addInterest_setEffect
     addInterest_effect
 
+theorem addInterest_fullMembership_implies_symbolicVcg :
+    SetLanguage.denote
+      (SetLanguage.Env.ofDatabases [] [interestBaseRow])
+      (SetLanguage.weakenToInvariant "__inv"
+        (Transformer.assertionFormula nonnegativeBalances)
+        addInterestSetExpr)
+      interestUpdatedRow := by
+  exact FirstOrder.inferMembershipFull_implies_weakened_setEffect
+    nonnegativeBalances
+    "__inv"
+    1
+    []
+    "x"
+    addInterestBody
+    [interestBaseRow]
+    addInterestFullMembership
+    addInterestSetExpr
+    [interestUpdatedRow]
+    interestUpdatedRow
+    interestBase_nonnegative
+    addInterest_inferMembershipFull
+    addInterest_setEffect
+    addInterest_effect
+    addInterest_inferMembershipFull_contains_updatedRow
+
 theorem zeroBalance_singletonMembershipFO_holds :
     FirstOrder.denoteMembership
       ((SetLanguage.Env.ofDatabases [] []).bindElem "x" zeroBalanceRow)
