@@ -57,6 +57,20 @@ inductive CommitSequence (specs : TxnId → StateSpec) :
       CommitSequence specs db' rest db'' →
       CommitSequence specs db (txnId :: rest) db''
 
+structure CommitEvent where
+  txnId : TxnId
+  before : Database
+  after : Database
+
+inductive CommitLog (specs : TxnId → StateSpec) :
+    Database → List CommitEvent → Database → Prop where
+  | nil {db : Database} :
+      CommitLog specs db [] db
+  | cons {db db' db'' : Database} {txnId : TxnId} {rest : List CommitEvent} :
+      specs txnId db db' →
+      CommitLog specs db' rest db'' →
+      CommitLog specs db ({ txnId := txnId, before := db, after := db' } :: rest) db''
+
 namespace CommitSequence
 
 theorem snoc {specs : TxnId → StateSpec}
@@ -95,6 +109,48 @@ theorem graph_iff_foldl {fs : TxnId → StateTransformer}
         rfl
 
 end CommitSequence
+
+namespace CommitLog
+
+theorem ofCommitSequence {specs : TxnId → StateSpec}
+    {db db' : Database} {commits : List TxnId}
+    (hSeq : CommitSequence specs db commits db') :
+    ∃ events, CommitLog specs db events db' := by
+  induction hSeq with
+  | nil =>
+      exact ⟨[], CommitLog.nil⟩
+  | @cons db0 db1 db2 txnId rest hHead hTail ih =>
+      rcases ih with ⟨events, hLog⟩
+      exact ⟨{ txnId := txnId, before := db0, after := db1 } :: events,
+        CommitLog.cons hHead hLog⟩
+
+theorem toCommitSequence {specs : TxnId → StateSpec}
+    {db db' : Database} {events : List CommitEvent}
+    (hLog : CommitLog specs db events db') :
+    ∃ commits : List TxnId, CommitSequence specs db commits db' := by
+  induction hLog with
+  | nil =>
+      exact ⟨[], CommitSequence.nil⟩
+  | @cons db0 db1 db2 txnId rest hHead hTail ih =>
+      rcases ih with ⟨commits, hSeq⟩
+      exact ⟨txnId :: commits, CommitSequence.cons hHead hSeq⟩
+
+theorem events_match_specs {specs : TxnId → StateSpec}
+    {db db' : Database} {events : List CommitEvent}
+    (hLog : CommitLog specs db events db') :
+    ∀ event ∈ events, specs event.txnId event.before event.after := by
+  intro event hMem
+  induction hLog generalizing event with
+  | nil =>
+      cases hMem
+  | @cons db0 db1 db2 txnId rest hHead hTail ih =>
+      simp at hMem
+      rcases hMem with hEq | hIn
+      · cases hEq
+        exact hHead
+      · exact ih _ hIn
+
+end CommitLog
 
 theorem TxnCommitStep.step {txnId : TxnId}
     {program program' : Semantics.Program} {db db' : Database}
@@ -531,6 +587,17 @@ theorem parallelValid_commitSequence {Ipre : Assertion} {R : Rely}
           rcases hCommit with ⟨txnId, hCommit⟩
           refine ⟨commits ++ [txnId], ?_⟩
           exact CommitSequence.snoc hSeq (ParallelValid.commitSpec hValid hDb hPrev hCommit)
+
+theorem parallelValid_commitLog {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValid Ipre R program specs Ipost)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ events, CommitLog specs db events finalCfg.globalDb := by
+  rcases parallelValid_commitSequence hSilent hValid hDb hRun with ⟨commits, hSeq⟩
+  exact CommitLog.ofCommitSequence hSeq
 
 theorem parallelValid_foldl_of_graphSpecs {Ipre : Assertion} {R : Rely}
     {program : Semantics.Program} {fs : TxnId → StateTransformer} {Ipost : Assertion}

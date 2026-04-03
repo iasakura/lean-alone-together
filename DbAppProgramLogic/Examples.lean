@@ -138,6 +138,16 @@ theorem zeroBalanceServer_commit_order {db : Database} {finalCfg : GlobalConfig}
     hDb
     hRun
 
+theorem zeroBalanceServer_commit_log {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    ∃ events, Server.CommitLog (fun _ => StateSpec.graph zeroBalanceApply) db events finalCfg.globalDb := by
+  exact Server.parallelValid_commitLog
+    false_rely_silent
+    zeroBalanceServer_parallelValid
+    hDb
+    hRun
+
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =
       some
