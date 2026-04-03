@@ -18,11 +18,17 @@ def zeroBalanceRecord : RecordLit :=
 def zeroBalanceRow : Row :=
   Row.fromInsert 0 zeroBalanceRecord
 
+def zeroBalanceRowOf (txnId : TxnId) : Row :=
+  Row.fromInsert txnId zeroBalanceRecord
+
 def zeroBalanceInsertBody : Semantics.Program :=
   .insert (.record [("id", Expr.int 1), ("bal", Expr.int 0)])
 
 def zeroBalanceGuarantee : Guarantee :=
   fun db db' => db' = Database.flush [zeroBalanceRow] db
+
+def zeroBalanceGuaranteeOf (txnId : TxnId) : Guarantee :=
+  fun db db' => db' = Database.flush [zeroBalanceRowOf txnId] db
 
 theorem nonnegativeBalances_flush_zeroBalanceRow {db : Database}
     (hDb : nonnegativeBalances db) :
@@ -34,6 +40,17 @@ theorem nonnegativeBalances_flush_zeroBalanceRow {db : Database}
   · exact hDb row hPreserved.1
   · subst hInserted
     simp [zeroBalanceRow, zeroBalanceRecord, Row.fromInsert, RecordLit.lookup?]
+
+theorem nonnegativeBalances_flush_zeroBalanceRowOf {txnId : TxnId} {db : Database}
+    (hDb : nonnegativeBalances db) :
+    nonnegativeBalances (Database.flush [zeroBalanceRowOf txnId] db) := by
+  intro row hMem
+  unfold Database.flush at hMem
+  simp [zeroBalanceRowOf, zeroBalanceRecord, Row.fromInsert, Database.dom] at hMem
+  rcases hMem with hPreserved | hInserted
+  · exact hDb row hPreserved.1
+  · subst hInserted
+    simp [zeroBalanceRowOf, zeroBalanceRecord, Row.fromInsert, RecordLit.lookup?]
 
 theorem zeroBalance_insert_eval :
     Expr.eval (.record [("id", Expr.int 1), ("bal", Expr.int 0)]) =
@@ -82,6 +99,40 @@ theorem zeroBalance_preserves_invariant :
   subst hGuarantee
   exact nonnegativeBalances_flush_zeroBalanceRow hDb
 
+theorem zeroBalance_effect_any (txnId : TxnId) (visibleDb : Database) :
+    (Transformer.vcg (fun _ _ => False) nonnegativeBalances (zeroBalanceGuaranteeOf txnId)
+      txnId Database.uniqueIds zeroBalanceInsertBody).effect visibleDb = some [zeroBalanceRowOf txnId] := by
+  simp [Transformer.vcg, Transformer.inferEffect, Transformer.evalInEnv,
+    Transformer.instantiateExpr_nil, zeroBalanceInsertBody, zeroBalanceRowOf]
+  rw [zeroBalance_insert_eval]
+  rfl
+
+theorem zeroBalance_effect_defined_any (txnId : TxnId) :
+    Transformer.effectDefinedOn nonnegativeBalances
+      ((Transformer.vcg (fun _ _ => False) nonnegativeBalances (zeroBalanceGuaranteeOf txnId)
+        txnId Database.uniqueIds zeroBalanceInsertBody).effect) := by
+  intro visibleDb _hInv
+  exact ⟨[zeroBalanceRowOf txnId], zeroBalance_effect_any txnId visibleDb⟩
+
+theorem zeroBalance_guarantee_ok_any (txnId : TxnId) :
+    (Transformer.vcg (fun _ _ => False) nonnegativeBalances (zeroBalanceGuaranteeOf txnId)
+      txnId Database.uniqueIds zeroBalanceInsertBody).guaranteeOk := by
+  intro visibleDb localDb hEffect
+  have hConst :
+      Transformer.inferEffect txnId [] zeroBalanceInsertBody visibleDb = some [zeroBalanceRowOf txnId] := by
+    simpa [Transformer.vcg] using zeroBalance_effect_any txnId visibleDb
+  rw [hConst] at hEffect
+  injection hEffect with hLocalDb
+  subst hLocalDb
+  rfl
+
+theorem zeroBalance_preserves_invariant_any (txnId : TxnId) :
+    (Transformer.vcg (fun _ _ => False) nonnegativeBalances (zeroBalanceGuaranteeOf txnId)
+      txnId Database.uniqueIds zeroBalanceInsertBody).preservesInvariant := by
+  intro db db' hDb hGuarantee
+  subst hGuarantee
+  exact nonnegativeBalances_flush_zeroBalanceRowOf hDb
+
 theorem zeroBalanceInsert_valid :
     Logic.GlobalValid nonnegativeBalances (fun _ _ => False)
       (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
@@ -91,6 +142,16 @@ theorem zeroBalanceInsert_valid :
     zeroBalance_effect_defined
     zeroBalance_guarantee_ok
     zeroBalance_preserves_invariant
+
+theorem zeroBalanceInsert_valid_any (txnId : TxnId) :
+    Logic.GlobalValid nonnegativeBalances (fun _ _ => False)
+      (.txn txnId Database.uniqueIds zeroBalanceInsertBody)
+      (zeroBalanceGuaranteeOf txnId)
+      nonnegativeBalances := by
+  exact Transformer.vcg_sound_false txnId Database.uniqueIds zeroBalanceInsertBody
+    (zeroBalance_effect_defined_any txnId)
+    (zeroBalance_guarantee_ok_any txnId)
+    (zeroBalance_preserves_invariant_any txnId)
 
 def zeroBalanceApply : StateTransformer :=
   fun db => Database.flush [zeroBalanceRow] db
@@ -117,6 +178,20 @@ theorem zeroBalanceHandler_refines_graph :
   simpa [Server.HandlerRefines, StateSpec.graph, zeroBalanceApply, zeroBalanceGuarantee] using
     zeroBalanceInsert_valid
 
+def zeroBalanceAbstractSpec : RequestSpec Unit :=
+  fun _ db db' => ∃ txnId, db' = Database.flush [zeroBalanceRowOf txnId] db
+
+theorem zeroBalanceHandler_refines_abstract (txnId : TxnId) :
+    Server.HandlerRefines nonnegativeBalances (fun _ _ => False)
+      (.txn txnId Database.uniqueIds zeroBalanceInsertBody)
+      (zeroBalanceAbstractSpec ())
+      nonnegativeBalances := by
+  refine Logic.globalValid_conseq (zeroBalanceInsert_valid_any txnId) ?_ ?_
+  · intro db hDb
+    exact hDb
+  · intro db db' hGuarantee
+    exact ⟨txnId, hGuarantee⟩
+
 theorem zeroBalanceServer_parallelValid :
     Server.ParallelValid nonnegativeBalances (fun _ _ => False)
       zeroBalanceServer
@@ -124,6 +199,32 @@ theorem zeroBalanceServer_parallelValid :
       nonnegativeBalances := by
   exact Server.parallelValid_par_skip_right
     (Server.txnParallelValid_of_handlerRefines zeroBalanceHandler_refines_graph)
+
+theorem zeroBalanceServer_parallelValid_abstract :
+    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
+      zeroBalanceServer
+      (RequestSpec.assign zeroBalanceRequestOf zeroBalanceAbstractSpec)
+      nonnegativeBalances := by
+  refine Server.parallelValid_mono zeroBalanceServer_parallelValid ?_
+  intro txnId db db' hGraph
+  exact ⟨0, hGraph⟩
+
+def zeroBalanceHandlerFamilySpec : DbAppProgramLogic.Server.HandlerFamilySpec Unit where
+  invariant := nonnegativeBalances
+  rely := fun _ _ => False
+  handlers := fun _ txnId => .txn txnId Database.uniqueIds zeroBalanceInsertBody
+  specs := zeroBalanceAbstractSpec
+  handlerSound := by
+    intro _req txnId
+    exact zeroBalanceHandler_refines_abstract txnId
+
+def zeroBalanceVerifiedServerSpec : DbAppProgramLogic.Server.VerifiedRequestServerSpec Unit :=
+  DbAppProgramLogic.Server.VerifiedRequestServerSpec.ofHandlerFamilySpec
+    zeroBalanceHandlerFamilySpec
+    false_rely_silent
+    zeroBalanceRequestOf
+    zeroBalanceServer
+    zeroBalanceServer_parallelValid_abstract
 
 theorem zeroBalanceServer_invariant {db : Database} {finalCfg : GlobalConfig}
     (hDb : nonnegativeBalances db)
@@ -262,6 +363,46 @@ theorem zeroBalanceServer_request_family_sound_of_parallelValid
         using zeroBalanceServer_parallelValid)
     hDb
     hRun
+
+theorem zeroBalanceVerifiedServerSpec_events
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    ∃ events : List Server.CommitEvent,
+      ∀ event ∈ events,
+        zeroBalanceAbstractSpec () event.before event.after := by
+  exact DbAppProgramLogic.Server.VerifiedRequestServerSpec.requestEvents
+    zeroBalanceVerifiedServerSpec
+    hDb
+    hRun
+
+def zeroBalanceVerifiedServer : DbAppProgramLogic.Server.VerifiedRequestServer Unit where
+  invariant := nonnegativeBalances
+  rely := fun _ _ => False
+  silent := false_rely_silent
+  requestOf := zeroBalanceRequestOf
+  transformer := zeroBalanceRequestApply
+  program := zeroBalanceServer
+  stable := Logic.stableAssertion_false nonnegativeBalances
+  preserve := by
+    intro _req db hInv
+    exact nonnegativeBalances_flush_zeroBalanceRow hInv
+  valid := by
+    simpa [RequestSpec.graphAssign, RequestSpec.assign, zeroBalanceRequestApply, zeroBalanceRequestOf]
+      using zeroBalanceServer_parallelValid
+
+theorem zeroBalanceVerifiedServer_sound
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    nonnegativeBalances finalCfg.globalDb ∧
+      ∃ events : List Server.CommitEvent,
+        finalCfg.globalDb =
+          List.foldl
+            (fun current req => zeroBalanceRequestApply req current)
+            db
+            (DbAppProgramLogic.Server.VerifiedRequestServer.requestTrace zeroBalanceVerifiedServer events) := by
+  exact DbAppProgramLogic.Server.VerifiedRequestServer.sound zeroBalanceVerifiedServer hDb hRun
 
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =

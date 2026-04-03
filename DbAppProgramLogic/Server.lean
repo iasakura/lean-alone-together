@@ -199,6 +199,14 @@ theorem graphAssign_implies_foldl_requests {Req : Type} {requestOf : TxnId → R
       rcases hHead with rfl
       simp [requests, ih, RequestSpec.graphAssign, RequestSpec.assign]
 
+theorem requests_match_specs {Req : Type} {requestOf : TxnId → Req}
+    {specs : RequestSpec Req}
+    {db db' : Database} {events : List CommitEvent}
+    (hLog : CommitLog (RequestSpec.assign requestOf specs) db events db') :
+    ∀ event ∈ events, specs (requestOf event.txnId) event.before event.after := by
+  intro event hMem
+  exact events_match_specs hLog event hMem
+
 end CommitLog
 
 theorem TxnCommitStep.step {txnId : TxnId}
@@ -360,6 +368,63 @@ def ProgramAcceptsSpecs (R : Rely) (specs : TxnId → StateSpec) :
 def HandlerRefines (P : Assertion) (R : Rely)
     (program : Semantics.Program) (spec : StateSpec) (Q : Assertion) : Prop :=
   GlobalValid P R program spec Q
+
+structure VerifiedRequestServerSpec (Req : Type) where
+  invariant : Assertion
+  rely : Rely
+  silent : ∀ db db', rely db db' → db' = db
+  requestOf : TxnId → Req
+  specs : RequestSpec Req
+  program : Semantics.Program
+  valid : ParallelValid invariant rely program (RequestSpec.assign requestOf specs) invariant
+
+structure VerifiedRequestServer (Req : Type) where
+  invariant : Assertion
+  rely : Rely
+  silent : ∀ db db', rely db db' → db' = db
+  requestOf : TxnId → Req
+  transformer : RequestTransformer Req
+  program : Semantics.Program
+  stable : stableAssertion rely invariant
+  preserve : ∀ req db, invariant db → invariant (transformer req db)
+  valid : ParallelValid invariant rely program (RequestSpec.graphAssign requestOf transformer) invariant
+
+structure HandlerFamilySpec (Req : Type) where
+  invariant : Assertion
+  rely : Rely
+  handlers : Req → TxnId → Semantics.Program
+  specs : RequestSpec Req
+  handlerSound :
+    ∀ req txnId,
+      HandlerRefines invariant rely (handlers req txnId) (specs req) invariant
+
+structure HandlerFamily (Req : Type) where
+  invariant : Assertion
+  rely : Rely
+  handlers : Req → TxnId → Semantics.Program
+  transformer : RequestTransformer Req
+  stable : stableAssertion rely invariant
+  preserve : ∀ req db, invariant db → invariant (transformer req db)
+  handlerSound :
+    ∀ req txnId,
+      HandlerRefines invariant rely
+        (handlers req txnId)
+        (StateSpec.graph (transformer req))
+        invariant
+
+namespace HandlerFamily
+
+def requestSpecs {Req : Type} (family : HandlerFamily Req) : RequestSpec Req :=
+  fun req => StateSpec.graph (family.transformer req)
+
+def toSpec {Req : Type} (family : HandlerFamily Req) : HandlerFamilySpec Req where
+  invariant := family.invariant
+  rely := family.rely
+  handlers := family.handlers
+  specs := family.requestSpecs
+  handlerSound := family.handlerSound
+
+end HandlerFamily
 
 theorem reachableInvariant_of_reachableCommitSpecs {I : Assertion} {R : Rely}
     {program : Semantics.Program} {specs : TxnId → StateSpec}
@@ -660,6 +725,17 @@ theorem ParallelValid.commitSpec {Ipre : Assertion} {R : Rely}
     specs txnId midCfg.globalDb nextDb := by
   exact (h db hDb).2 midCfg nextProgram nextDb txnId hRun hCommit
 
+theorem parallelValid_mono {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs specs' : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program specs Ipost)
+    (hImp : ∀ txnId db db', specs txnId db db' → specs' txnId db db') :
+    ParallelValid Ipre R program specs' Ipost := by
+  intro db hDb
+  rcases h db hDb with ⟨hPost, hCommit⟩
+  refine ⟨hPost, ?_⟩
+  intro midCfg nextProgram nextDb txnId hRun hStep
+  exact hImp txnId _ _ (hCommit _ _ _ _ hRun hStep)
+
 theorem ParallelValid.reachableCommitSpecs {Ipre : Assertion} {R : Rely}
     {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
     (h : ParallelValid Ipre R program specs Ipost) :
@@ -861,6 +937,120 @@ theorem parallelValid_requestGraphSpecs_sound
     (ParallelValid.reachableCommitSpecs hValid)
     hDb
     hRun
+
+namespace VerifiedRequestServerSpec
+
+def requestTrace {Req : Type} (server : VerifiedRequestServerSpec Req) (events : List CommitEvent) :
+    List Req :=
+  CommitLog.requests server.requestOf events
+
+def ofHandlerFamilySpec {Req : Type}
+    (family : HandlerFamilySpec Req)
+    (silent : ∀ db db', family.rely db db' → db' = db)
+    (requestOf : TxnId → Req)
+    (program : Semantics.Program)
+    (valid :
+      ParallelValid family.invariant family.rely program
+        (RequestSpec.assign requestOf family.specs)
+        family.invariant) :
+    VerifiedRequestServerSpec Req where
+  invariant := family.invariant
+  rely := family.rely
+  silent := silent
+  requestOf := requestOf
+  specs := family.specs
+  program := program
+  valid := valid
+
+theorem doneInvariant {Req : Type} (server : VerifiedRequestServerSpec Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg)
+    (hDone : ProgramDone finalCfg.program) :
+    server.invariant finalCfg.globalDb := by
+  exact ParallelValid.invariant server.valid hDb hRun hDone
+
+theorem commitLog {Req : Type} (server : VerifiedRequestServerSpec Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg) :
+    ∃ events,
+      CommitLog (RequestSpec.assign server.requestOf server.specs) db events finalCfg.globalDb := by
+  exact parallelValid_commitLog server.silent server.valid hDb hRun
+
+theorem requestEvents {Req : Type} (server : VerifiedRequestServerSpec Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg) :
+    ∃ events : List CommitEvent,
+      (∀ (event : CommitEvent), event ∈ events →
+        server.specs (server.requestOf event.txnId) event.before event.after) := by
+  rcases server.commitLog hDb hRun with ⟨events, hLog⟩
+  exact ⟨events, CommitLog.requests_match_specs hLog⟩
+
+end VerifiedRequestServerSpec
+
+namespace VerifiedRequestServer
+
+def requestTrace {Req : Type} (server : VerifiedRequestServer Req) (events : List CommitEvent) :
+    List Req :=
+  CommitLog.requests server.requestOf events
+
+def ofHandlerFamily {Req : Type}
+    (family : HandlerFamily Req)
+    (silent : ∀ db db', family.rely db db' → db' = db)
+    (requestOf : TxnId → Req)
+    (program : Semantics.Program)
+    (valid :
+      ParallelValid family.invariant family.rely program
+        (RequestSpec.graphAssign requestOf family.transformer)
+        family.invariant) :
+    VerifiedRequestServer Req where
+  invariant := family.invariant
+  rely := family.rely
+  silent := silent
+  requestOf := requestOf
+  transformer := family.transformer
+  program := program
+  stable := family.stable
+  preserve := family.preserve
+  valid := valid
+
+def toSpec {Req : Type} (server : VerifiedRequestServer Req) : VerifiedRequestServerSpec Req where
+  invariant := server.invariant
+  rely := server.rely
+  silent := server.silent
+  requestOf := server.requestOf
+  specs := fun req => StateSpec.graph (server.transformer req)
+  program := server.program
+  valid := by
+    simpa [RequestSpec.graphAssign, RequestSpec.assign] using server.valid
+
+theorem sound {Req : Type} (server : VerifiedRequestServer Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg) :
+    server.invariant finalCfg.globalDb ∧
+      ∃ events,
+        finalCfg.globalDb =
+          List.foldl (fun current req => server.transformer req current) db (server.requestTrace events) := by
+  exact parallelValid_requestGraphSpecs_sound
+    server.stable
+    server.preserve
+    server.silent
+    server.valid
+    hDb
+    hRun
+
+theorem commitLog {Req : Type} (server : VerifiedRequestServer Req)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : server.invariant db)
+    (hRun : GlobalMultiStep server.rely ⟨server.program, db⟩ finalCfg) :
+    ∃ events,
+      CommitLog (RequestSpec.graphAssign server.requestOf server.transformer) db events finalCfg.globalDb := by
+  exact parallelValid_commitLog server.silent server.valid hDb hRun
+
+end VerifiedRequestServer
 
 theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
     {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
