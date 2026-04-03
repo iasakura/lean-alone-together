@@ -32,6 +32,10 @@
   - symbolic set-language inference (`inferSetEffect`)
   - 簡約版 VCG と symbolic VCG
   - inference と semantics / global validity をつなぐ soundness 補題
+- `DbAppProgramLogic/Server.lean`
+  - handler-level refinement の別名 `HandlerRefines`
+  - parallel / server 実行用の `ProgramDone`, `TxnCommitStep`, `ParallelValid`
+  - commit-order の合成定理
 - `DbAppProgramLogic/Examples.lean`
   - 現状の基盤を使った小さな検証例
 
@@ -65,7 +69,10 @@
 | Theorem 5.1 相当 | `Transformer.lean` の `inferenceSound*`, `vcg_effect_sound`, `inferSetEffect_sound` | semantic / symbolic の両方について soundness を出しています |
 | weakened symbolic VCG | `Transformer.lean` の `symbolicVcg`, `symbolicVcgForTxn`, `symbolicPostForTxn` | symbolic postcondition を transaction に持ち上げる入口です |
 | Sec. 5 の transaction-level bridge | `Logic.lean` の `txnGlobalValid_of_localValid` と `Transformer.lean` の `vcg_sound`, `vcg_sound_false` | 推論した effect を `GlobalValid` に戻します |
-| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `addInterest*` | insert-only 例と `select + foreach + update` 例があります |
+| 実アプリ向けの handler spec 層 | `Server.lean` の `HandlerRefines` | 論文の top-level invariant judgment を壊さず、上位層で `P/Q` を持つための別名です |
+| parallel / server の quiescent semantics | `Server.lean` の `ProgramDone`, `TxnCommitStep`, `ParallelValid` | 論文本体にはない追加層で、API サーバーのような並列 handler 群を扱うためのものです |
+| commit-order 合成定理 | `Server.lean` の `parallelValid_commitSequence`, `parallelValid_foldl_of_graphSpecs` | closed-system 仮定の下で、停止時 state が commit 順の仕様合成になることを示します |
+| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceServer_*`, `addInterest*` | transaction 単体と server-level の小例があります |
 
 ## Lean 側でどうエンコードしたか
 
@@ -287,6 +294,14 @@ Lean 側では現在、これを 2 段に分けています。
 
 を通る read/write 例を入れています。論文 Fig. 9 の `add_interest` そのものではありませんが、同系統の「読んだ値に基づいて更新する」例です。
 
+また `Examples.zeroBalanceServer_*` では:
+
+- 単一 transaction の `HandlerRefines`
+- それを `txn || skip` に持ち上げた `ParallelValid`
+- commit-order の `foldl` 合成定理
+
+までを end-to-end で確認しています。これはまだ一般の `p || q` 規則ではありませんが、server-level の層が Lean 上で実際に使えることの最小例です。
+
 ## 論文どおりに実際のアプリを検証するために足りないもの
 
 ここが一番重要です。いまのリポジトリは「かなり進んだ基盤」ではありますが、論文のように本格的な weak isolation app verification を行うにはまだ足りないものがあります。
@@ -417,6 +432,28 @@ Lean では現在、これに対応する object-language の演算子として:
 
 からです。
 
+### 8. server-level parallel rule はまだ部分的
+
+`Server.lean` により、今は次が言えます。
+
+- handler 単体の `HandlerRefines`
+- quiescent な parallel/server 実行の `ParallelValid`
+- closed-system 仮定の下での commit-order 合成
+
+ただし、まだ一般の
+
+- `HandlerRefines h1`
+- `HandlerRefines h2`
+- よって `ParallelValid (h1 || h2)`
+
+という composition rule そのものは入っていません。現在あるのは:
+
+- 単一 transaction から `ParallelValid` への bridge
+- `.par p skip` の base case
+- commit-order theorem
+
+です。一般の並列合成を証明するには、兄弟 transaction の commit を相手側の rely として再解釈する projection / simulation 補題を追加する必要があります。
+
 ## いまの README の立場
 
 このリポジトリは、現時点では次のように読むのが正確です。
@@ -424,6 +461,7 @@ Lean では現在、これに対応する object-language の演算子として:
 - POPL'18 の core operational semantics と RG logic の Lean 形式化
 - soundness 付きの semantic VCG
 - Fig. 7/8 にかなり寄せた symbolic set-language / weakened symbolic VCG
+- 実アプリ向けの handler / server correctness を載せるための server-level 基盤
 - 将来的に Fig. 10 と solver 連携を mechanize するための基盤
 
 逆に、まだ次のものとして読むべきではありません。
@@ -441,7 +479,8 @@ Lean の実装順に読むなら:
 3. `Logic.lean`
 4. `SetLanguage.lean`
 5. `Transformer.lean`
-6. `Examples.lean`
+6. `Server.lean`
+7. `Examples.lean`
 
 論文順に読むなら:
 
@@ -452,3 +491,4 @@ Lean の実装順に読むなら:
 5. Fig. 8 と `inferEffect`, `inferSetEffect`
 6. Theorem 5.1 と `inferenceSound*`, `inferSetEffect_sound`
 7. transaction-level bridge としての `txnGlobalValid_of_localValid`, `vcg_sound`, `symbolicVcg`, `symbolicPostForTxn`
+8. 実アプリ向けの追加層として `Server.lean`
