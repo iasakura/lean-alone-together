@@ -1,4 +1,5 @@
 import DbAppProgramLogic.FirstOrder
+import DbAppProgramLogic.Server
 
 namespace DbAppProgramLogic
 
@@ -90,6 +91,52 @@ theorem zeroBalanceInsert_valid :
     zeroBalance_effect_defined
     zeroBalance_guarantee_ok
     zeroBalance_preserves_invariant
+
+def zeroBalanceApply : StateTransformer :=
+  fun db => Database.flush [zeroBalanceRow] db
+
+def zeroBalanceServer : Semantics.Program :=
+  .par (.txn 0 Database.uniqueIds zeroBalanceInsertBody) .skip
+
+theorem false_rely_silent :
+    ∀ db db' : Database, (fun _ _ => False) db db' → db' = db := by
+  intro db db' hFalse
+  exact False.elim hFalse
+
+theorem zeroBalanceHandler_refines_graph :
+    Server.HandlerRefines nonnegativeBalances (fun _ _ => False)
+      (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
+      (StateSpec.graph zeroBalanceApply)
+      nonnegativeBalances := by
+  simpa [Server.HandlerRefines, StateSpec.graph, zeroBalanceApply, zeroBalanceGuarantee] using
+    zeroBalanceInsert_valid
+
+theorem zeroBalanceServer_parallelValid :
+    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
+      zeroBalanceServer
+      (fun _ => StateSpec.graph zeroBalanceApply)
+      nonnegativeBalances := by
+  exact Server.parallelValid_par_skip_right
+    (Server.txnParallelValid_of_handlerRefines zeroBalanceHandler_refines_graph)
+
+theorem zeroBalanceServer_invariant {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg)
+    (hDone : Server.ProgramDone finalCfg.program) :
+    nonnegativeBalances finalCfg.globalDb := by
+  exact Server.ParallelValid.invariant zeroBalanceServer_parallelValid hDb hRun hDone
+
+theorem zeroBalanceServer_commit_order {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    ∃ commits : List TxnId,
+      finalCfg.globalDb =
+        List.foldl (fun current (_ : TxnId) => zeroBalanceApply current) db commits := by
+  exact Server.parallelValid_foldl_of_graphSpecs
+    false_rely_silent
+    zeroBalanceServer_parallelValid
+    hDb
+    hRun
 
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =

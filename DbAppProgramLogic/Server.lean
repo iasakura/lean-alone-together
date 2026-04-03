@@ -306,6 +306,69 @@ theorem txnCommitStep_of_nonParallel {txnId : TxnId}
   | parRight hInner =>
       cases h
 
+theorem programDone_par_skip_right_inv {program : Semantics.Program}
+    (hDone : ProgramDone (.par program (Command.skip : Semantics.Program))) :
+    ProgramDone program := by
+  cases hDone with
+  | par hLeft hRight =>
+      exact hLeft
+
+theorem txnCommitStep_par_skip_right {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hCommit :
+      TxnCommitStep txnId (.par program (Command.skip : Semantics.Program)) db program' db') :
+    ∃ programInner,
+      program' = (.par programInner (Command.skip : Semantics.Program) : Semantics.Program) ∧
+      TxnCommitStep txnId program db programInner db' := by
+  cases hCommit with
+  | parLeft hInner =>
+      exact ⟨_, rfl, hInner⟩
+  | parRight hInner =>
+      cases hInner
+
+theorem globalInterleavedStep_par_skip_right {R : Rely}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStep R
+        ⟨(.par program (Command.skip : Semantics.Program) : Semantics.Program), db⟩
+        ⟨program', db'⟩) :
+    ∃ programInner,
+      program' = (.par programInner (Command.skip : Semantics.Program) : Semantics.Program) ∧
+      globalInterleavedStep R ⟨program, db⟩ ⟨programInner, db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          exact ⟨_, rfl, Or.inl hInner⟩
+      | parRight hInner =>
+          cases no_step_from_program_skip hInner
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hRespect⟩
+      refine ⟨refreshVisible program db', ?_, ?_⟩
+      · simpa [refreshVisible] using hProgram
+      · exact Or.inr ⟨rfl, by simpa [respectsRely] using hRespect.1⟩
+
+theorem globalMultiStep_par_skip_right {R : Rely}
+    {program : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      GlobalMultiStep R
+        ⟨(.par program (Command.skip : Semantics.Program) : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ programInner,
+      finalCfg.program = (.par programInner (Command.skip : Semantics.Program) : Semantics.Program) ∧
+      GlobalMultiStep R ⟨program, db⟩ ⟨programInner, finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨program, rfl, MultiStep.refl⟩
+  | tail hPrev hLast ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgramActual midDb =>
+          rcases ih with ⟨midProgram, hMidEq, hPrev'⟩
+          cases hMidEq
+          rcases globalInterleavedStep_par_skip_right hLast with ⟨midProgram', hLastEq, hLast'⟩
+          exact ⟨midProgram', hLastEq, MultiStep.tail hPrev' hLast'⟩
+
 theorem ParallelValid.invariant {I : Assertion} {R : Rely}
     {program : Semantics.Program} {specs : TxnId → StateSpec}
     (h : ParallelValid I R program specs I)
@@ -383,6 +446,24 @@ theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
       rw [hProgram, hNext, hDbEq]
       exact Semantics.Step.txnCommit hCommitGuard
     exact hTxn midCfg nextProgram nextDb hRun hStep hNext
+
+theorem parallelValid_par_skip_right {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program specs Ipost) :
+    ParallelValid Ipre R (.par program (Command.skip : Semantics.Program)) specs Ipost := by
+  intro db hDb
+  rcases h db hDb with ⟨hPost, hCommit⟩
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun hDone
+    rcases globalMultiStep_par_skip_right hRun with ⟨finalProgram, hProgram, hRun'⟩
+    rw [hProgram] at hDone
+    exact hPost ⟨finalProgram, finalCfg.globalDb⟩ hRun' (programDone_par_skip_right_inv hDone)
+  · intro midCfg nextProgram nextDb txnId hRun hCommitStep
+    rcases globalMultiStep_par_skip_right hRun with ⟨midProgram, hProgram, hRun'⟩
+    rcases txnCommitStep_par_skip_right (by simpa [hProgram] using hCommitStep) with
+      ⟨nextInner, hNextEq, hCommitInner⟩
+    subst hNextEq
+    exact hCommit ⟨midProgram, midCfg.globalDb⟩ nextInner nextDb txnId hRun' hCommitInner
 
 end Server
 
