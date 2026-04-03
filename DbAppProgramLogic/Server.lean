@@ -4,6 +4,8 @@ namespace DbAppProgramLogic
 
 abbrev StateSpec := Database → Database → Prop
 abbrev StateTransformer := Database → Database
+abbrev RequestSpec (Req : Type) := Req → StateSpec
+abbrev RequestTransformer (Req : Type) := Req → StateTransformer
 
 namespace StateSpec
 
@@ -11,6 +13,17 @@ def graph (f : StateTransformer) : StateSpec :=
   fun db db' => db' = f db
 
 end StateSpec
+
+namespace RequestSpec
+
+def assign {Req : Type} (requestOf : TxnId → Req) (specs : RequestSpec Req) : TxnId → StateSpec :=
+  fun txnId => specs (requestOf txnId)
+
+def graphAssign {Req : Type} (requestOf : TxnId → Req) (fs : RequestTransformer Req) :
+    TxnId → StateSpec :=
+  assign requestOf (fun req => StateSpec.graph (fs req))
+
+end RequestSpec
 
 namespace Server
 
@@ -115,6 +128,9 @@ namespace CommitLog
 def txnIds (events : List CommitEvent) : List TxnId :=
   events.map CommitEvent.txnId
 
+def requests {Req : Type} (requestOf : TxnId → Req) (events : List CommitEvent) : List Req :=
+  events.map (fun event => requestOf event.txnId)
+
 theorem ofCommitSequence {specs : TxnId → StateSpec}
     {db db' : Database} {commits : List TxnId}
     (hSeq : CommitSequence specs db commits db') :
@@ -170,6 +186,18 @@ theorem graph_implies_foldl {fs : TxnId → StateTransformer}
   | @cons db0 db1 db2 txnId rest hHead hTail ih =>
       rcases hHead with rfl
       simp [ih]
+
+theorem graphAssign_implies_foldl_requests {Req : Type} {requestOf : TxnId → Req}
+    {fs : RequestTransformer Req}
+    {db db' : Database} {events : List CommitEvent}
+    (hLog : CommitLog (RequestSpec.graphAssign requestOf fs) db events db') :
+    db' = List.foldl (fun current req => fs req current) db (requests requestOf events) := by
+  induction hLog with
+  | nil =>
+      simp [requests]
+  | @cons db0 db1 db2 txnId rest hHead hTail ih =>
+      rcases hHead with rfl
+      simp [requests, ih, RequestSpec.graphAssign, RequestSpec.assign]
 
 end CommitLog
 
@@ -743,6 +771,58 @@ theorem reachableGraphSpecs_sound {I : Assertion} {R : Rely}
       hDb
       hRun
   · exact eventFoldl_of_reachableGraphSpecs hStable hPreserve hSilent hCommits hDb hRun
+
+theorem eventFoldl_of_reachableRequestGraphSpecs {Req : Type} {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {requestOf : TxnId → Req} {fs : RequestTransformer Req}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ req db, I db → I (fs req db))
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hCommits :
+      ReachableCommitSpecs I R program (RequestSpec.graphAssign requestOf fs)) :
+    ∀ {db : Database} {finalCfg : GlobalConfig},
+      I db →
+      GlobalMultiStep R ⟨program, db⟩ finalCfg →
+      ∃ events,
+        finalCfg.globalDb =
+          List.foldl (fun current req => fs req current) db (CommitLog.requests requestOf events) := by
+  intro db finalCfg hDb hRun
+  rcases parallelValid_commitLog hSilent
+      (parallelValid_of_reachableCommitSpecs hStable
+        (by
+          intro txnId db db' hI hSpec
+          rcases hSpec with rfl
+          exact hPreserve (requestOf txnId) db hI)
+        hCommits)
+      hDb
+      hRun with
+    ⟨events, hLog⟩
+  exact ⟨events, CommitLog.graphAssign_implies_foldl_requests hLog⟩
+
+theorem reachableRequestGraphSpecs_sound {Req : Type} {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {requestOf : TxnId → Req} {fs : RequestTransformer Req}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ req db, I db → I (fs req db))
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hCommits :
+      ReachableCommitSpecs I R program (RequestSpec.graphAssign requestOf fs)) :
+    ∀ {db : Database} {finalCfg : GlobalConfig},
+      I db →
+      GlobalMultiStep R ⟨program, db⟩ finalCfg →
+      I finalCfg.globalDb ∧
+        ∃ events,
+          finalCfg.globalDb =
+            List.foldl (fun current req => fs req current) db (CommitLog.requests requestOf events) := by
+  intro db finalCfg hDb hRun
+  refine ⟨?_, ?_⟩
+  · exact reachableInvariant_of_reachableCommitSpecs hStable
+      (by
+        intro txnId db db' hI hSpec
+        rcases hSpec with rfl
+        exact hPreserve (requestOf txnId) db hI)
+      hCommits
+      hDb
+      hRun
+  · exact eventFoldl_of_reachableRequestGraphSpecs hStable hPreserve hSilent hCommits hDb hRun
 
 theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
     {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}

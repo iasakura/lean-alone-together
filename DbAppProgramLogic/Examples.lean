@@ -98,6 +98,12 @@ def zeroBalanceApply : StateTransformer :=
 def zeroBalanceServer : Semantics.Program :=
   .par (.txn 0 Database.uniqueIds zeroBalanceInsertBody) .skip
 
+def zeroBalanceRequestOf : TxnId → Unit :=
+  fun _ => ()
+
+def zeroBalanceRequestApply : RequestTransformer Unit :=
+  fun _ => zeroBalanceApply
+
 theorem false_rely_silent :
     ∀ db db' : Database, (fun _ _ => False) db db' → db' = db := by
   intro db db' hFalse
@@ -206,6 +212,31 @@ theorem zeroBalanceServer_prefix_sound
       exact nonnegativeBalances_flush_zeroBalanceRow hInv)
     false_rely_silent
     zeroBalanceServer_reachableCommitSpecs
+    hDb
+    hRun
+
+theorem zeroBalanceServer_request_family_sound
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    nonnegativeBalances finalCfg.globalDb ∧
+      ∃ events,
+        finalCfg.globalDb =
+          List.foldl
+            (fun current req => zeroBalanceRequestApply req current)
+            db
+            (Server.CommitLog.requests zeroBalanceRequestOf events) := by
+  exact DbAppProgramLogic.Server.reachableRequestGraphSpecs_sound
+    (Logic.stableAssertion_false nonnegativeBalances)
+    (by
+      intro _req db hInv
+      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
+    false_rely_silent
+    (by
+      intro db hDb midCfg nextProgram nextDb txnId hReach hCommit
+      change StateSpec.graph (zeroBalanceRequestApply (zeroBalanceRequestOf txnId)) midCfg.globalDb nextDb
+      exact zeroBalanceServer_reachableCommitSpecs
+        db hDb midCfg nextProgram nextDb txnId hReach hCommit)
     hDb
     hRun
 
