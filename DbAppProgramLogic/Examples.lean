@@ -389,6 +389,24 @@ theorem addInterest_inferMembershipFull_contains_updatedRow :
       addInterest_inferMembershipFull addInterest_effect
   exact hSound.2 (by simp)
 
+theorem addInterest_fullMembership_matches_setEffect :
+    FirstOrder.denoteMembership
+      ((SetLanguage.Env.ofDatabases [] [interestBaseRow]).bindElem "x" interestUpdatedRow)
+      addInterestFullMembership ↔
+    SetLanguage.denote
+      (SetLanguage.Env.ofDatabases [] [interestBaseRow])
+      addInterestSetExpr
+      interestUpdatedRow := by
+  exact FirstOrder.inferMembershipFull_matches_inferSetEffect
+    1 [] "x" addInterestBody [interestBaseRow]
+    addInterestFullMembership
+    addInterestSetExpr
+    [interestUpdatedRow]
+    interestUpdatedRow
+    addInterest_inferMembershipFull
+    addInterest_setEffect
+    addInterest_effect
+
 theorem zeroBalance_singletonMembershipFO_holds :
     FirstOrder.denoteMembership
       ((SetLanguage.Env.ofDatabases [] []).bindElem "x" zeroBalanceRow)

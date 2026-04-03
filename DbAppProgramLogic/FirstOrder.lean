@@ -1113,6 +1113,20 @@ theorem inferMembershipFull_sound (txnId : TxnId) (env : DbAppProgramLogic.Env)
           simpa [inferMembershipFull] using hFormula
         exact inferMembership_sound txnId env outVar (.par left right) db φ rows row hFormula' hEffect
 
+theorem inferMembershipFull_matches_inferSetEffect (txnId : TxnId) (env : DbAppProgramLogic.Env)
+    (outVar : VarName) (body : Semantics.Program) (db : Database)
+    (φ : MembershipFormula) (s : SetLanguage.SetExpr) (rows : Database) (row : Row)
+    (hFormula : inferMembershipFull txnId env outVar body db = some φ)
+    (hSet : Transformer.inferSetEffect txnId env body db = some s)
+    (hEffect : Transformer.inferEffect txnId env body db = some rows) :
+    denoteMembership ((SetLanguage.Env.ofDatabases [] db).bindElem outVar row) φ ↔
+      SetLanguage.denote (SetLanguage.Env.ofDatabases [] db) s row := by
+  have hMembership :=
+    inferMembershipFull_sound txnId env outVar body db φ rows row hFormula hEffect
+  have hSetDenotation :=
+    Transformer.inferSetEffect_sound txnId env body db s rows row hSet hEffect
+  exact Iff.trans hMembership hSetDenotation.symm
+
 theorem inferForeachMembership_sound (txnId : TxnId) (env : DbAppProgramLogic.Env)
     (outVar doneVar elemVar : VarName) (body : Semantics.Program) (db : Database)
     (done remaining : SetLit) (φ : MembershipFormula) (rows : Database) (row : Row)
