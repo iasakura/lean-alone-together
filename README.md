@@ -476,10 +476,12 @@ Lean では現在、これに対応する object-language の演算子として:
 
 - 単一 transaction から `ParallelValid` への bridge
 - `.par p skip` の base case
+- `CombinedSpecs` と `ParallelCompatible` による RG 風の spec/rely interface
 - `ProgramAcceptsSpecs` による compatibility の切り出し
+- non-commit step に限った左右 projection 補題
 - commit-order theorem
 
-です。一般の並列合成を証明するには、兄弟 transaction の commit を相手側の rely として再解釈する projection / simulation 補題を追加する必要があります。
+です。一般の並列合成を証明するには、兄弟 transaction の commit を相手側の rely として再解釈する projection / simulation 補題を追加する必要があります。現在はそのうち、commit が起きない step については `globalInterleavedStep_project_left_noncommit` / `..._right_noncommit` で切り出せており、残っている本体は sibling commit case です。
 
 ## いまの README の立場
 

@@ -314,6 +314,98 @@ theorem globalInterleavedStep_preservesInvariant_of_commitSpecs
       rcases hRely with ⟨_hProgram, hRespect⟩
       exact hStable _ _ hI (respectsRely_implies hRespect)
 
+theorem globalInterleavedStep_project_left_noncommit {R : Rely}
+    {left right program' : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStep R
+        ⟨(.par left right : Semantics.Program), db⟩
+        ⟨program', db'⟩)
+    (hNoCommit :
+      ¬ ∃ txnId,
+        TxnCommitStep txnId
+          (.par left right : Semantics.Program)
+          db
+          program'
+          db') :
+    ∃ left' right',
+      program' = (.par left' right' : Semantics.Program) ∧
+      GlobalMultiStep R ⟨left, db⟩ ⟨left', db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨_, right, rfl, ?_⟩
+              subst hEq
+              exact globalMultiStep_single R hInner
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+      | parRight hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨left, _, rfl, ?_⟩
+              subst hEq
+              exact MultiStep.refl
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parRight hCommit⟩
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hRespect⟩
+      refine ⟨refreshVisible left db', refreshVisible right db', hProgram, ?_⟩
+      exact MultiStep.tail MultiStep.refl (Or.inr ⟨rfl, hRespect.1⟩)
+
+theorem globalInterleavedStep_project_right_noncommit {R : Rely}
+    {left right program' : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStep R
+        ⟨(.par left right : Semantics.Program), db⟩
+        ⟨program', db'⟩)
+    (hNoCommit :
+      ¬ ∃ txnId,
+        TxnCommitStep txnId
+          (.par left right : Semantics.Program)
+          db
+          program'
+          db') :
+    ∃ left' right',
+      program' = (.par left' right' : Semantics.Program) ∧
+      GlobalMultiStep R ⟨right, db⟩ ⟨right', db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨_, right, rfl, ?_⟩
+              subst hEq
+              exact MultiStep.refl
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+      | parRight hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨left, _, rfl, ?_⟩
+              subst hEq
+              exact globalMultiStep_single R hInner
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parRight hCommit⟩
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hRespect⟩
+      refine ⟨refreshVisible left db', refreshVisible right db', hProgram, ?_⟩
+      exact MultiStep.tail MultiStep.refl (Or.inr ⟨rfl, hRespect.2⟩)
+
 theorem globalInterleavedStep_sameDb_or_commit {R : Rely}
     (hSilent : ∀ db db', R db db' → db' = db)
     {cfg cfg' : GlobalConfig}
@@ -370,6 +462,9 @@ def ReachableCommitSpecs (Ipre : Assertion) (R : Rely)
         TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
         specs txnId midCfg.globalDb nextDb
 
+def CombinedSpecs (leftSpecs rightSpecs : TxnId → StateSpec) : TxnId → StateSpec :=
+  fun txnId db db' => leftSpecs txnId db db' ∨ rightSpecs txnId db db'
+
 def ProgramAcceptsSpecs (R : Rely) (specs : TxnId → StateSpec) :
     Semantics.Program → Prop
   | .txn txnId isolation _body =>
@@ -386,6 +481,18 @@ def ProgramAcceptsSpecs (R : Rely) (specs : TxnId → StateSpec) :
       ∀ otherTxn db db',
         specs otherTxn db db' →
         respectsRely R program db db'
+
+def ParallelCompatible (R : Rely)
+    (left : Semantics.Program) (leftSpecs : TxnId → StateSpec)
+    (right : Semantics.Program) (rightSpecs : TxnId → StateSpec) : Prop :=
+  ProgramAcceptsSpecs R rightSpecs left ∧
+    ProgramAcceptsSpecs R leftSpecs right
+
+theorem parallelCompatible_symm {R : Rely}
+    {left right : Semantics.Program} {leftSpecs rightSpecs : TxnId → StateSpec}
+    (h : ParallelCompatible R left leftSpecs right rightSpecs) :
+    ParallelCompatible R right rightSpecs left leftSpecs := by
+  exact ⟨h.2, h.1⟩
 
 def HandlerRefines (P : Assertion) (R : Rely)
     (program : Semantics.Program) (spec : StateSpec) (Q : Assertion) : Prop :=
