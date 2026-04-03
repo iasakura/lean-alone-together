@@ -112,6 +112,9 @@ end CommitSequence
 
 namespace CommitLog
 
+def txnIds (events : List CommitEvent) : List TxnId :=
+  events.map CommitEvent.txnId
+
 theorem ofCommitSequence {specs : TxnId → StateSpec}
     {db db' : Database} {commits : List TxnId}
     (hSeq : CommitSequence specs db commits db') :
@@ -149,6 +152,24 @@ theorem events_match_specs {specs : TxnId → StateSpec}
       · cases hEq
         exact hHead
       · exact ih _ hIn
+
+theorem graph_implies_eventEq {fs : TxnId → StateTransformer}
+    {db db' : Database} {events : List CommitEvent}
+    (hLog : CommitLog (fun txnId => StateSpec.graph (fs txnId)) db events db') :
+    ∀ event ∈ events, event.after = fs event.txnId event.before := by
+  intro event hMem
+  exact events_match_specs hLog event hMem
+
+theorem graph_implies_foldl {fs : TxnId → StateTransformer}
+    {db db' : Database} {events : List CommitEvent}
+    (hLog : CommitLog (fun txnId => StateSpec.graph (fs txnId)) db events db') :
+    db' = List.foldl (fun current event => fs event.txnId current) db events := by
+  induction hLog with
+  | nil =>
+      simp
+  | @cons db0 db1 db2 txnId rest hHead hTail ih =>
+      rcases hHead with rfl
+      simp [ih]
 
 end CommitLog
 
@@ -282,6 +303,15 @@ def ParallelValid (Ipre : Assertion) (R : Rely)
         TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
         specs txnId midCfg.globalDb nextDb)
 
+def ReachableCommitSpecs (Ipre : Assertion) (R : Rely)
+    (program : Semantics.Program) (specs : TxnId → StateSpec) : Prop :=
+  ∀ db,
+    Ipre db →
+      ∀ midCfg nextProgram nextDb txnId,
+        GlobalMultiStep R ⟨program, db⟩ midCfg →
+        TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
+        specs txnId midCfg.globalDb nextDb
+
 def ProgramAcceptsSpecs (R : Rely) (specs : TxnId → StateSpec) :
     Semantics.Program → Prop
   | .txn txnId isolation _body =>
@@ -302,6 +332,42 @@ def ProgramAcceptsSpecs (R : Rely) (specs : TxnId → StateSpec) :
 def HandlerRefines (P : Assertion) (R : Rely)
     (program : Semantics.Program) (spec : StateSpec) (Q : Assertion) : Prop :=
   GlobalValid P R program spec Q
+
+theorem reachableInvariant_of_reachableCommitSpecs {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ txnId db db', I db → specs txnId db db' → I db')
+    (hCommits : ReachableCommitSpecs I R program specs)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : I db)
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    I finalCfg.globalDb := by
+  induction hRun with
+  | refl =>
+      simpa using hDb
+  | tail hPrev hLast ih =>
+      cases hLast with
+      | inl hActual =>
+          rcases step_sameDb_or_commit hActual with hEq | hCommit
+          · simpa [hEq] using ih
+          · rcases hCommit with ⟨txnId, hCommit⟩
+            exact hPreserve txnId _ _ ih (hCommits db hDb _ _ _ _ hPrev hCommit)
+      | inr hRely =>
+          rcases hRely with ⟨_hProgram, hRespect⟩
+          exact hStable _ _ ih (respectsRely_implies hRespect)
+
+theorem parallelValid_of_reachableCommitSpecs {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ txnId db db', I db → specs txnId db db' → I db')
+    (hCommits : ReachableCommitSpecs I R program specs) :
+    ParallelValid I R program specs I := by
+  intro db hDb
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun _hDone
+    exact reachableInvariant_of_reachableCommitSpecs hStable hPreserve hCommits hDb hRun
+  · intro midCfg nextProgram nextDb txnId hRun hCommit
+    exact hCommits db hDb midCfg nextProgram nextDb txnId hRun hCommit
 
 theorem programAcceptsSpecs_respectsRely {R : Rely} {specs : TxnId → StateSpec}
     {program : Semantics.Program}
@@ -566,6 +632,13 @@ theorem ParallelValid.commitSpec {Ipre : Assertion} {R : Rely}
     specs txnId midCfg.globalDb nextDb := by
   exact (h db hDb).2 midCfg nextProgram nextDb txnId hRun hCommit
 
+theorem ParallelValid.reachableCommitSpecs {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program specs Ipost) :
+    ReachableCommitSpecs Ipre R program specs := by
+  intro db hDb midCfg nextProgram nextDb txnId hRun hCommit
+  exact ParallelValid.commitSpec h hDb hRun hCommit
+
 theorem parallelValid_commitSequence {Ipre : Assertion} {R : Rely}
     {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
     (hSilent : ∀ db db', R db db' → db' = db)
@@ -609,6 +682,67 @@ theorem parallelValid_foldl_of_graphSpecs {Ipre : Assertion} {R : Rely}
     ∃ commits, finalCfg.globalDb = List.foldl (fun current txnId => fs txnId current) db commits := by
   rcases parallelValid_commitSequence hSilent hValid hDb hRun with ⟨commits, hSeq⟩
   refine ⟨commits, (CommitSequence.graph_iff_foldl.mp hSeq)⟩
+
+theorem parallelValid_eventFoldl_of_graphSpecs {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {fs : TxnId → StateTransformer} {Ipost : Assertion}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValid Ipre R program (fun txnId => StateSpec.graph (fs txnId)) Ipost)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ events,
+      finalCfg.globalDb =
+        List.foldl (fun current (event : CommitEvent) => fs event.txnId current) db events := by
+  rcases parallelValid_commitLog hSilent hValid hDb hRun with ⟨events, hLog⟩
+  exact ⟨events, CommitLog.graph_implies_foldl hLog⟩
+
+theorem eventFoldl_of_reachableGraphSpecs {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {fs : TxnId → StateTransformer}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ txnId db, I db → I (fs txnId db))
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hCommits :
+      ReachableCommitSpecs I R program (fun txnId => StateSpec.graph (fs txnId))) :
+    ∀ {db : Database} {finalCfg : GlobalConfig},
+      I db →
+      GlobalMultiStep R ⟨program, db⟩ finalCfg →
+      ∃ events,
+        finalCfg.globalDb =
+          List.foldl (fun current (event : CommitEvent) => fs event.txnId current) db events := by
+  intro db finalCfg hDb hRun
+  have hValid :
+      ParallelValid I R program (fun txnId => StateSpec.graph (fs txnId)) I := by
+    refine parallelValid_of_reachableCommitSpecs hStable ?_ hCommits
+    intro txnId db db' hI hSpec
+    rcases hSpec with rfl
+    exact hPreserve txnId db hI
+  exact parallelValid_eventFoldl_of_graphSpecs hSilent hValid hDb hRun
+
+theorem reachableGraphSpecs_sound {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {fs : TxnId → StateTransformer}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ txnId db, I db → I (fs txnId db))
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hCommits :
+      ReachableCommitSpecs I R program (fun txnId => StateSpec.graph (fs txnId))) :
+    ∀ {db : Database} {finalCfg : GlobalConfig},
+      I db →
+      GlobalMultiStep R ⟨program, db⟩ finalCfg →
+      I finalCfg.globalDb ∧
+        ∃ events,
+          finalCfg.globalDb =
+            List.foldl (fun current (event : CommitEvent) => fs event.txnId current) db events := by
+  intro db finalCfg hDb hRun
+  refine ⟨?_, ?_⟩
+  · exact reachableInvariant_of_reachableCommitSpecs hStable
+      (by
+        intro txnId db db' hI hSpec
+        rcases hSpec with rfl
+        exact hPreserve txnId db hI)
+      hCommits
+      hDb
+      hRun
+  · exact eventFoldl_of_reachableGraphSpecs hStable hPreserve hSilent hCommits hDb hRun
 
 theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
     {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}

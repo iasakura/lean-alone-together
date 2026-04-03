@@ -148,6 +148,67 @@ theorem zeroBalanceServer_commit_log {db : Database} {finalCfg : GlobalConfig}
     hDb
     hRun
 
+theorem zeroBalanceServer_reachableCommitSpecs :
+    Server.ReachableCommitSpecs nonnegativeBalances (fun _ _ => False)
+      zeroBalanceServer
+      (fun _ => StateSpec.graph zeroBalanceApply) := by
+  exact Server.ParallelValid.reachableCommitSpecs zeroBalanceServer_parallelValid
+
+theorem zeroBalanceServer_prefix_invariant {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    nonnegativeBalances finalCfg.globalDb := by
+  exact Server.reachableInvariant_of_reachableCommitSpecs
+    (Logic.stableAssertion_false nonnegativeBalances)
+    (by
+      intro _txnId db db' hInv hSpec
+      rcases hSpec with rfl
+      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
+    zeroBalanceServer_reachableCommitSpecs
+    hDb
+    hRun
+
+theorem zeroBalanceServer_event_commit_order_via_reachable
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    ∃ events,
+      finalCfg.globalDb =
+        List.foldl
+          (fun current (_event : Server.CommitEvent) => zeroBalanceApply current)
+          db
+          events := by
+  exact Server.eventFoldl_of_reachableGraphSpecs
+    (Logic.stableAssertion_false nonnegativeBalances)
+    (by
+      intro _txnId db hInv
+      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
+    false_rely_silent
+    zeroBalanceServer_reachableCommitSpecs
+    hDb
+    hRun
+
+theorem zeroBalanceServer_prefix_sound
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    nonnegativeBalances finalCfg.globalDb ∧
+  ∃ events,
+        finalCfg.globalDb =
+          List.foldl
+            (fun current (_event : Server.CommitEvent) => zeroBalanceApply current)
+            db
+            events := by
+  exact DbAppProgramLogic.Server.reachableGraphSpecs_sound
+    (Logic.stableAssertion_false nonnegativeBalances)
+    (by
+      intro _txnId db hInv
+      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
+    false_rely_silent
+    zeroBalanceServer_reachableCommitSpecs
+    hDb
+    hRun
+
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =
       some
