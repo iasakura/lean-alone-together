@@ -226,9 +226,129 @@ def ParallelValid (Ipre : Assertion) (R : Rely)
         TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
         specs txnId midCfg.globalDb nextDb)
 
+def ProgramAcceptsSpecs (R : Rely) (specs : TxnId → StateSpec) :
+    Semantics.Program → Prop
+  | .txn txnId isolation _body =>
+      ∀ otherTxn db db' localDb snapshot currentBody,
+        specs otherTxn db db' →
+        respectsRely R (.txnRuntime txnId isolation localDb snapshot currentBody) db db'
+  | .txnRuntime txnId isolation _localDb _snapshot _body =>
+      ∀ otherTxn db db' localDb snapshot currentBody,
+        specs otherTxn db db' →
+        respectsRely R (.txnRuntime txnId isolation localDb snapshot currentBody) db db'
+  | .par left right =>
+      ProgramAcceptsSpecs R specs left ∧ ProgramAcceptsSpecs R specs right
+  | program =>
+      ∀ otherTxn db db',
+        specs otherTxn db db' →
+        respectsRely R program db db'
+
 def HandlerRefines (P : Assertion) (R : Rely)
     (program : Semantics.Program) (spec : StateSpec) (Q : Assertion) : Prop :=
   GlobalValid P R program spec Q
+
+theorem programAcceptsSpecs_respectsRely {R : Rely} {specs : TxnId → StateSpec}
+    {program : Semantics.Program}
+    (hAccept : ProgramAcceptsSpecs R specs program)
+    {txnId : TxnId} {db db' : Database}
+    (hSpec : specs txnId db db') :
+    respectsRely R program db db' := by
+  cases program with
+  | txn txnId0 isolation body =>
+      have hRuntime :
+          respectsRely R
+            (.txnRuntime txnId0 isolation [] db (Command.skip : Semantics.Program))
+            db
+            db' := by
+        exact hAccept txnId db db' [] db (Command.skip : Semantics.Program) hSpec
+      have hPair : R db db' ∧ isolation.commit [] db db' := by
+        simpa [respectsRely] using hRuntime
+      simpa [respectsRely] using hPair.1
+  | txnRuntime txnId0 isolation localDb snapshot body =>
+      exact hAccept txnId db db' localDb snapshot body hSpec
+  | par left right =>
+      rcases hAccept with ⟨hLeft, hRight⟩
+      exact ⟨programAcceptsSpecs_respectsRely hLeft hSpec,
+        programAcceptsSpecs_respectsRely hRight hSpec⟩
+  | skip =>
+      exact hAccept txnId db db' hSpec
+  | letE x expr body =>
+      exact hAccept txnId db db' hSpec
+  | ite cond thenBranch elseBranch =>
+      exact hAccept txnId db db' hSpec
+  | seq left right =>
+      exact hAccept txnId db db' hSpec
+  | insert expr =>
+      exact hAccept txnId db db' hSpec
+  | delete source predicate =>
+      exact hAccept txnId db db' hSpec
+  | select binder source predicate body =>
+      exact hAccept txnId db db' hSpec
+  | update source updateExpr predicate =>
+      exact hAccept txnId db db' hSpec
+  | foreach source doneVar elemVar body =>
+      exact hAccept txnId db db' hSpec
+  | foreachRuntime done remaining doneVar elemVar body =>
+      exact hAccept txnId db db' hSpec
+
+theorem refreshVisible_preserves_acceptsSpecs {R : Rely} {specs : TxnId → StateSpec}
+    {program : Semantics.Program} {db : Database}
+    (hAccept : ProgramAcceptsSpecs R specs program) :
+    ProgramAcceptsSpecs R specs (refreshVisible program db) := by
+  cases program with
+  | txnRuntime txnId isolation localDb snapshot body =>
+      simpa [refreshVisible, ProgramAcceptsSpecs] using hAccept
+  | par left right =>
+      exact ⟨refreshVisible_preserves_acceptsSpecs hAccept.1,
+        refreshVisible_preserves_acceptsSpecs hAccept.2⟩
+  | _ =>
+      simpa [refreshVisible] using hAccept
+
+theorem step_preserves_acceptsSpecs {R : Rely} {specs : TxnId → StateSpec}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hStep : Semantics.Step program db program' db')
+    (hAccept : ProgramAcceptsSpecs R specs program) :
+    ProgramAcceptsSpecs R specs program' := by
+  induction hStep with
+  | txnStart =>
+      simpa [ProgramAcceptsSpecs] using hAccept
+  | txnExec =>
+      simpa [ProgramAcceptsSpecs] using hAccept
+  | txnCommit =>
+      intro otherTxn db₀ db₁ hSpec
+      have hBase : R db₀ db₁ := by
+        exact respectsRely_implies (programAcceptsSpecs_respectsRely hAccept hSpec)
+      simpa [ProgramAcceptsSpecs, respectsRely] using hBase
+  | parLeft hInner ih =>
+      rcases hAccept with ⟨hLeft, hRight⟩
+      exact ⟨ih hLeft, hRight⟩
+  | parRight hInner ih =>
+      rcases hAccept with ⟨hLeft, hRight⟩
+      exact ⟨hLeft, ih hRight⟩
+
+theorem globalInterleavedStep_preserves_acceptsSpecs {R : Rely} {specs : TxnId → StateSpec}
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStep R cfg cfg')
+    (hAccept : ProgramAcceptsSpecs R specs cfg.program) :
+    ProgramAcceptsSpecs R specs cfg'.program := by
+  cases hStep with
+  | inl hActual =>
+      exact step_preserves_acceptsSpecs hActual hAccept
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, _hRespect⟩
+      rw [hProgram]
+      exact refreshVisible_preserves_acceptsSpecs hAccept
+
+theorem globalMultiStep_preserves_acceptsSpecs {R : Rely} {specs : TxnId → StateSpec}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hRun : GlobalMultiStep R cfg₁ cfg₂)
+    (hAccept : ProgramAcceptsSpecs R specs cfg₁.program) :
+    ProgramAcceptsSpecs R specs cfg₂.program := by
+  induction hRun with
+  | refl =>
+      exact hAccept
+  | tail hPrev hLast ih =>
+      exact globalInterleavedStep_preserves_acceptsSpecs hLast ih
 
 theorem refreshVisible_preserves_nonParallel
     {program : Semantics.Program} {db : Database}
