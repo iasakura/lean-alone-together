@@ -35,7 +35,8 @@
 - `DbAppProgramLogic/Server.lean`
   - handler-level refinement の別名 `HandlerRefines`
   - parallel / server 実行用の `ProgramDone`, `TxnCommitStep`, `ParallelValid`
-  - commit-order の合成定理
+  - compatibility 条件 `ProgramAcceptsSpecs`
+  - commit-order の合成定理と `CommitLog`
 - `DbAppProgramLogic/Examples.lean`
   - 現状の基盤を使った小さな検証例
 
@@ -71,7 +72,8 @@
 | Sec. 5 の transaction-level bridge | `Logic.lean` の `txnGlobalValid_of_localValid` と `Transformer.lean` の `vcg_sound`, `vcg_sound_false` | 推論した effect を `GlobalValid` に戻します |
 | 実アプリ向けの handler spec 層 | `Server.lean` の `HandlerRefines` | 論文の top-level invariant judgment を壊さず、上位層で `P/Q` を持つための別名です |
 | parallel / server の quiescent semantics | `Server.lean` の `ProgramDone`, `TxnCommitStep`, `ParallelValid` | 論文本体にはない追加層で、API サーバーのような並列 handler 群を扱うためのものです |
-| commit-order 合成定理 | `Server.lean` の `parallelValid_commitSequence`, `parallelValid_foldl_of_graphSpecs` | closed-system 仮定の下で、停止時 state が commit 順の仕様合成になることを示します |
+| parallel compatibility | `Server.lean` の `ProgramAcceptsSpecs` | sibling handler の commit spec を rely として受けられることを表す追加条件です |
+| commit-order 合成定理 | `Server.lean` の `parallelValid_commitSequence`, `parallelValid_foldl_of_graphSpecs`, `parallelValid_commitLog` | closed-system 仮定の下で、停止時 state が commit 順の仕様合成になり、各 commit の `txnId / before / after` log も抽出できます |
 | 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceServer_*`, `addInterest*` | transaction 単体と server-level の小例があります |
 
 ## Lean 側でどうエンコードしたか
@@ -299,6 +301,7 @@ Lean 側では現在、これを 2 段に分けています。
 - 単一 transaction の `HandlerRefines`
 - それを `txn || skip` に持ち上げた `ParallelValid`
 - commit-order の `foldl` 合成定理
+- `txnId / before / after` を持つ `CommitLog`
 
 までを end-to-end で確認しています。これはまだ一般の `p || q` 規則ではありませんが、server-level の層が Lean 上で実際に使えることの最小例です。
 
@@ -450,6 +453,7 @@ Lean では現在、これに対応する object-language の演算子として:
 
 - 単一 transaction から `ParallelValid` への bridge
 - `.par p skip` の base case
+- `ProgramAcceptsSpecs` による compatibility の切り出し
 - commit-order theorem
 
 です。一般の並列合成を証明するには、兄弟 transaction の commit を相手側の rely として再解釈する projection / simulation 補題を追加する必要があります。
