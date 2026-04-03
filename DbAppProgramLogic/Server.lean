@@ -440,6 +440,74 @@ theorem globalMultiStep_preservesInvariant_of_commitSpecs
       exact globalInterleavedStep_preservesInvariant_of_commitSpecs
         hStable hCommitSpec hPreserve hLast ih
 
+inductive CommitFreeGlobalMultiStep (R : Rely) :
+    GlobalConfig → GlobalConfig → Prop where
+  | refl {cfg : GlobalConfig} :
+      CommitFreeGlobalMultiStep R cfg cfg
+  | tail {cfg₁ cfg₂ cfg₃ : GlobalConfig} :
+      CommitFreeGlobalMultiStep R cfg₁ cfg₂ →
+      globalInterleavedStep R cfg₂ cfg₃ →
+      (¬ ∃ txnId, TxnCommitStep txnId cfg₂.program cfg₂.globalDb cfg₃.program cfg₃.globalDb) →
+      CommitFreeGlobalMultiStep R cfg₁ cfg₃
+
+theorem CommitFreeGlobalMultiStep.toMultiStep {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (h : CommitFreeGlobalMultiStep R cfg₁ cfg₂) :
+    GlobalMultiStep R cfg₁ cfg₂ := by
+  induction h with
+  | refl =>
+      exact MultiStep.refl
+  | tail hPrev hStep hNoCommit ih =>
+      exact MultiStep.tail ih hStep
+
+theorem commitFreeGlobalMultiStep_project_left {R : Rely}
+    {left right : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      CommitFreeGlobalMultiStep R
+        ⟨(.par left right : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ left' right',
+      finalCfg.program = (.par left' right' : Semantics.Program) ∧
+      GlobalMultiStep R ⟨left, db⟩ ⟨left', finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨left, right, rfl, MultiStep.refl⟩
+  | tail hPrev hStep hNoCommit ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgram midDb =>
+          rcases ih with ⟨midLeft, midRight, hMidProgram, hLeftRun⟩
+          have hMidProgram' : midProgram = (.par midLeft midRight : Semantics.Program) := by
+            simpa using hMidProgram
+          subst hMidProgram'
+          rcases globalInterleavedStep_project_left_noncommit hStep hNoCommit with
+            ⟨nextLeft, nextRight, hNextProgram, hLeftStep⟩
+          exact ⟨nextLeft, nextRight, hNextProgram, MultiStep.trans hLeftRun hLeftStep⟩
+
+theorem commitFreeGlobalMultiStep_project_right {R : Rely}
+    {left right : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      CommitFreeGlobalMultiStep R
+        ⟨(.par left right : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ left' right',
+      finalCfg.program = (.par left' right' : Semantics.Program) ∧
+      GlobalMultiStep R ⟨right, db⟩ ⟨right', finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨left, right, rfl, MultiStep.refl⟩
+  | tail hPrev hStep hNoCommit ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgram midDb =>
+          rcases ih with ⟨midLeft, midRight, hMidProgram, hRightRun⟩
+          have hMidProgram' : midProgram = (.par midLeft midRight : Semantics.Program) := by
+            simpa using hMidProgram
+          subst hMidProgram'
+          rcases globalInterleavedStep_project_right_noncommit hStep hNoCommit with
+            ⟨nextLeft, nextRight, hNextProgram, hRightStep⟩
+          exact ⟨nextLeft, nextRight, hNextProgram, MultiStep.trans hRightRun hRightStep⟩
+
 def ParallelValid (Ipre : Assertion) (R : Rely)
     (program : Semantics.Program) (specs : TxnId → StateSpec) (Ipost : Assertion) : Prop :=
   ∀ db,
