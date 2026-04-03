@@ -178,8 +178,11 @@ theorem zeroBalanceHandler_refines_graph :
   simpa [Server.HandlerRefines, StateSpec.graph, zeroBalanceApply, zeroBalanceGuarantee] using
     zeroBalanceInsert_valid
 
+def zeroBalanceTxnSpec : TxnIndexedRequestSpec Unit :=
+  fun _ txnId => zeroBalanceGuaranteeOf txnId
+
 def zeroBalanceAbstractSpec : RequestSpec Unit :=
-  fun _ db db' => ∃ txnId, db' = Database.flush [zeroBalanceRowOf txnId] db
+  RequestSpec.hideTxnIds zeroBalanceRequestOf zeroBalanceTxnSpec
 
 theorem zeroBalanceHandler_refines_abstract (txnId : TxnId) :
     Server.HandlerRefines nonnegativeBalances (fun _ _ => False)
@@ -190,7 +193,7 @@ theorem zeroBalanceHandler_refines_abstract (txnId : TxnId) :
   · intro db hDb
     exact hDb
   · intro db db' hGuarantee
-    exact ⟨txnId, hGuarantee⟩
+    exact ⟨txnId, rfl, hGuarantee⟩
 
 theorem zeroBalanceServer_parallelValid :
     Server.ParallelValid nonnegativeBalances (fun _ _ => False)
@@ -207,7 +210,22 @@ theorem zeroBalanceServer_parallelValid_abstract :
       nonnegativeBalances := by
   refine Server.parallelValid_mono zeroBalanceServer_parallelValid ?_
   intro txnId db db' hGraph
-  exact ⟨0, hGraph⟩
+  exact ⟨0, rfl, hGraph⟩
+
+theorem zeroBalanceServer_parallelValid_txnIndexed :
+    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
+      zeroBalanceServer
+      (fun txnId => zeroBalanceTxnSpec (zeroBalanceRequestOf txnId) txnId)
+      nonnegativeBalances := by
+  refine Server.parallelValid_par_skip_right ?_
+  simpa [zeroBalanceTxnSpec, zeroBalanceRequestOf] using
+    (DbAppProgramLogic.Server.txnParallelValid_of_handlerRefines_at
+      (txnId := 0)
+      (specs := fun txnId => zeroBalanceTxnSpec (zeroBalanceRequestOf txnId) txnId)
+      (hSpecAt := by
+        intro db db' hSpec
+        simpa [zeroBalanceTxnSpec, zeroBalanceRequestOf] using hSpec)
+      (zeroBalanceInsert_valid_any 0))
 
 def zeroBalanceHandlerFamilySpec : DbAppProgramLogic.Server.HandlerFamilySpec Unit where
   invariant := nonnegativeBalances
@@ -225,6 +243,16 @@ def zeroBalanceVerifiedServerSpec : DbAppProgramLogic.Server.VerifiedRequestServ
     zeroBalanceRequestOf
     zeroBalanceServer
     zeroBalanceServer_parallelValid_abstract
+
+def zeroBalanceVerifiedTxnIndexedServerSpec : DbAppProgramLogic.Server.VerifiedRequestServerSpec Unit :=
+  @DbAppProgramLogic.Server.VerifiedRequestServerSpec.ofTxnIndexedSpecs Unit
+    nonnegativeBalances
+    (fun _ _ => False)
+    false_rely_silent
+    zeroBalanceRequestOf
+    zeroBalanceTxnSpec
+    zeroBalanceServer
+    zeroBalanceServer_parallelValid_txnIndexed
 
 theorem zeroBalanceServer_invariant {db : Database} {finalCfg : GlobalConfig}
     (hDb : nonnegativeBalances db)
@@ -375,6 +403,35 @@ theorem zeroBalanceVerifiedServerSpec_events
     zeroBalanceVerifiedServerSpec
     hDb
     hRun
+
+theorem zeroBalanceServer_txnIndexed_events
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    ∃ events : List Server.CommitEvent,
+      ∀ event ∈ events,
+        zeroBalanceTxnSpec (zeroBalanceRequestOf event.txnId) event.txnId
+          event.before event.after := by
+  rcases Server.parallelValid_commitLog
+      false_rely_silent
+      zeroBalanceServer_parallelValid_txnIndexed
+      hDb
+      hRun with
+    ⟨events, hLog⟩
+  exact ⟨events, Server.CommitLog.events_match_specs hLog⟩
+
+theorem zeroBalanceVerifiedTxnIndexedServerSpec_events
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    ∃ events : List Server.CommitEvent,
+      ∀ event ∈ events,
+        zeroBalanceAbstractSpec () event.before event.after := by
+  simpa using
+    (DbAppProgramLogic.Server.VerifiedRequestServerSpec.requestEvents
+      zeroBalanceVerifiedTxnIndexedServerSpec
+      hDb
+      hRun)
 
 def zeroBalanceVerifiedServer : DbAppProgramLogic.Server.VerifiedRequestServer Unit where
   invariant := nonnegativeBalances

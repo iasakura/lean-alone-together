@@ -1,13 +1,14 @@
 # POPL'18 弱分離プログラム論理の Lean 形式化
 
-このリポジトリは、`popl18.pdf` の中核にあるプログラム論理を Lean 4 で形式化したものです。対象は主に次の 4 層です。
+このリポジトリは、`popl18.pdf` の中核にあるプログラム論理を Lean 4 で形式化したものです。対象は主に次の 5 層です。
 
 - コア取引言語 `T`
 - small-step operational semantics
 - Sec. 4 の rely-guarantee logic
 - Sec. 5 の state-transformer / 集合言語 `S` ベースの検証
+- 実アプリ向けの request/handler/server correctness 層
 
-現状の実装はすでに有用ですが、論文の全内容をそのまま end-to-end で mechanize したものではありません。Fig. 7 に対応する集合言語 `S` と weakening の層はすでに入っていますが、formula 部分は shallow encoding で、Sec. 5.2 の `S -> FOL` 変換や SMT 向け自動化はまだ入っていません。
+現状の実装はすでに有用ですが、論文の全内容をそのまま end-to-end で mechanize したものではありません。Fig. 7 に対応する集合言語 `S` と weakening の層はすでに入り、Sec. 5.2 に向けた first-order membership encoding も `FirstOrder.lean` として部分的にあります。ただし formula 部分はまだ shallow encoding が中心で、Fig. 10 全体の syntax-directed 変換や SMT 向け自動化は未完成です。
 
 ## リポジトリ構成
 
@@ -32,10 +33,15 @@
   - symbolic set-language inference (`inferSetEffect`)
   - 簡約版 VCG と symbolic VCG
   - inference と semantics / global validity をつなぐ soundness 補題
+- `DbAppProgramLogic/FirstOrder.lean`
+  - `S` / transaction body から first-order membership formula を得る層
+  - `select`, `foreach` を含む full body encoder とその soundness
 - `DbAppProgramLogic/Server.lean`
   - handler-level refinement の別名 `HandlerRefines`
   - parallel / server 実行用の `ProgramDone`, `TxnCommitStep`, `ParallelValid`
   - compatibility 条件 `ProgramAcceptsSpecs`
+  - request family / server object を表す `HandlerFamily{Spec}`, `VerifiedRequestServer{Spec}`
+  - `TxnIndexedRequestSpec` と `RequestSpec.hideTxnIds`
   - commit-order の合成定理と `CommitLog`
 - `DbAppProgramLogic/Examples.lean`
   - 現状の基盤を使った小さな検証例
@@ -69,12 +75,14 @@
 | Fig. 8 の symbolic transformer | `Transformer.lean` の `inferSetEffect` | `SetExpr` を返す論文寄りの推論器です |
 | Theorem 5.1 相当 | `Transformer.lean` の `inferenceSound*`, `vcg_effect_sound`, `inferSetEffect_sound` | semantic / symbolic の両方について soundness を出しています |
 | weakened symbolic VCG | `Transformer.lean` の `symbolicVcg`, `symbolicVcgForTxn`, `symbolicPostForTxn` | symbolic postcondition を transaction に持ち上げる入口です |
+| Sec. 5.2 に向けた FOL membership 層 | `FirstOrder.lean` の `MembershipFormula`, `inferMembershipFull*` | full 自動化ではないが、transaction body から row-membership を first-order 風に落とす層です |
 | Sec. 5 の transaction-level bridge | `Logic.lean` の `txnGlobalValid_of_localValid` と `Transformer.lean` の `vcg_sound`, `vcg_sound_false` | 推論した effect を `GlobalValid` に戻します |
-| 実アプリ向けの handler spec 層 | `Server.lean` の `HandlerRefines` | 論文の top-level invariant judgment を壊さず、上位層で `P/Q` を持つための別名です |
+| 実アプリ向けの handler spec 層 | `Server.lean` の `HandlerRefines`, `HandlerFamily{Spec}`, `TxnIndexedRequestSpec` | 論文の top-level invariant judgment を壊さず、上位層で `P/Q`、request family、内部 txn-id 依存 spec を持つための追加層です |
 | parallel / server の quiescent semantics | `Server.lean` の `ProgramDone`, `TxnCommitStep`, `ParallelValid` | 論文本体にはない追加層で、API サーバーのような並列 handler 群を扱うためのものです |
 | parallel compatibility | `Server.lean` の `ProgramAcceptsSpecs` | sibling handler の commit spec を rely として受けられることを表す追加条件です |
-| commit-order 合成定理 | `Server.lean` の `parallelValid_commitSequence`, `parallelValid_foldl_of_graphSpecs`, `parallelValid_commitLog` | closed-system 仮定の下で、停止時 state が commit 順の仕様合成になり、各 commit の `txnId / before / after` log も抽出できます |
-| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceServer_*`, `addInterest*` | transaction 単体と server-level の小例があります |
+| commit-order 合成定理 | `Server.lean` の `parallelValid_commitSequence`, `parallelValid_foldl_of_graphSpecs`, `parallelValid_commitLog`, `reachableGraphSpecs_sound`, `parallelValid_requestGraphSpecs_sound` | closed-system 仮定の下で、停止時 state が commit 順の仕様合成になり、各 commit の `txnId / before / after` log も抽出できます |
+| request/server object | `Server.lean` の `VerifiedRequestServerSpec`, `VerifiedRequestServer`, `VerifiedRequestServerSpec.ofTxnIndexedSpecs` | relation spec と `state -> state` spec の両方を request trace つき server object として包み、必要なら内部 txn-id を隠す追加層です |
+| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceServer_*`, `zeroBalanceVerifiedServer*`, `zeroBalanceVerifiedTxnIndexedServerSpec*`, `addInterest*` | transaction 単体、server-level request trace、event-level trace、txn-id を隠した request spec の小例があります |
 
 ## Lean 側でどうエンコードしたか
 
@@ -305,6 +313,14 @@ Lean 側では現在、これを 2 段に分けています。
 
 までを end-to-end で確認しています。これはまだ一般の `p || q` 規則ではありませんが、server-level の層が Lean 上で実際に使えることの最小例です。
 
+さらに `Examples.zeroBalanceVerifiedTxnIndexedServerSpec*` では:
+
+- transaction ごとの exact spec `Req -> TxnId -> StateSpec`
+- それを `RequestSpec.hideTxnIds` で外部 request spec に落とす層
+- `VerifiedRequestServerSpec.ofTxnIndexedSpecs` で server object に包む流れ
+
+を確認しています。実アプリで内部 transaction id を spec に使いたいが、外側の API 仕様では隠したい、という用途に向けた最小例です。
+
 ## 論文どおりに実際のアプリを検証するために足りないもの
 
 ここが一番重要です。いまのリポジトリは「かなり進んだ基盤」ではありますが、論文のように本格的な weak isolation app verification を行うにはまだ足りないものがあります。
@@ -345,11 +361,17 @@ Lean では現在、これに対応する object-language の演算子として:
 - unstable transformer から weakest な weakened transformer を組み立てる完全な計算規則
 - その FOL 変換まで含めた end-to-end な mechanization
 
-### 3. Fig. 10 の `S` から first-order logic への変換がない
+### 3. Fig. 10 の `S` から first-order logic への変換は部分的
+
+`FirstOrder.lean` により、少なくとも次はすでにあります。
+
+- row-membership を表す `MembershipFormula`
+- `insert/delete/update/select/foreach` を含む body からの membership encoder
+- `inferMembershipFull_sound` などの soundness
 
 まだ入っていないもの:
 
-- `S` の式を FOL predicate に落とす変換
+- `SetExpr` 全体に対する syntax-directed な FOL 変換
 - uninterpreted predicate の導入
 - prenex 形の整理
 - その変換の semantics-preserving proof

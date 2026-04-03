@@ -6,6 +6,7 @@ abbrev StateSpec := Database → Database → Prop
 abbrev StateTransformer := Database → Database
 abbrev RequestSpec (Req : Type) := Req → StateSpec
 abbrev RequestTransformer (Req : Type) := Req → StateTransformer
+abbrev TxnIndexedRequestSpec (Req : Type) := Req → TxnId → StateSpec
 
 namespace StateSpec
 
@@ -18,6 +19,10 @@ namespace RequestSpec
 
 def assign {Req : Type} (requestOf : TxnId → Req) (specs : RequestSpec Req) : TxnId → StateSpec :=
   fun txnId => specs (requestOf txnId)
+
+def hideTxnIds {Req : Type} (requestOf : TxnId → Req)
+    (specs : TxnIndexedRequestSpec Req) : RequestSpec Req :=
+  fun req db db' => ∃ txnId, requestOf txnId = req ∧ specs req txnId db db'
 
 def graphAssign {Req : Type} (requestOf : TxnId → Req) (fs : RequestTransformer Req) :
     TxnId → StateSpec :=
@@ -32,6 +37,15 @@ open Logic
 def NonParallel : Semantics.Program → Prop
   | .par _ _ => False
   | _ => True
+
+inductive SingleTxnProgram (txnId : TxnId) : Semantics.Program → Prop where
+  | txn {isolation : IsolationSpec Database} {body : Semantics.Program} :
+      SingleTxnProgram txnId (.txn txnId isolation body)
+  | runtime {isolation : IsolationSpec Database}
+      {localDb snapshot : Database} {body : Semantics.Program} :
+      SingleTxnProgram txnId (.txnRuntime txnId isolation localDb snapshot body)
+  | skip :
+      SingleTxnProgram txnId (Command.skip : Semantics.Program)
 
 inductive ProgramDone : Semantics.Program → Prop where
   | skip :
@@ -620,6 +634,83 @@ theorem globalMultiStep_preserves_nonParallel {R : Rely}
   | tail hPrev hLast ih =>
       exact globalInterleavedStep_preserves_nonParallel hLast ih
 
+theorem refreshVisible_preserves_singleTxn {txnId : TxnId}
+    {program : Semantics.Program} {db : Database}
+    (h : SingleTxnProgram txnId program) :
+    SingleTxnProgram txnId (refreshVisible program db) := by
+  cases h with
+  | txn =>
+      simp [refreshVisible]
+      exact SingleTxnProgram.txn
+  | runtime =>
+      simp [refreshVisible]
+      exact SingleTxnProgram.runtime
+  | skip =>
+      simp [refreshVisible]
+      exact SingleTxnProgram.skip
+
+theorem step_preserves_singleTxn {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hStep : Semantics.Step program db program' db')
+    (h : SingleTxnProgram txnId program) :
+    SingleTxnProgram txnId program' := by
+  induction hStep with
+  | txnStart =>
+      cases h with
+      | txn =>
+          exact SingleTxnProgram.runtime
+  | txnExec =>
+      cases h with
+      | runtime =>
+          exact SingleTxnProgram.runtime
+  | txnCommit =>
+      cases h with
+      | runtime =>
+          exact SingleTxnProgram.skip
+  | parLeft =>
+      cases h
+  | parRight =>
+      cases h
+
+theorem globalInterleavedStep_preserves_singleTxn {txnId : TxnId} {R : Rely}
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStep R cfg cfg')
+    (h : SingleTxnProgram txnId cfg.program) :
+    SingleTxnProgram txnId cfg'.program := by
+  cases hStep with
+  | inl hActual =>
+      exact step_preserves_singleTxn hActual h
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, _hRespect⟩
+      rw [hProgram]
+      exact refreshVisible_preserves_singleTxn h
+
+theorem globalMultiStep_preserves_singleTxn {txnId : TxnId} {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hRun : GlobalMultiStep R cfg₁ cfg₂)
+    (h : SingleTxnProgram txnId cfg₁.program) :
+    SingleTxnProgram txnId cfg₂.program := by
+  induction hRun with
+  | refl =>
+      exact h
+  | tail hPrev hLast ih =>
+      exact globalInterleavedStep_preserves_singleTxn hLast ih
+
+theorem txnCommitStep_txnId_eq_of_singleTxn {expectedTxnId actualTxnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hSingle : SingleTxnProgram expectedTxnId program)
+    (hCommit : TxnCommitStep actualTxnId program db program' db') :
+    actualTxnId = expectedTxnId := by
+  cases hCommit with
+  | root =>
+      cases hSingle with
+      | runtime =>
+          rfl
+  | parLeft =>
+      cases hSingle
+  | parRight =>
+      cases hSingle
+
 theorem programDone_eq_skip_of_nonParallel
     {program : Semantics.Program}
     (hDone : ProgramDone program)
@@ -743,6 +834,20 @@ theorem parallelValid_mono {Ipre : Assertion} {R : Rely}
   refine ⟨hPost, ?_⟩
   intro midCfg nextProgram nextDb txnId hRun hStep
   exact hImp txnId _ _ (hCommit _ _ _ _ hRun hStep)
+
+theorem parallelValid_hideTxnIds {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {Req : Type}
+    {requestOf : TxnId → Req} {specs : TxnIndexedRequestSpec Req} {Ipost : Assertion}
+    (h :
+      ParallelValid Ipre R program
+        (fun txnId => specs (requestOf txnId) txnId)
+        Ipost) :
+    ParallelValid Ipre R program
+      (RequestSpec.assign requestOf (RequestSpec.hideTxnIds requestOf specs))
+      Ipost := by
+  refine parallelValid_mono h ?_
+  intro txnId db db' hSpec
+  exact ⟨txnId, rfl, hSpec⟩
 
 theorem ParallelValid.reachableCommitSpecs {Ipre : Assertion} {R : Rely}
     {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
@@ -970,6 +1075,26 @@ def ofHandlerFamilySpec {Req : Type}
   program := program
   valid := valid
 
+def ofTxnIndexedSpecs {Req : Type}
+    (invariant : Assertion)
+    (rely : Rely)
+    (silent : ∀ db db', rely db db' → db' = db)
+    (requestOf : TxnId → Req)
+    (specs : TxnIndexedRequestSpec Req)
+    (program : Semantics.Program)
+    (valid :
+      ParallelValid invariant rely program
+        (fun txnId => specs (requestOf txnId) txnId)
+        invariant) :
+    VerifiedRequestServerSpec Req where
+  invariant := invariant
+  rely := rely
+  silent := silent
+  requestOf := requestOf
+  specs := RequestSpec.hideTxnIds requestOf specs
+  program := program
+  valid := parallelValid_hideTxnIds valid
+
 theorem doneInvariant {Req : Type} (server : VerifiedRequestServerSpec Req)
     {db : Database} {finalCfg : GlobalConfig}
     (hDb : server.invariant db)
@@ -1068,13 +1193,12 @@ theorem requestEvents {Req : Type} (server : VerifiedRequestServer Req)
   rcases server.commitLog hDb hRun with ⟨events, hLog⟩
   exact ⟨events, CommitLog.graphAssign_implies_eventEq hLog⟩
 
-end VerifiedRequestServer
-
-theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
+theorem txnParallelValid_of_handlerRefines_at {Ipre : Assertion} {R : Rely}
     {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
-    {spec : StateSpec} {Ipost : Assertion}
+    {spec : StateSpec} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (hSpecAt : ∀ db db', spec db db' → specs txnId db db')
     (h : HandlerRefines Ipre R (.txn txnId isolation body) spec Ipost) :
-    ParallelValid Ipre R (.txn txnId isolation body) (fun _ => spec) Ipost := by
+    ParallelValid Ipre R (.txn txnId isolation body) specs Ipost := by
   intro db hDb
   rcases h db hDb with ⟨hPost, hTxn⟩
   refine ⟨?_, ?_⟩
@@ -1087,12 +1211,36 @@ theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
   · intro midCfg nextProgram nextDb txnId' hRun hCommit
     have hNonPar : NonParallel midCfg.program := by
       exact globalMultiStep_preserves_nonParallel hRun (by simp [NonParallel])
+    have hSingle : SingleTxnProgram txnId midCfg.program := by
+      exact globalMultiStep_preserves_singleTxn hRun SingleTxnProgram.txn
+    have hTxnIdEq : txnId' = txnId := by
+      exact txnCommitStep_txnId_eq_of_singleTxn hSingle hCommit
     rcases txnCommitStep_of_nonParallel hNonPar hCommit with
       ⟨isolation', localDb, snapshot, hProgram, hNext, hDbEq, hCommitGuard⟩
     have hStep : Semantics.Step midCfg.program midCfg.globalDb nextProgram nextDb := by
       rw [hProgram, hNext, hDbEq]
       exact Semantics.Step.txnCommit hCommitGuard
-    exact hTxn midCfg nextProgram nextDb hRun hStep hNext
+    subst hTxnIdEq
+    exact hSpecAt _ _ (hTxn midCfg nextProgram nextDb hRun hStep hNext)
+
+end VerifiedRequestServer
+
+theorem txnParallelValid_of_handlerRefines_at {Ipre : Assertion} {R : Rely}
+    {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
+    {spec : StateSpec} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (hSpecAt : ∀ db db', spec db db' → specs txnId db db')
+    (h : HandlerRefines Ipre R (.txn txnId isolation body) spec Ipost) :
+    ParallelValid Ipre R (.txn txnId isolation body) specs Ipost := by
+  exact VerifiedRequestServer.txnParallelValid_of_handlerRefines_at hSpecAt h
+
+theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
+    {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
+    {spec : StateSpec} {Ipost : Assertion}
+    (h : HandlerRefines Ipre R (.txn txnId isolation body) spec Ipost) :
+    ParallelValid Ipre R (.txn txnId isolation body) (fun _ => spec) Ipost := by
+  exact txnParallelValid_of_handlerRefines_at
+    (fun _ _ hSpec => hSpec)
+    h
 
 theorem parallelValid_par_skip_right {Ipre : Assertion} {R : Rely}
     {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
