@@ -224,8 +224,8 @@ theorem zeroBalanceServer_request_family_sound
         finalCfg.globalDb =
           List.foldl
             (fun current req => zeroBalanceRequestApply req current)
-            db
-            (Server.CommitLog.requests zeroBalanceRequestOf events) := by
+        db
+        (Server.CommitLog.requests zeroBalanceRequestOf events) := by
   exact DbAppProgramLogic.Server.reachableRequestGraphSpecs_sound
     (Logic.stableAssertion_false nonnegativeBalances)
     (by
@@ -237,6 +237,29 @@ theorem zeroBalanceServer_request_family_sound
       change StateSpec.graph (zeroBalanceRequestApply (zeroBalanceRequestOf txnId)) midCfg.globalDb nextDb
       exact zeroBalanceServer_reachableCommitSpecs
         db hDb midCfg nextProgram nextDb txnId hReach hCommit)
+    hDb
+    hRun
+
+theorem zeroBalanceServer_request_family_sound_of_parallelValid
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
+    nonnegativeBalances finalCfg.globalDb ∧
+      ∃ events,
+        finalCfg.globalDb =
+          List.foldl
+            (fun current req => zeroBalanceRequestApply req current)
+            db
+            (Server.CommitLog.requests zeroBalanceRequestOf events) := by
+  exact DbAppProgramLogic.Server.parallelValid_requestGraphSpecs_sound
+    (Logic.stableAssertion_false nonnegativeBalances)
+    (by
+      intro _req db hInv
+      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
+    false_rely_silent
+    (by
+      simpa [RequestSpec.graphAssign, RequestSpec.assign, zeroBalanceRequestApply, zeroBalanceRequestOf]
+        using zeroBalanceServer_parallelValid)
     hDb
     hRun
 

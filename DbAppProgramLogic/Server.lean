@@ -724,6 +724,21 @@ theorem parallelValid_eventFoldl_of_graphSpecs {Ipre : Assertion} {R : Rely}
   rcases parallelValid_commitLog hSilent hValid hDb hRun with ⟨events, hLog⟩
   exact ⟨events, CommitLog.graph_implies_foldl hLog⟩
 
+theorem parallelValid_eventFoldl_of_requestGraphSpecs
+    {Req : Type} {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {requestOf : TxnId → Req}
+    {fs : RequestTransformer Req} {Ipost : Assertion}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValid Ipre R program (RequestSpec.graphAssign requestOf fs) Ipost)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ events,
+      finalCfg.globalDb =
+        List.foldl (fun current req => fs req current) db (CommitLog.requests requestOf events) := by
+  rcases parallelValid_commitLog hSilent hValid hDb hRun with ⟨events, hLog⟩
+  exact ⟨events, CommitLog.graphAssign_implies_foldl_requests hLog⟩
+
 theorem eventFoldl_of_reachableGraphSpecs {I : Assertion} {R : Rely}
     {program : Semantics.Program} {fs : TxnId → StateTransformer}
     (hStable : stableAssertion R I)
@@ -823,6 +838,29 @@ theorem reachableRequestGraphSpecs_sound {Req : Type} {I : Assertion} {R : Rely}
       hDb
       hRun
   · exact eventFoldl_of_reachableRequestGraphSpecs hStable hPreserve hSilent hCommits hDb hRun
+
+theorem parallelValid_requestGraphSpecs_sound
+    {Req : Type} {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {requestOf : TxnId → Req}
+    {fs : RequestTransformer Req}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ req db, I db → I (fs req db))
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValid I R program (RequestSpec.graphAssign requestOf fs) I)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : I db)
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    I finalCfg.globalDb ∧
+      ∃ events,
+        finalCfg.globalDb =
+          List.foldl (fun current req => fs req current) db (CommitLog.requests requestOf events) := by
+  exact reachableRequestGraphSpecs_sound
+    hStable
+    hPreserve
+    hSilent
+    (ParallelValid.reachableCommitSpecs hValid)
+    hDb
+    hRun
 
 theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
     {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
