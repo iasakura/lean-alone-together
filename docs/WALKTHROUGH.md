@@ -3,6 +3,8 @@
 この文書は、「どこから読めばこの repo を理解できるか」をまとめた案内です。  
 先に結論を書くと、全部を最初から順番に読む必要はありません。目的ごとに読むべき入口が違います。
 
+重要な定義・定理だけをまとめて追いたい場合は、先に [LANDMARKS.md](LANDMARKS.md) を見る方が向いています。
+
 ## まず全体像
 
 この repo は大きく 4 層あります。
@@ -11,6 +13,15 @@
 2. rely-guarantee logic とその soundness
 3. symbolic transformer / VCG / first-order membership
 4. request / handler / server correctness の上位層
+
+global 側の interleaving には 2 本あります。
+
+- `globalInterleavedStep`
+  旧来の operational 版
+- `globalInterleavedStepTR`
+  TR Appendix C.2 に忠実な版
+
+論文忠実に追いたいときは、`Logic.lean` と `Server.lean` では後者を優先して読んでください。
 
 対応するファイルは次の通りです。
 
@@ -105,6 +116,7 @@ Sec. 4 の中心です。最初に見るべき定義は次です。
 
 - `LocalValid`
 - `GlobalValid`
+- `GlobalValidTR`
 - `LocalRG`
 - `GlobalRG`
 - `localRG_sound`
@@ -114,11 +126,12 @@ Sec. 4 の中心です。最初に見るべき定義は次です。
 
 1. `stableAssertion`, `stableBiAssertion`, `relyMod`
 2. `localInterleavedStep`, `globalInterleavedStep`
-3. `LocalValid`, `GlobalValid`
-4. `LocalRG`, `GlobalRG`
-5. `localRG_sound`, `globalRG_sound`
+3. `globalInterleavedStepTR`
+4. `LocalValid`, `GlobalValid`, `GlobalValidTR`
+5. `LocalRG`, `GlobalRG`
+6. `localRG_sound`, `globalRG_sound`
 
-です。
+です。`globalInterleavedStep` は cached snapshot を eager に更新する operational 版、`globalInterleavedStepTR` は rely で program を変えない論文忠実版です。`False` rely では `globalValid_false_to_TR_false` が両者の橋になります。
 
 このファイルでは、actual step と rely step を混ぜた interleaving を先に定義し、その上で judgment の意味論を定義してから soundness を証明しています。
 
@@ -172,7 +185,9 @@ Sec. 5 の中心です。ここには 2 種類の transformer があります。
 最初に見るべきものは:
 
 - `HandlerRefines`
+- `HandlerRefinesTR`
 - `ParallelValid`
+- `ParallelValidTR`
 - `CommitEvent`, `CommitLog`
 - `HandlerFamilySpec`
 - `VerifiedRequestServerSpec`
@@ -187,18 +202,22 @@ Sec. 5 の中心です。ここには 2 種類の transformer があります。
 
 つまり、現状の server layer は「branchwise parallel rule」より「server-level trace theorem」を主眼にしています。
 
+ただし TR 側には 2 本の transaction に対する packaged theorem として `txnPair_parallelValidTR` が入っています。Appendix B/C の `RG-Par` 議論を、first commit と second phase に分けた形で実装したものです。
+
 ### `Examples.lean`
 
 最初に読むべき concrete 例です。  
 おすすめの順は:
 
 1. `zeroBalanceInsert_valid`
-2. `zeroBalanceHandler_refines_graph`
-3. `zeroBalanceServer_parallelValid`
-4. `zeroBalanceVerifiedServerSpec`
-5. `addInterest*`
+2. `zeroBalanceInsert_valid_any_TR_false`
+3. `zeroBalanceInsert_valid_any_TR_identity`
+4. `zeroBalanceHandler_refines_graph`
+5. `zeroBalanceServer_parallelValid`
+6. `zeroBalanceVerifiedServerSpec`
+7. `addInterest*`
 
-`zeroBalance` 系は最小例、`addInterest` 系は read/write を含む少し論文寄りの例です。
+`zeroBalance` 系は最小例です。特に `*_TR_*` が付いた theorem は、TR-faithful な global semantics を辿る入口です。`addInterest` 系は read/write を含む少し論文寄りの例です。
 
 ## 理解のために最初に区別すべき概念
 
@@ -227,6 +246,13 @@ Sec. 5 の中心です。ここには 2 種類の transformer があります。
 - actual step: 実際の machine step
 - rely step: 環境による interference
 
+ここでも global 側は 2 本に分かれています。
+
+- `globalInterleavedStep`
+  rely step で `refreshVisible` を使う
+- `globalInterleavedStepTR`
+  rely step で program は不変
+
 `refreshVisible` は global DB を変える関数ではなく、**変化した global DB を transaction runtime node 内の snapshot に反映する bookkeeping** です。
 
 ### 4. semantic effect と symbolic effect
@@ -246,10 +272,13 @@ Sec. 5 の中心です。ここには 2 種類の transformer があります。
 
 1. `Logic.localRG_sound`
 2. `Logic.globalRG_sound`
-3. `Transformer.vcg_sound`
-4. `Transformer.vcg_sound_false`
-5. `Server.parallelValid_foldl_of_graphSpecs`
-6. `Server.parallelValid_requestGraphSpecs_sound`
+3. `Logic.globalValid_false_to_TR_false`
+4. `Logic.globalValidTR_of_silentRely`
+5. `Transformer.vcg_sound`
+6. `Transformer.vcg_sound_false`
+7. `Server.txnPair_parallelValidTR`
+8. `Server.parallelValid_foldl_of_graphSpecs`
+9. `Server.parallelValid_requestGraphSpecs_sound`
 
 この順で見ると、core logic から server-level correctness までどう積み上がっているかが分かります。
 

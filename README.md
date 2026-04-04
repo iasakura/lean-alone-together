@@ -8,7 +8,7 @@
 - Sec. 5 の state-transformer / 集合言語 `S` ベースの検証
 - 実アプリ向けの request/handler/server correctness 層
 
-最初のキャッチアップには [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) を先に読むのがおすすめです。README は対応表中心、`WALKTHROUGH.md` は「どこからどう追うか」中心に書いてあります。
+最初のキャッチアップには [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) を先に読むのがおすすめです。README は対応表中心、`WALKTHROUGH.md` は「どこからどう追うか」中心に書いてあります。重要な定義と定理だけを追いたい場合は [docs/LANDMARKS.md](docs/LANDMARKS.md) を見てください。
 
 現状の実装はすでに有用ですが、論文の全内容をそのまま end-to-end で mechanize したものではありません。Fig. 7 に対応する集合言語 `S` と weakening の層はすでに入り、Sec. 5.2 に向けた first-order membership encoding も `FirstOrder.lean` として部分的にあります。ただし formula 部分はまだ shallow encoding が中心で、Fig. 10 全体の syntax-directed 変換や SMT 向け自動化は未完成です。
 
@@ -26,6 +26,7 @@
   - local/global judgment の意味論
   - local/global rely-guarantee rule
   - soundness theorem
+  - TR-faithful な top-level interleaving `globalInterleavedStepTR`
 - `DbAppProgramLogic/SetLanguage.lean`
   - Fig. 7 に対応する集合言語 `S` の構文
   - `S` の denotation
@@ -69,6 +70,7 @@
 | Fig. 6 の local/global RG judgment | `Logic.lean` の `LocalRG`, `GlobalRG` | 論文の proof rule に対応します |
 | RG judgment の意味論 | `Logic.lean` の `LocalValid`, `GlobalValid`, `txnGuaranteed` | rule が何を意味するかを与える側です |
 | local/global interleaving | `Logic.lean` の `localInterleavedStep`, `globalInterleavedStep` | 実際の machine step と interference step を合成しています |
+| TR Appendix C.2 の top-level interleaving | `Logic.lean` の `globalInterleavedStepTR`, `GlobalMultiStepTR`, `GlobalValidTR`, `txnGuaranteedTR` | rely step が outer DB だけを変え、program は変えない論文忠実側の定義です |
 | Sec. 4 の stability | `Logic.lean` の `stableAssertion`, `stableBiAssertion`, `stableIsolation`, `relyMod` | 論文中の stability family に対応します |
 | Theorem 4.3 | `Logic.lean` の `localRG_sound`, `globalRG_sound` | RG rule が semantic validity を含意することを示します |
 | Fig. 7 の集合言語 `S` | `SetLanguage.lean` の `SetExpr` | ただし `φ`, `ϕ` は深い構文ではなく shallow な predicate として表現しています |
@@ -84,6 +86,7 @@
 | parallel compatibility | `Server.lean` の `ProgramAcceptsSpecs` | sibling handler の commit spec を rely として受けられることを表す追加条件です |
 | commit-order 合成定理 | `Server.lean` の `parallelValid_commitSequence`, `parallelValid_foldl_of_graphSpecs`, `parallelValid_commitLog`, `reachableGraphSpecs_sound`, `parallelValid_requestGraphSpecs_sound` | closed-system 仮定の下で、停止時 state が commit 順の仕様合成になり、各 commit の `txnId / before / after` log も抽出できます |
 | request/server object | `Server.lean` の `VerifiedRequestServerSpec`, `VerifiedRequestServer`, `VerifiedTxnIndexedRequestServerSpec`, `VerifiedRequestServerSpec.ofTxnIndexedSpecs` | relation spec と `state -> state` spec の両方を request trace つき server object として包み、必要なら内部 txn-id 付き exact spec と hidden spec を両方持てる追加層です |
+| TR Appendix B/C の parallel pair 定理 | `Server.lean` の `txnPair_parallelValidTR` | 2 本の transaction について、相手 guarantee を rely に入れた `HandlerRefinesTR` から pair の `ParallelValidTR` を導く packaged theorem です |
 | 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceServer_*`, `zeroBalanceVerifiedServer*`, `zeroBalanceVerifiedTxnIndexedServerSpec*`, `addInterest*` | transaction 単体、server-level request trace、event-level trace、txn-id 付き exact spec とそれを隠した request spec の小例があります |
 
 ## Lean 側でどうエンコードしたか
@@ -172,12 +175,23 @@ rely relation 自体は:
 
 で表現し、global rely と isolation guard を合わせたものが `relyMod` です。
 
-また、global rely step のときには runtime transaction node が持っている visible snapshot も更新する必要があるので、そのために:
+また、global 側には現在 2 本の interleaving があります。
+
+- `globalInterleavedStep`
+  - 旧来の operational な interleaving
+  - rely step のとき `refreshVisible` で runtime node の cached snapshot も更新する
+- `globalInterleavedStepTR`
+  - TR Appendix C.2 に忠実な interleaving
+  - rely step では outer DB だけが動き、program はそのまま
+
+前者は既存の `globalRG_sound` や request/server 層で長く使ってきた operational variant、後者は parallel composition を論文どおりに組み直すための paper-faithful variant です。
+
+旧来の interleaving では、そのために:
 
 - `refreshVisible`
 - `respectsRely`
 
-を導入しています。ここは論文より Lean の方が operational に細かく書かれている部分です。
+を導入しています。ここは論文より Lean の方が operational に細かく書かれている部分です。`False` rely では両者は一致し、`Logic.globalValid_false_to_TR_false` がその橋になっています。
 
 ### 5. semantic effect と explicit `S` の 2 層を持っている
 
@@ -255,6 +269,9 @@ Lean 側では現在、これを 2 段に分けています。
 - local/global RG rule
 - `localRG_sound`
 - `globalRG_sound`
+- `globalInterleavedStepTR`, `GlobalValidTR`
+- `globalValid_false_to_TR_false`
+- `globalValidTR_of_silentRely`
 
 つまり、Fig. 6 の rule system が意味論的に sound であるところまでは入っています。
 

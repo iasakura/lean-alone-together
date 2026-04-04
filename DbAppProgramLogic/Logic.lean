@@ -43,6 +43,17 @@ inductive MultiStepFwd (step : α → α → Prop) : α → α → Prop where
   | refl {cfg} : MultiStepFwd step cfg cfg
   | cons {cfg₁ cfg₂ cfg₃} : step cfg₁ cfg₂ → MultiStepFwd step cfg₂ cfg₃ → MultiStepFwd step cfg₁ cfg₃
 
+theorem MultiStep.mono {step step' : α → α → Prop} {cfg₁ cfg₂ : α}
+    (hSub : ∀ {cfg cfg'}, step cfg cfg' → step' cfg cfg') :
+    MultiStep step cfg₁ cfg₂ →
+    MultiStep step' cfg₁ cfg₂ := by
+  intro h
+  induction h with
+  | refl =>
+      exact MultiStep.refl
+  | tail hPrev hLast ih =>
+      exact MultiStep.tail ih (hSub hLast)
+
 /-- A standard global stability condition: `P` survives every rely step. -/
 def stableAssertion (R : Rely) (P : Assertion) : Prop :=
   ∀ db db', P db → R db db' → P db'
@@ -58,6 +69,29 @@ def stableIsolation (R : Rely) (I : Database → Database → Database → Prop)
     R midDb finalDb →
     I localDb baseDb midDb ∧ I localDb midDb finalDb
 
+theorem stableAssertion_of_relySubset {R R' : Rely} {P : Assertion}
+    (hStable : stableAssertion R P)
+    (hSub : ∀ db db', R' db db' → R db db') :
+    stableAssertion R' P := by
+  intro db db' hP hR'
+  exact hStable _ _ hP (hSub _ _ hR')
+
+theorem stableBiAssertion_of_relySubset {R R' : LocalRely} {P : BiAssertion}
+    (hStable : stableBiAssertion R P)
+    (hSub : ∀ localDb visibleDb visibleDb', R' localDb visibleDb visibleDb' →
+      R localDb visibleDb visibleDb') :
+    stableBiAssertion R' P := by
+  intro localDb visibleDb visibleDb' hP hR'
+  exact hStable _ _ _ hP (hSub _ _ _ hR')
+
+theorem stableIsolation_of_relySubset {R R' : Rely}
+    {I : Database → Database → Database → Prop}
+    (hStable : stableIsolation R I)
+    (hSub : ∀ db db', R' db db' → R db db') :
+    stableIsolation R' I := by
+  intro localDb baseDb midDb finalDb hI hR'
+  exact hStable _ _ _ _ hI (hSub _ _ hR')
+
 /-- Restrict a global rely by the isolation guard currently required by a running transaction. -/
 def relyMod (R : Rely) (I : Database → Database → Database → Prop) : LocalRely :=
   fun localDb visibleDb visibleDb' => R visibleDb visibleDb' ∧ I localDb visibleDb visibleDb'
@@ -70,6 +104,20 @@ def localInterleavedStep (R : LocalRely) (txnId : TxnId) :
       (Semantics.LocalStep visibleDb txnId cmd localDb cmd' localDb' ∧ visibleDb' = visibleDb) ∨
         (cmd' = cmd ∧ localDb' = localDb ∧ cmd ≠ (Command.skip : Command ι Database) ∧
           R localDb visibleDb visibleDb')
+
+theorem localInterleavedStep_mono {R R' : LocalRely} {txnId : TxnId}
+    (hSub : ∀ localDb visibleDb visibleDb',
+      R' localDb visibleDb visibleDb' → R localDb visibleDb visibleDb')
+    {cfg cfg' : LocalConfig ι} :
+    localInterleavedStep (ι := ι) R' txnId cfg cfg' →
+    localInterleavedStep (ι := ι) R txnId cfg cfg' := by
+  intro hStep
+  cases hStep with
+  | inl hActual =>
+      exact Or.inl hActual
+  | inr hRely =>
+      rcases hRely with ⟨hCmd, hLocal, hNotSkip, hRely⟩
+      exact Or.inr ⟨hCmd, hLocal, hNotSkip, hSub _ _ _ hRely⟩
 
 /-- Update the cached visible database stored inside runtime transaction nodes after a rely step. -/
 def refreshVisible : Semantics.Program → Database → Semantics.Program
@@ -92,6 +140,34 @@ def respectsRely (R : Rely) : Semantics.Program → Database → Database → Pr
   | _, db, db' =>
       R db db'
 
+theorem respectsRely_mono {R R' : Rely}
+    (hSub : ∀ db db', R' db db' → R db db')
+    {program : Semantics.Program} {db db' : Database} :
+    respectsRely R' program db db' →
+    respectsRely R program db db' := by
+  induction program generalizing db db' with
+  | txnRuntime txnId isolation localDb snapshot body =>
+      by_cases hBody : body = (Command.skip : Semantics.Program)
+      · intro hRespect
+        have hPair : R' db db' ∧ isolation.commit localDb snapshot db' := by
+          simpa [respectsRely, hBody] using hRespect
+        exact by
+          simpa [respectsRely, hBody] using ⟨hSub _ _ hPair.1, hPair.2⟩
+      · intro hRespect
+        have hPair : R' db db' ∧ isolation.exec localDb snapshot db' := by
+          simpa [respectsRely, hBody] using hRespect
+        exact by
+          simpa [respectsRely, hBody] using ⟨hSub _ _ hPair.1, hPair.2⟩
+  | par left right ihLeft ihRight =>
+      intro hRespect
+      have hPair : respectsRely R' left db db' ∧ respectsRely R' right db db' := by
+        simpa [respectsRely] using hRespect
+      exact by
+        simpa [respectsRely] using ⟨ihLeft hPair.1, ihRight hPair.2⟩
+  | _ =>
+      intro hRespect
+      simpa [respectsRely] using hSub _ _ hRespect
+
 /-- Top-level interleaving: either take a real machine step or update the program's visible state by
 an allowed rely step. -/
 def globalInterleavedStep (R : Rely) : GlobalConfig → GlobalConfig → Prop
@@ -99,11 +175,148 @@ def globalInterleavedStep (R : Rely) : GlobalConfig → GlobalConfig → Prop
       Semantics.Step program globalDb program' globalDb' ∨
         (program' = refreshVisible program globalDb' ∧ respectsRely R program globalDb globalDb')
 
+/-- TR-faithful top-level interleaving from Appendix C.2: a rely step changes only the outer global
+database, leaving the program state unchanged. Runtime transaction nodes therefore keep their cached
+snapshot until they themselves take an actual step. -/
+def globalInterleavedStepTR (R : Rely) : GlobalConfig → GlobalConfig → Prop
+  | ⟨program, globalDb⟩, ⟨program', globalDb'⟩ =>
+      Semantics.Step program globalDb program' globalDb' ∨
+        (program' = program ∧ R globalDb globalDb')
+
 abbrev LocalMultiStep (R : LocalRely) (txnId : TxnId) (ι : Type) :=
   MultiStep (localInterleavedStep (ι := ι) R txnId)
 
 abbrev GlobalMultiStep (R : Rely) :=
   MultiStep (globalInterleavedStep R)
+
+/-- Reflexive-transitive closure of the TR-faithful top-level interleaving. -/
+abbrev GlobalMultiStepTR (R : Rely) :=
+  MultiStep (globalInterleavedStepTR R)
+
+theorem globalInterleavedStep_mono {R R' : Rely}
+    (hSub : ∀ db db', R' db db' → R db db')
+    {cfg cfg' : GlobalConfig} :
+    globalInterleavedStep R' cfg cfg' →
+    globalInterleavedStep R cfg cfg' := by
+  intro hStep
+  cases hStep with
+  | inl hActual =>
+      exact Or.inl hActual
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hRespect⟩
+      exact Or.inr ⟨hProgram, respectsRely_mono hSub hRespect⟩
+
+theorem globalInterleavedStepTR_mono {R R' : Rely}
+    (hSub : ∀ db db', R' db db' → R db db')
+    {cfg cfg' : GlobalConfig} :
+    globalInterleavedStepTR R' cfg cfg' →
+    globalInterleavedStepTR R cfg cfg' := by
+  intro hStep
+  cases hStep with
+  | inl hActual =>
+      exact Or.inl hActual
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hR⟩
+      exact Or.inr ⟨hProgram, hSub _ _ hR⟩
+
+theorem not_respectsRely_false {program : Semantics.Program} {db db' : Database} :
+    ¬ respectsRely (fun _ _ => False) program db db' := by
+  induction program generalizing db db' with
+  | txnRuntime txnId isolation localDb snapshot body ih =>
+      by_cases hBody : body = (Command.skip : Semantics.Program)
+      · simp [respectsRely, hBody]
+      · simp [respectsRely, hBody]
+  | par left right ihLeft ihRight =>
+      simp [respectsRely, ihLeft, ihRight]
+  | _ =>
+      simp [respectsRely]
+
+/-- With `False` rely, both global interleavings collapse to actual machine steps only. -/
+theorem globalInterleavedStep_false_iff_TR_false {cfg cfg' : GlobalConfig} :
+    globalInterleavedStep (fun _ _ => False) cfg cfg' ↔
+      globalInterleavedStepTR (fun _ _ => False) cfg cfg' := by
+  cases cfg with
+  | mk program db =>
+      cases cfg' with
+      | mk program' db' =>
+          constructor
+          · intro hStep
+            cases hStep with
+            | inl hActual =>
+                exact Or.inl hActual
+            | inr hRely =>
+                rcases hRely with ⟨_, hRespect⟩
+                exact False.elim (not_respectsRely_false hRespect)
+          · intro hStep
+            cases hStep with
+            | inl hActual =>
+                exact Or.inl hActual
+            | inr hRely =>
+                rcases hRely with ⟨_, hFalse⟩
+                exact False.elim hFalse
+
+theorem localMultiStep_mono {R R' : LocalRely} {txnId : TxnId} {ι : Type}
+    (hSub : ∀ localDb visibleDb visibleDb',
+      R' localDb visibleDb visibleDb' → R localDb visibleDb visibleDb')
+    {cfg cfg' : LocalConfig ι} :
+    LocalMultiStep R' txnId ι cfg cfg' →
+    LocalMultiStep R txnId ι cfg cfg' := by
+  exact MultiStep.mono (fun hStep => localInterleavedStep_mono hSub hStep)
+
+theorem globalMultiStep_mono {R R' : Rely}
+    (hSub : ∀ db db', R' db db' → R db db')
+    {cfg cfg' : GlobalConfig} :
+    GlobalMultiStep R' cfg cfg' →
+    GlobalMultiStep R cfg cfg' := by
+  exact MultiStep.mono (fun hStep => globalInterleavedStep_mono hSub hStep)
+
+theorem globalMultiStepTR_mono {R R' : Rely}
+    (hSub : ∀ db db', R' db db' → R db db')
+    {cfg cfg' : GlobalConfig} :
+    GlobalMultiStepTR R' cfg cfg' →
+    GlobalMultiStepTR R cfg cfg' := by
+  exact MultiStep.mono (fun hStep => globalInterleavedStepTR_mono hSub hStep)
+
+/-- Under `False` rely, the original global interleaving and the TR-faithful one reach exactly the
+same configurations. -/
+theorem globalMultiStep_false_iff_TR_false {cfg cfg' : GlobalConfig} :
+    GlobalMultiStep (fun _ _ => False) cfg cfg' ↔
+      GlobalMultiStepTR (fun _ _ => False) cfg cfg' := by
+  constructor <;> intro hMulti
+  · exact MultiStep.mono
+      (fun hStep => (globalInterleavedStep_false_iff_TR_false).1 hStep)
+      hMulti
+  · exact MultiStep.mono
+      (fun hStep => (globalInterleavedStep_false_iff_TR_false).2 hStep)
+      hMulti
+
+/-- A TR rely that cannot change the global database contributes only self-loops, so its traces can
+be collapsed to `False`-rely traces with the same endpoints. -/
+theorem globalMultiStepTR_of_silentRely {R : Rely}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    {cfg cfg' : GlobalConfig} :
+    GlobalMultiStepTR R cfg cfg' →
+    GlobalMultiStepTR (fun _ _ => False) cfg cfg' := by
+  intro hMulti
+  induction hMulti with
+  | refl =>
+      exact MultiStep.refl
+  | tail hPrev hLast ih =>
+      rename_i cfg₂ cfg₃
+      cases hLast with
+      | inl hActual =>
+          exact MultiStep.tail ih (Or.inl hActual)
+      | inr hRely =>
+          rcases hRely with ⟨hProgram, hR⟩
+          cases cfg₂ with
+          | mk program db =>
+              cases cfg₃ with
+              | mk program' db' =>
+                  simp at hProgram
+                  have hDb : db' = db := hSilent _ _ hR
+                  subst hProgram
+                  subst hDb
+                  simpa using ih
 
 /-- Semantic validity for local judgments: whenever the command reaches `skip`, the postcondition
 holds on the final local/visible databases. -/
@@ -123,6 +336,14 @@ def txnGuaranteed (R : Rely) (G : Guarantee) (program : Semantics.Program) (db :
     nextProgram = (Command.skip : Semantics.Program) →
     G midCfg.globalDb nextDb
 
+/-- TR-faithful semantic guarantee judgment using `GlobalMultiStepTR`. -/
+def txnGuaranteedTR (R : Rely) (G : Guarantee) (program : Semantics.Program) (db : Database) : Prop :=
+  ∀ midCfg nextProgram nextDb,
+    GlobalMultiStepTR R ⟨program, db⟩ midCfg →
+    Semantics.Step midCfg.program midCfg.globalDb nextProgram nextDb →
+    nextProgram = (Command.skip : Semantics.Program) →
+    G midCfg.globalDb nextDb
+
 /-- Semantic validity for top-level programs: the program preserves the global assertion and its
 commits satisfy the guarantee relation. -/
 def GlobalValid (Ipre : Assertion) (R : Rely)
@@ -135,11 +356,30 @@ def GlobalValid (Ipre : Assertion) (R : Rely)
         Ipost finalCfg.globalDb) ∧
       txnGuaranteed R G program db
 
+/-- TR-faithful top-level semantic validity using `GlobalMultiStepTR`. -/
+def GlobalValidTR (Ipre : Assertion) (R : Rely)
+    (program : Semantics.Program) (G : Guarantee) (Ipost : Assertion) : Prop :=
+  ∀ db,
+    Ipre db →
+      (∀ finalCfg,
+        GlobalMultiStepTR R ⟨program, db⟩ finalCfg →
+        finalCfg.program = (Command.skip : Semantics.Program) →
+        Ipost finalCfg.globalDb) ∧
+      txnGuaranteedTR R G program db
+
 theorem txnGuaranteed_mono {R : Rely} {G G' : Guarantee}
     {program : Semantics.Program} {db : Database}
     (hTxn : txnGuaranteed R G program db)
     (hImp : ∀ db db', G db db' → G' db db') :
     txnGuaranteed R G' program db := by
+  intro midCfg nextProgram nextDb hMulti hStep hSkip
+  exact hImp _ _ (hTxn midCfg nextProgram nextDb hMulti hStep hSkip)
+
+theorem txnGuaranteedTR_mono {R : Rely} {G G' : Guarantee}
+    {program : Semantics.Program} {db : Database}
+    (hTxn : txnGuaranteedTR R G program db)
+    (hImp : ∀ db db', G db db' → G' db db') :
+    txnGuaranteedTR R G' program db := by
   intro midCfg nextProgram nextDb hMulti hStep hSkip
   exact hImp _ _ (hTxn midCfg nextProgram nextDb hMulti hStep hSkip)
 
@@ -152,6 +392,91 @@ theorem globalValid_conseq {Ipre Imid Ipost : Assertion} {R : Rely}
   intro db hDb
   rcases hValid db (hPre _ hDb) with ⟨hPost, hTxn⟩
   refine ⟨hPost, txnGuaranteed_mono hTxn hG⟩
+
+theorem globalValidTR_conseq {Ipre Imid Ipost : Assertion} {R : Rely}
+    {program : Semantics.Program} {G G' : Guarantee}
+    (hValid : GlobalValidTR Imid R program G Ipost)
+    (hPre : ∀ db, Ipre db → Imid db)
+    (hG : ∀ db db', G db db' → G' db db') :
+    GlobalValidTR Ipre R program G' Ipost := by
+  intro db hDb
+  rcases hValid db (hPre _ hDb) with ⟨hPost, hTxn⟩
+  refine ⟨hPost, txnGuaranteedTR_mono hTxn hG⟩
+
+theorem localValid_of_relySubset {R R' : LocalRely} {txnId : TxnId}
+    {P : BiAssertion} {c : Command ι Database} {Q : BiAssertion}
+    (hValid : LocalValid R txnId P c Q)
+    (hSub : ∀ localDb visibleDb visibleDb',
+      R' localDb visibleDb visibleDb' → R localDb visibleDb visibleDb') :
+    LocalValid R' txnId P c Q := by
+  intro localDb visibleDb finalCfg hP hRun hSkip
+  exact hValid _ _ _ hP (localMultiStep_mono hSub hRun) hSkip
+
+theorem txnGuaranteed_of_relySubset {R R' : Rely} {G : Guarantee}
+    {program : Semantics.Program} {db : Database}
+    (hTxn : txnGuaranteed R G program db)
+    (hSub : ∀ db db', R' db db' → R db db') :
+    txnGuaranteed R' G program db := by
+  intro midCfg nextProgram nextDb hMulti hStep hSkip
+  exact hTxn _ _ _ (globalMultiStep_mono hSub hMulti) hStep hSkip
+
+theorem txnGuaranteedTR_of_relySubset {R R' : Rely} {G : Guarantee}
+    {program : Semantics.Program} {db : Database}
+    (hTxn : txnGuaranteedTR R G program db)
+    (hSub : ∀ db db', R' db db' → R db db') :
+    txnGuaranteedTR R' G program db := by
+  intro midCfg nextProgram nextDb hMulti hStep hSkip
+  exact hTxn _ _ _ (globalMultiStepTR_mono hSub hMulti) hStep hSkip
+
+theorem globalValid_of_relySubset {Ipre Ipost : Assertion} {R R' : Rely}
+    {program : Semantics.Program} {G : Guarantee}
+    (hValid : GlobalValid Ipre R program G Ipost)
+    (hSub : ∀ db db', R' db db' → R db db') :
+    GlobalValid Ipre R' program G Ipost := by
+  intro db hDb
+  rcases hValid db hDb with ⟨hPost, hTxn⟩
+  refine ⟨?_, txnGuaranteed_of_relySubset hTxn hSub⟩
+  intro finalCfg hRun hSkip
+  exact hPost _ (globalMultiStep_mono hSub hRun) hSkip
+
+theorem globalValidTR_of_relySubset {Ipre Ipost : Assertion} {R R' : Rely}
+    {program : Semantics.Program} {G : Guarantee}
+    (hValid : GlobalValidTR Ipre R program G Ipost)
+    (hSub : ∀ db db', R' db db' → R db db') :
+    GlobalValidTR Ipre R' program G Ipost := by
+  intro db hDb
+  rcases hValid db hDb with ⟨hPost, hTxn⟩
+  refine ⟨?_, txnGuaranteedTR_of_relySubset hTxn hSub⟩
+  intro finalCfg hRun hSkip
+  exact hPost _ (globalMultiStepTR_mono hSub hRun) hSkip
+
+/-- A `False`-rely proof is also a TR-faithful `False`-rely proof because the two interleavings
+agree when no rely steps are available. -/
+theorem globalValid_false_to_TR_false {Ipre Ipost : Assertion}
+    {program : Semantics.Program} {G : Guarantee}
+    (hValid : GlobalValid Ipre (fun _ _ => False) program G Ipost) :
+    GlobalValidTR Ipre (fun _ _ => False) program G Ipost := by
+  intro db hDb
+  rcases hValid db hDb with ⟨hPost, hTxn⟩
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun hSkip
+    exact hPost _ (globalMultiStep_false_iff_TR_false.mpr hRun) hSkip
+  · intro midCfg nextProgram nextDb hRun hStep hSkip
+    exact hTxn _ _ _ (globalMultiStep_false_iff_TR_false.mpr hRun) hStep hSkip
+
+/-- TR validity is insensitive to silent rely steps that leave the global database unchanged. -/
+theorem globalValidTR_of_silentRely {Ipre Ipost : Assertion} {R : Rely}
+    {program : Semantics.Program} {G : Guarantee}
+    (hValid : GlobalValidTR Ipre (fun _ _ => False) program G Ipost)
+    (hSilent : ∀ db db', R db db' → db' = db) :
+    GlobalValidTR Ipre R program G Ipost := by
+  intro db hDb
+  rcases hValid db hDb with ⟨hPost, hTxn⟩
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun hSkip
+    exact hPost _ (globalMultiStepTR_of_silentRely hSilent hRun) hSkip
+  · intro midCfg nextProgram nextDb hRun hStep hSkip
+    exact hTxn _ _ _ (globalMultiStepTR_of_silentRely hSilent hRun) hStep hSkip
 
 theorem localInterleavedStep_of_localStep (R : LocalRely) (txnId : TxnId)
     {cmd cmd' : Command ι Database} {localDb localDb' visibleDb : Database}

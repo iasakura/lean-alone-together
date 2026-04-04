@@ -40,6 +40,14 @@ def zeroBalanceGuarantee : Guarantee :=
 def zeroBalanceGuaranteeOf (txnId : TxnId) : Guarantee :=
   fun db db' => db' = Database.flush [zeroBalanceRowOf txnId] db
 
+def identityGuarantee : Guarantee :=
+  StateSpec.graph id
+
+theorem identityGuarantee_silent :
+    ∀ db db' : Database, identityGuarantee db db' → db' = db := by
+  intro db db' hId
+  exact hId
+
 theorem nonnegativeBalances_flush_zeroBalanceRow {db : Database}
     (hDb : nonnegativeBalances db) :
     nonnegativeBalances (Database.flush [zeroBalanceRow] db) := by
@@ -162,6 +170,23 @@ theorem zeroBalanceInsert_valid_any (txnId : TxnId) :
     (zeroBalance_effect_defined_any txnId)
     (zeroBalance_guarantee_ok_any txnId)
     (zeroBalance_preserves_invariant_any txnId)
+
+theorem zeroBalanceInsert_valid_any_TR_false (txnId : TxnId) :
+    Logic.GlobalValidTR nonnegativeBalances (fun _ _ => False)
+      (.txn txnId Database.uniqueIds zeroBalanceInsertBody)
+      (zeroBalanceGuaranteeOf txnId)
+      nonnegativeBalances := by
+  exact _root_.DbAppProgramLogic.Logic.globalValid_false_to_TR_false
+    (zeroBalanceInsert_valid_any txnId)
+
+theorem zeroBalanceInsert_valid_any_TR_identity (txnId : TxnId) :
+    Server.HandlerRefinesTR nonnegativeBalances identityGuarantee
+      (.txn txnId Database.uniqueIds zeroBalanceInsertBody)
+      (zeroBalanceGuaranteeOf txnId)
+      nonnegativeBalances := by
+  exact _root_.DbAppProgramLogic.Logic.globalValidTR_of_silentRely
+    (zeroBalanceInsert_valid_any_TR_false txnId)
+    identityGuarantee_silent
 
 def zeroBalanceApply : StateTransformer :=
   fun db => Database.flush [zeroBalanceRow] db

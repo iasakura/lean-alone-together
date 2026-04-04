@@ -43,6 +43,21 @@ namespace Server
 
 open Logic
 
+private def commandTag : Command ι σ → Nat
+  | .skip => 0
+  | .letE _ _ _ => 1
+  | .ite _ _ _ => 2
+  | .seq _ _ => 3
+  | .insert _ => 4
+  | .delete _ _ => 5
+  | .select _ _ _ _ => 6
+  | .update _ _ _ => 7
+  | .foreach _ _ _ _ => 8
+  | .foreachRuntime _ _ _ _ _ => 9
+  | .txn _ _ _ => 10
+  | .txnRuntime _ _ _ _ _ => 11
+  | .par _ _ => 12
+
 def NonParallel : Semantics.Program → Prop
   | .par _ _ => False
   | _ => True
@@ -55,6 +70,11 @@ inductive SingleTxnProgram (txnId : TxnId) : Semantics.Program → Prop where
       SingleTxnProgram txnId (.txnRuntime txnId isolation localDb snapshot body)
   | skip :
       SingleTxnProgram txnId (Command.skip : Semantics.Program)
+
+theorem singleTxn_nonParallel {txnId : TxnId} {program : Semantics.Program}
+    (h : SingleTxnProgram txnId program) :
+    NonParallel program := by
+  cases h <;> simp [NonParallel]
 
 /-- Quiescent programs for the server layer: all running branches have terminated. -/
 inductive ProgramDone : Semantics.Program → Prop where
@@ -254,6 +274,239 @@ theorem TxnCommitStep.step {txnId : TxnId}
       exact Semantics.Step.parLeft ih
   | parRight hCommit ih =>
       exact Semantics.Step.parRight ih
+
+theorem TxnCommitStep.ne_refreshVisible {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (h : TxnCommitStep txnId program db program' db') :
+    program' ≠ refreshVisible program db' := by
+  induction h with
+  | root =>
+      simp [refreshVisible]
+  | parLeft hInner ih =>
+      simp [refreshVisible, ih]
+  | parRight hInner ih =>
+      simp [refreshVisible, ih]
+
+theorem TxnCommitStep.ne_self {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (h : TxnCommitStep txnId program db program' db') :
+    program' ≠ program := by
+  induction h with
+  | root =>
+      simp
+  | parLeft hInner ih =>
+      simp [ih]
+  | parRight hInner ih =>
+      simp [ih]
+
+theorem localStep_changes_cmd {snapshot : Database} {txnId : TxnId}
+    {cmd cmd' : Command ι Database} {localDb localDb' : Database}
+    (h : Semantics.LocalStep snapshot txnId cmd localDb cmd' localDb') :
+    cmd' ≠ cmd := by
+  induction h with
+  | letE hEval =>
+      rename_i x expr body value localDb
+      intro hEq
+      cases body <;> simp [Command.subst] at hEq
+      case letE y expr' body' =>
+        rcases hEq with ⟨rfl, _hExpr, hRec⟩
+        simp at hRec
+        have hPos : 0 < 1 + sizeOf y + sizeOf expr' := by
+          have h1le : 1 ≤ 1 + sizeOf y := by exact Nat.le_add_right 1 (sizeOf y)
+          have h1 : 0 < 1 + sizeOf y := Nat.lt_of_lt_of_le Nat.zero_lt_one h1le
+          exact Nat.lt_of_lt_of_le h1 (Nat.le_add_right _ _)
+        have hLt : sizeOf body' < sizeOf (Command.letE y expr' body') := by
+          simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+            (Nat.lt_add_of_pos_right hPos :
+              sizeOf body' < sizeOf body' + (1 + sizeOf y + sizeOf expr'))
+        rw [← hRec] at hLt
+        simpa using hLt
+  | iteTrue hEval =>
+      rename_i condition thenBranch elseBranch localDb
+      intro hEq
+      cases thenBranch <;> simp [Command.subst] at hEq
+      case ite condition' thenBranch' elseBranch' =>
+        rcases hEq with ⟨rfl, hRec, _hElse⟩
+        have hPos : 0 < 1 + sizeOf condition' + sizeOf elseBranch' := by
+          have h1le : 1 ≤ 1 + sizeOf condition' := by exact Nat.le_add_right 1 (sizeOf condition')
+          have h1 : 0 < 1 + sizeOf condition' := Nat.lt_of_lt_of_le Nat.zero_lt_one h1le
+          exact Nat.lt_of_lt_of_le h1 (Nat.le_add_right _ _)
+        have hLt : sizeOf thenBranch' < sizeOf (Command.ite condition' thenBranch' elseBranch') := by
+          simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+            (Nat.lt_add_of_pos_right hPos :
+              sizeOf thenBranch' < sizeOf thenBranch' + (1 + sizeOf condition' + sizeOf elseBranch'))
+        rw [← hRec] at hLt
+        simpa using hLt
+  | iteFalse hEval =>
+      rename_i condition thenBranch elseBranch localDb
+      intro hEq
+      cases elseBranch <;> simp [Command.subst] at hEq
+      case ite condition' thenBranch' elseBranch' =>
+        rcases hEq with ⟨rfl, _hThen, hRec⟩
+        have hPos : 0 < 1 + sizeOf condition' + sizeOf thenBranch' := by
+          have h1le : 1 ≤ 1 + sizeOf condition' := by exact Nat.le_add_right 1 (sizeOf condition')
+          have h1 : 0 < 1 + sizeOf condition' := Nat.lt_of_lt_of_le Nat.zero_lt_one h1le
+          exact Nat.lt_of_lt_of_le h1 (Nat.le_add_right _ _)
+        have hLt : sizeOf elseBranch' < sizeOf (Command.ite condition' thenBranch' elseBranch') := by
+          simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+            (Nat.lt_add_of_pos_right hPos :
+              sizeOf elseBranch' < sizeOf elseBranch' + (1 + sizeOf condition' + sizeOf thenBranch'))
+        rw [← hRec] at hLt
+        simpa using hLt
+  | seqLeft hInner ih =>
+      intro hEq
+      injection hEq with hEqLeft _hEqRight
+      exact ih hEqLeft
+  | seqSkip =>
+      rename_i next localDb
+      intro hEq
+      cases next <;> simp at hEq
+      case seq left right =>
+        rcases hEq with ⟨rfl, hRec⟩
+        have hLt : sizeOf right < sizeOf (Command.seq Command.skip right) := by simp
+        rw [← hRec] at hLt
+        simpa using hLt
+  | insert hEval hFresh =>
+      intro hEq
+      have hTag := congrArg commandTag hEq
+      simp [commandTag] at hTag
+  | select hCollect =>
+      rename_i binder source predicate body selected localDb
+      intro hEq
+      cases body <;> simp [Command.subst] at hEq
+      case select binder' source' predicate' body' =>
+        rcases hEq with ⟨rfl, rfl, _hPred, hRec⟩
+        simp at hRec
+        have hPos : 0 < 1 + sizeOf binder' + sizeOf source' + sizeOf predicate' := by
+          have h1le : 1 ≤ 1 + sizeOf binder' := by exact Nat.le_add_right 1 (sizeOf binder')
+          have h1 : 0 < 1 + sizeOf binder' := Nat.lt_of_lt_of_le Nat.zero_lt_one h1le
+          have h2 : 1 + sizeOf binder' ≤ 1 + sizeOf binder' + sizeOf source' := by
+            exact Nat.le_add_right _ _
+          have h3 :
+              1 + sizeOf binder' + sizeOf source' ≤
+                1 + sizeOf binder' + sizeOf source' + sizeOf predicate' := by
+            exact Nat.le_add_right _ _
+          exact Nat.lt_of_lt_of_le (Nat.lt_of_lt_of_le h1 h2) h3
+        have hLt : sizeOf body' < sizeOf (Command.select binder' source' predicate' body') := by
+          simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+            (Nat.lt_add_of_pos_right hPos :
+              sizeOf body' < sizeOf body' + (1 + sizeOf binder' + sizeOf source' + sizeOf predicate'))
+        rw [← hRec] at hLt
+        simpa using hLt
+  | delete hCollect hDisjoint =>
+      intro hEq
+      have hTag := congrArg commandTag hEq
+      simp [commandTag] at hTag
+  | update hCollect hDisjoint =>
+      intro hEq
+      have hTag := congrArg commandTag hEq
+      simp [commandTag] at hTag
+  | foreachStart hEval =>
+      intro hEq
+      have hTag := congrArg commandTag hEq
+      simp [commandTag] at hTag
+  | foreachNext =>
+      intro hEq
+      have hTag := congrArg commandTag hEq
+      simp [commandTag] at hTag
+  | foreachDone =>
+      intro hEq
+      have hTag := congrArg commandTag hEq
+      simp [commandTag] at hTag
+
+theorem step_changes_program
+    {program program' : Semantics.Program} {db db' : Database}
+    (h : Semantics.Step program db program' db') :
+    program' ≠ program := by
+  induction h with
+  | txnStart =>
+      intro hEq
+      have hTag := congrArg commandTag hEq
+      simp [commandTag] at hTag
+  | txnExec hExec hLocal =>
+      intro hEq
+      injection hEq with _hTxnId _hIsolation hLocalEq hSnapEq hBodyEq
+      exact localStep_changes_cmd hLocal hBodyEq
+  | txnCommit =>
+      intro hEq
+      have hTag := congrArg commandTag hEq
+      simp [commandTag] at hTag
+  | parLeft hInner ih =>
+      intro hEq
+      injection hEq with hEqLeft _hEqRight
+      exact ih hEqLeft
+  | parRight hInner ih =>
+      intro hEq
+      injection hEq with _hEqLeft hEqRight
+      exact ih hEqRight
+
+/-- Every actual step is either a transaction commit lifted through `par`, or definitely not one.
+This is the structural classification needed to isolate the first commit in a parallel trace. -/
+theorem step_noCommit_or_commit
+    {program program' : Semantics.Program} {db db' : Database}
+    (h : Semantics.Step program db program' db') :
+    (¬ ∃ txnId, TxnCommitStep txnId program db program' db') ∨
+      ∃ txnId, TxnCommitStep txnId program db program' db' := by
+  induction h with
+  | txnStart =>
+      left
+      intro hCommit
+      rcases hCommit with ⟨txnId, hCommit⟩
+      cases hCommit
+  | txnExec hExec hLocal =>
+      left
+      intro hCommit
+      rcases hCommit with ⟨txnId, hCommit⟩
+      cases hCommit
+  | txnCommit hCommit =>
+      right
+      exact ⟨_, TxnCommitStep.root hCommit⟩
+  | parLeft hInner ih =>
+      cases ih with
+      | inl hNoInner =>
+          left
+          intro hCommit
+          rcases hCommit with ⟨txnId, hCommit⟩
+          cases hCommit with
+          | parLeft hInnerCommit =>
+              exact hNoInner ⟨txnId, hInnerCommit⟩
+          | parRight hRightCommit =>
+              exact step_changes_program hInner rfl
+      | inr hInnerCommit =>
+          right
+          rcases hInnerCommit with ⟨txnId, hInnerCommit⟩
+          exact ⟨txnId, TxnCommitStep.parLeft hInnerCommit⟩
+  | parRight hInner ih =>
+      cases ih with
+      | inl hNoInner =>
+          left
+          intro hCommit
+          rcases hCommit with ⟨txnId, hCommit⟩
+          cases hCommit with
+          | parLeft hLeftCommit =>
+              exact step_changes_program hInner rfl
+          | parRight hInnerCommit =>
+              exact hNoInner ⟨txnId, hInnerCommit⟩
+      | inr hInnerCommit =>
+          right
+          rcases hInnerCommit with ⟨txnId, hInnerCommit⟩
+          exact ⟨txnId, TxnCommitStep.parRight hInnerCommit⟩
+
+/-- Inverting a commit through one layer of `par`: the commit must come from either the left or the
+right branch. This is the structural fact used in the TR proof of RG-Par when focusing on the
+transaction that commits first. -/
+theorem txnCommitStep_par_inv {txnId : TxnId}
+    {left right program' : Semantics.Program} {db db' : Database}
+    (h : TxnCommitStep txnId (.par left right) db program' db') :
+    (∃ left', program' = (.par left' right : Semantics.Program) ∧
+      TxnCommitStep txnId left db left' db') ∨
+      (∃ right', program' = (.par left right' : Semantics.Program) ∧
+        TxnCommitStep txnId right db right' db') := by
+  cases h with
+  | parLeft hInner =>
+      exact Or.inl ⟨_, rfl, hInner⟩
+  | parRight hInner =>
+      exact Or.inr ⟨_, rfl, hInner⟩
 
 theorem respectsRely_implies {R : Rely}
     {program : Semantics.Program} {db db' : Database}
@@ -472,6 +725,49 @@ theorem CommitFreeGlobalMultiStep.toMultiStep {R : Rely}
   | tail hPrev hStep hNoCommit ih =>
       exact MultiStep.tail ih hStep
 
+theorem globalMultiStep_split_first_commit {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hRun : GlobalMultiStep R cfg₁ cfg₂) :
+    CommitFreeGlobalMultiStep R cfg₁ cfg₂ ∨
+      ∃ midCfg nextCfg txnId,
+        CommitFreeGlobalMultiStep R cfg₁ midCfg ∧
+        globalInterleavedStep R midCfg nextCfg ∧
+        TxnCommitStep txnId midCfg.program midCfg.globalDb nextCfg.program nextCfg.globalDb ∧
+        GlobalMultiStep R nextCfg cfg₂ := by
+  induction hRun with
+  | refl =>
+      exact Or.inl CommitFreeGlobalMultiStep.refl
+  | tail hPrev hLast ih =>
+      rename_i cfgMid cfgFinal
+      cases ih with
+      | inl hCommitFree =>
+          cases hLast with
+          | inl hActual =>
+              cases step_noCommit_or_commit hActual with
+              | inl hNoCommit =>
+                  exact Or.inl (CommitFreeGlobalMultiStep.tail hCommitFree (Or.inl hActual) hNoCommit)
+              | inr hCommit =>
+                  rcases hCommit with ⟨txnId, hCommit⟩
+                  exact Or.inr ⟨cfgMid, cfgFinal, txnId, hCommitFree, Or.inl hActual, hCommit,
+                    MultiStep.refl⟩
+          | inr hRely =>
+              have hNoCommit :
+                  ¬ ∃ txnId,
+                    TxnCommitStep txnId
+                      cfgMid.program
+                      cfgMid.globalDb
+                      cfgFinal.program
+                      cfgFinal.globalDb := by
+                intro hCommit
+                rcases hCommit with ⟨txnId, hCommit⟩
+                rcases hRely with ⟨hProgram, _hRespect⟩
+                exact TxnCommitStep.ne_refreshVisible hCommit hProgram
+              exact Or.inl (CommitFreeGlobalMultiStep.tail hCommitFree (Or.inr hRely) hNoCommit)
+      | inr hSplit =>
+          rcases hSplit with ⟨midCfg, nextCfg, txnId, hCommitFree, hFirstStep, hFirstCommit, hTail⟩
+          exact Or.inr ⟨midCfg, nextCfg, txnId, hCommitFree, hFirstStep, hFirstCommit,
+            MultiStep.tail hTail hLast⟩
+
 theorem commitFreeGlobalMultiStep_project_left {R : Rely}
     {left right : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
     (hRun :
@@ -520,6 +816,536 @@ theorem commitFreeGlobalMultiStep_project_right {R : Rely}
             ⟨nextLeft, nextRight, hNextProgram, hRightStep⟩
           exact ⟨nextLeft, nextRight, hNextProgram, MultiStep.trans hRightRun hRightStep⟩
 
+/-- View theorem for the first commit after a commit-free parallel prefix. Up to the first commit,
+the sibling branch can be erased; the commit itself then comes from one side exactly as in the TR
+proof of RG-Par. -/
+theorem commitFreePrefix_firstCommit_view {R : Rely}
+    {left right : Semantics.Program} {db : Database}
+    {midCfg : GlobalConfig} {nextProgram : Semantics.Program} {nextDb : Database}
+    {txnId : TxnId}
+    (hPrefix :
+      CommitFreeGlobalMultiStep R
+        ⟨(.par left right : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep txnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    (∃ leftMid rightMid leftNext,
+      midCfg.program = (.par leftMid rightMid : Semantics.Program) ∧
+      GlobalMultiStep R ⟨left, db⟩ ⟨leftMid, midCfg.globalDb⟩ ∧
+      TxnCommitStep txnId leftMid midCfg.globalDb leftNext nextDb ∧
+      nextProgram = (.par leftNext rightMid : Semantics.Program)) ∨
+      (∃ leftMid rightMid rightNext,
+        midCfg.program = (.par leftMid rightMid : Semantics.Program) ∧
+        GlobalMultiStep R ⟨right, db⟩ ⟨rightMid, midCfg.globalDb⟩ ∧
+        TxnCommitStep txnId rightMid midCfg.globalDb rightNext nextDb ∧
+        nextProgram = (.par leftMid rightNext : Semantics.Program)) := by
+  rcases commitFreeGlobalMultiStep_project_left hPrefix with
+    ⟨leftMid, rightMid, hMidProgram, hLeftRun⟩
+  rcases commitFreeGlobalMultiStep_project_right hPrefix with
+    ⟨leftMid', rightMid', hMidProgram', hRightRun⟩
+  have hSame :
+      (.par leftMid rightMid : Semantics.Program) =
+        (.par leftMid' rightMid' : Semantics.Program) := by
+    simpa [hMidProgram] using hMidProgram'
+  cases hSame
+  have hCommit' :
+      TxnCommitStep txnId
+        (.par leftMid rightMid : Semantics.Program)
+        midCfg.globalDb
+        nextProgram
+        nextDb := by
+    simpa [hMidProgram] using hCommit
+  rcases txnCommitStep_par_inv hCommit' with hLeftCommit | hRightCommit
+  · rcases hLeftCommit with ⟨leftNext, hNextProgram, hLeftCommit⟩
+    exact Or.inl ⟨leftMid, rightMid, leftNext, hMidProgram, hLeftRun, hLeftCommit, hNextProgram⟩
+  · rcases hRightCommit with ⟨rightNext, hNextProgram, hRightCommit⟩
+    exact Or.inr ⟨leftMid, rightMid, rightNext, hMidProgram, hRightRun, hRightCommit, hNextProgram⟩
+
+/-- TR-faithful invariant preservation for one interleaved step. The rely branch now changes only the
+outer database, so this is the direct analogue of the paper's Appendix C definition. -/
+theorem globalInterleavedStepTR_preservesInvariant_of_commitSpecs
+    {I : Assertion} {R : Rely} {specs : TxnId → StateSpec}
+    (hStable : stableAssertion R I)
+    (hCommitSpec :
+      ∀ {txnId program db program' db'},
+        TxnCommitStep txnId program db program' db' →
+        specs txnId db db')
+    (hPreserve :
+      ∀ txnId db db', I db → specs txnId db db' → I db')
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStepTR R cfg cfg') :
+    I cfg.globalDb →
+    I cfg'.globalDb := by
+  intro hI
+  cases hStep with
+  | inl hActual =>
+      rcases step_sameDb_or_commit hActual with hEq | hCommit
+      · simpa [hEq] using hI
+      · rcases hCommit with ⟨txnId, hCommit⟩
+        exact hPreserve txnId _ _ hI (hCommitSpec hCommit)
+  | inr hRely =>
+      rcases hRely with ⟨_hProgram, hR⟩
+      exact hStable _ _ hI hR
+
+theorem globalInterleavedStepTR_project_left_noncommit {R : Rely}
+    {left right program' : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        ⟨program', db'⟩)
+    (hNoCommit :
+      ¬ ∃ txnId,
+        TxnCommitStep txnId
+          (.par left right : Semantics.Program)
+          db
+          program'
+          db') :
+    ∃ left' right',
+      program' = (.par left' right' : Semantics.Program) ∧
+      GlobalMultiStepTR R ⟨left, db⟩ ⟨left', db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨_, right, rfl, ?_⟩
+              subst hEq
+              exact MultiStep.tail MultiStep.refl (Or.inl hInner)
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+      | parRight hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨left, _, rfl, ?_⟩
+              subst hEq
+              exact MultiStep.refl
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parRight hCommit⟩
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hR⟩
+      refine ⟨left, right, ?_, ?_⟩
+      · simpa using hProgram
+      · exact MultiStep.tail MultiStep.refl (Or.inr ⟨rfl, hR⟩)
+
+theorem globalInterleavedStepTR_project_right_noncommit {R : Rely}
+    {left right program' : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        ⟨program', db'⟩)
+    (hNoCommit :
+      ¬ ∃ txnId,
+        TxnCommitStep txnId
+          (.par left right : Semantics.Program)
+          db
+          program'
+          db') :
+    ∃ left' right',
+      program' = (.par left' right' : Semantics.Program) ∧
+      GlobalMultiStepTR R ⟨right, db⟩ ⟨right', db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨_, right, rfl, ?_⟩
+              subst hEq
+              exact MultiStep.refl
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+      | parRight hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨left, _, rfl, ?_⟩
+              subst hEq
+              exact MultiStep.tail MultiStep.refl (Or.inl hInner)
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parRight hCommit⟩
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hR⟩
+      refine ⟨left, right, ?_, ?_⟩
+      · simpa using hProgram
+      · exact MultiStep.tail MultiStep.refl (Or.inr ⟨rfl, hR⟩)
+
+theorem globalInterleavedStepTR_sameDb_or_commit {R : Rely}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStepTR R cfg cfg') :
+    cfg'.globalDb = cfg.globalDb ∨
+      ∃ txnId, TxnCommitStep txnId cfg.program cfg.globalDb cfg'.program cfg'.globalDb := by
+  cases hStep with
+  | inl hActual =>
+      exact step_sameDb_or_commit hActual
+  | inr hRely =>
+      rcases hRely with ⟨_hProgram, hR⟩
+      left
+      exact hSilent _ _ hR
+
+inductive CommitFreeGlobalMultiStepTR (R : Rely) :
+    GlobalConfig → GlobalConfig → Prop where
+  | refl {cfg : GlobalConfig} :
+      CommitFreeGlobalMultiStepTR R cfg cfg
+  | tail {cfg₁ cfg₂ cfg₃ : GlobalConfig} :
+      CommitFreeGlobalMultiStepTR R cfg₁ cfg₂ →
+      globalInterleavedStepTR R cfg₂ cfg₃ →
+      (¬ ∃ txnId, TxnCommitStep txnId cfg₂.program cfg₂.globalDb cfg₃.program cfg₃.globalDb) →
+      CommitFreeGlobalMultiStepTR R cfg₁ cfg₃
+
+theorem CommitFreeGlobalMultiStepTR.toMultiStep {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (h : CommitFreeGlobalMultiStepTR R cfg₁ cfg₂) :
+    GlobalMultiStepTR R cfg₁ cfg₂ := by
+  induction h with
+  | refl =>
+      exact MultiStep.refl
+  | tail hPrev hStep _hNoCommit ih =>
+      exact MultiStep.tail ih hStep
+
+theorem CommitFreeGlobalMultiStepTR.trans {R : Rely}
+    {cfg₁ cfg₂ cfg₃ : GlobalConfig}
+    (h₁ : CommitFreeGlobalMultiStepTR R cfg₁ cfg₂)
+    (h₂ : CommitFreeGlobalMultiStepTR R cfg₂ cfg₃) :
+    CommitFreeGlobalMultiStepTR R cfg₁ cfg₃ := by
+  revert h₁
+  induction h₂ with
+  | refl =>
+      intro h₁
+      exact h₁
+  | tail hPrev hStep hNoCommit ih =>
+      intro h₁
+      exact CommitFreeGlobalMultiStepTR.tail (ih h₁) hStep hNoCommit
+
+theorem globalInterleavedStepTR_project_left_noncommit_commitFree {R : Rely}
+    {left right program' : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        ⟨program', db'⟩)
+    (hNoCommit :
+      ¬ ∃ txnId,
+        TxnCommitStep txnId
+          (.par left right : Semantics.Program)
+          db
+          program'
+          db') :
+    ∃ left' right',
+      program' = (.par left' right' : Semantics.Program) ∧
+      CommitFreeGlobalMultiStepTR R ⟨left, db⟩ ⟨left', db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨_, right, rfl, ?_⟩
+              subst hEq
+              refine CommitFreeGlobalMultiStepTR.tail CommitFreeGlobalMultiStepTR.refl (Or.inl hInner) ?_
+              intro hCommit
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exact hNoCommit ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+      | parRight hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨left, _, rfl, ?_⟩
+              subst hEq
+              exact CommitFreeGlobalMultiStepTR.refl
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parRight hCommit⟩
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hR⟩
+      refine ⟨left, right, ?_, ?_⟩
+      · simpa using hProgram
+      · refine CommitFreeGlobalMultiStepTR.tail CommitFreeGlobalMultiStepTR.refl (Or.inr ⟨rfl, hR⟩) ?_
+        intro hCommit
+        rcases hCommit with ⟨txnId, hCommit⟩
+        exact TxnCommitStep.ne_self hCommit rfl
+
+theorem globalInterleavedStepTR_project_right_noncommit_commitFree {R : Rely}
+    {left right program' : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        ⟨program', db'⟩)
+    (hNoCommit :
+      ¬ ∃ txnId,
+        TxnCommitStep txnId
+          (.par left right : Semantics.Program)
+          db
+          program'
+          db') :
+    ∃ left' right',
+      program' = (.par left' right' : Semantics.Program) ∧
+      CommitFreeGlobalMultiStepTR R ⟨right, db⟩ ⟨right', db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨_, right, rfl, ?_⟩
+              subst hEq
+              exact CommitFreeGlobalMultiStepTR.refl
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+      | parRight hInner =>
+          cases step_sameDb_or_commit hInner with
+          | inl hEq =>
+              refine ⟨left, _, rfl, ?_⟩
+              subst hEq
+              refine CommitFreeGlobalMultiStepTR.tail CommitFreeGlobalMultiStepTR.refl (Or.inl hInner) ?_
+              intro hCommit
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exact hNoCommit ⟨txnId, TxnCommitStep.parRight hCommit⟩
+          | inr hCommit =>
+              rcases hCommit with ⟨txnId, hCommit⟩
+              exfalso
+              apply hNoCommit
+              exact ⟨txnId, TxnCommitStep.parRight hCommit⟩
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hR⟩
+      refine ⟨left, right, ?_, ?_⟩
+      · simpa using hProgram
+      · refine CommitFreeGlobalMultiStepTR.tail CommitFreeGlobalMultiStepTR.refl (Or.inr ⟨rfl, hR⟩) ?_
+        intro hCommit
+        rcases hCommit with ⟨txnId, hCommit⟩
+        exact TxnCommitStep.ne_self hCommit rfl
+
+theorem globalMultiStepTR_preservesInvariant_of_commitSpecs
+    {I : Assertion} {R : Rely} {specs : TxnId → StateSpec}
+    (hStable : stableAssertion R I)
+    (hCommitSpec :
+      ∀ {txnId program db program' db'},
+        TxnCommitStep txnId program db program' db' →
+        specs txnId db db')
+    (hPreserve :
+      ∀ txnId db db', I db → specs txnId db db' → I db')
+    {program : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun : GlobalMultiStepTR R ⟨program, db⟩ finalCfg)
+    (hI : I db) :
+    I finalCfg.globalDb := by
+  induction hRun with
+  | refl =>
+      simpa using hI
+  | tail hPrev hLast ih =>
+      exact globalInterleavedStepTR_preservesInvariant_of_commitSpecs
+        hStable hCommitSpec hPreserve hLast ih
+
+theorem globalMultiStepTR_split_first_commit {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hRun : GlobalMultiStepTR R cfg₁ cfg₂) :
+    CommitFreeGlobalMultiStepTR R cfg₁ cfg₂ ∨
+      ∃ midCfg nextCfg txnId,
+        CommitFreeGlobalMultiStepTR R cfg₁ midCfg ∧
+        globalInterleavedStepTR R midCfg nextCfg ∧
+        TxnCommitStep txnId midCfg.program midCfg.globalDb nextCfg.program nextCfg.globalDb ∧
+        GlobalMultiStepTR R nextCfg cfg₂ := by
+  induction hRun with
+  | refl =>
+      exact Or.inl CommitFreeGlobalMultiStepTR.refl
+  | tail hPrev hLast ih =>
+      rename_i cfgMid cfgFinal
+      cases ih with
+      | inl hCommitFree =>
+          cases hLast with
+          | inl hActual =>
+              cases step_noCommit_or_commit hActual with
+              | inl hNoCommit =>
+                  exact Or.inl (CommitFreeGlobalMultiStepTR.tail hCommitFree (Or.inl hActual) hNoCommit)
+              | inr hCommit =>
+                  rcases hCommit with ⟨txnId, hCommit⟩
+                  exact Or.inr ⟨cfgMid, cfgFinal, txnId, hCommitFree, Or.inl hActual, hCommit,
+                    MultiStep.refl⟩
+          | inr hRely =>
+              have hNoCommit :
+                  ¬ ∃ txnId,
+                    TxnCommitStep txnId
+                      cfgMid.program
+                      cfgMid.globalDb
+                      cfgFinal.program
+                      cfgFinal.globalDb := by
+                intro hCommit
+                rcases hCommit with ⟨txnId, hCommit⟩
+                rcases hRely with ⟨hProgram, _hRespect⟩
+                exact TxnCommitStep.ne_self hCommit hProgram
+              exact Or.inl (CommitFreeGlobalMultiStepTR.tail hCommitFree (Or.inr hRely) hNoCommit)
+      | inr hSplit =>
+          rcases hSplit with ⟨midCfg, nextCfg, txnId, hCommitFree, hFirstStep, hFirstCommit, hTail⟩
+          exact Or.inr ⟨midCfg, nextCfg, txnId, hCommitFree, hFirstStep, hFirstCommit,
+            MultiStep.tail hTail hLast⟩
+
+theorem commitFreeGlobalMultiStepTR_project_left {R : Rely}
+    {left right : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      CommitFreeGlobalMultiStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ left' right',
+      finalCfg.program = (.par left' right' : Semantics.Program) ∧
+      GlobalMultiStepTR R ⟨left, db⟩ ⟨left', finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨left, right, rfl, MultiStep.refl⟩
+  | tail hPrev hStep hNoCommit ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgram midDb =>
+          rcases ih with ⟨midLeft, midRight, hMidProgram, hLeftRun⟩
+          have hMidProgram' : midProgram = (.par midLeft midRight : Semantics.Program) := by
+            simpa using hMidProgram
+          subst hMidProgram'
+          rcases globalInterleavedStepTR_project_left_noncommit hStep hNoCommit with
+            ⟨nextLeft, nextRight, hNextProgram, hLeftStep⟩
+          exact ⟨nextLeft, nextRight, hNextProgram, MultiStep.trans hLeftRun hLeftStep⟩
+
+theorem commitFreeGlobalMultiStepTR_project_right {R : Rely}
+    {left right : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      CommitFreeGlobalMultiStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ left' right',
+      finalCfg.program = (.par left' right' : Semantics.Program) ∧
+      GlobalMultiStepTR R ⟨right, db⟩ ⟨right', finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨left, right, rfl, MultiStep.refl⟩
+  | tail hPrev hStep hNoCommit ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgram midDb =>
+          rcases ih with ⟨midLeft, midRight, hMidProgram, hRightRun⟩
+          have hMidProgram' : midProgram = (.par midLeft midRight : Semantics.Program) := by
+            simpa using hMidProgram
+          subst hMidProgram'
+          rcases globalInterleavedStepTR_project_right_noncommit hStep hNoCommit with
+            ⟨nextLeft, nextRight, hNextProgram, hRightStep⟩
+          exact ⟨nextLeft, nextRight, hNextProgram, MultiStep.trans hRightRun hRightStep⟩
+
+theorem commitFreeGlobalMultiStepTR_project_left_commitFree {R : Rely}
+    {left right : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      CommitFreeGlobalMultiStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ left' right',
+      finalCfg.program = (.par left' right' : Semantics.Program) ∧
+      CommitFreeGlobalMultiStepTR R ⟨left, db⟩ ⟨left', finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨left, right, rfl, CommitFreeGlobalMultiStepTR.refl⟩
+  | tail hPrev hStep hNoCommit ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgram midDb =>
+          rcases ih with ⟨midLeft, midRight, hMidProgram, hLeftRun⟩
+          have hMidProgram' : midProgram = (.par midLeft midRight : Semantics.Program) := by
+            simpa using hMidProgram
+          subst hMidProgram'
+          rcases globalInterleavedStepTR_project_left_noncommit_commitFree hStep hNoCommit with
+            ⟨nextLeft, nextRight, hNextProgram, hLeftStep⟩
+          exact ⟨nextLeft, nextRight, hNextProgram,
+            CommitFreeGlobalMultiStepTR.trans hLeftRun hLeftStep⟩
+
+theorem commitFreeGlobalMultiStepTR_project_right_commitFree {R : Rely}
+    {left right : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      CommitFreeGlobalMultiStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ left' right',
+      finalCfg.program = (.par left' right' : Semantics.Program) ∧
+      CommitFreeGlobalMultiStepTR R ⟨right, db⟩ ⟨right', finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨left, right, rfl, CommitFreeGlobalMultiStepTR.refl⟩
+  | tail hPrev hStep hNoCommit ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgram midDb =>
+          rcases ih with ⟨midLeft, midRight, hMidProgram, hRightRun⟩
+          have hMidProgram' : midProgram = (.par midLeft midRight : Semantics.Program) := by
+            simpa using hMidProgram
+          subst hMidProgram'
+          rcases globalInterleavedStepTR_project_right_noncommit_commitFree hStep hNoCommit with
+            ⟨nextLeft, nextRight, hNextProgram, hRightStep⟩
+          exact ⟨nextLeft, nextRight, hNextProgram,
+            CommitFreeGlobalMultiStepTR.trans hRightRun hRightStep⟩
+
+theorem commitFreePrefix_firstCommit_viewTR {R : Rely}
+    {left right : Semantics.Program} {db : Database}
+    {midCfg : GlobalConfig} {nextProgram : Semantics.Program} {nextDb : Database}
+    {txnId : TxnId}
+    (hPrefix :
+      CommitFreeGlobalMultiStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep txnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    (∃ leftMid rightMid leftNext,
+      midCfg.program = (.par leftMid rightMid : Semantics.Program) ∧
+      GlobalMultiStepTR R ⟨left, db⟩ ⟨leftMid, midCfg.globalDb⟩ ∧
+      TxnCommitStep txnId leftMid midCfg.globalDb leftNext nextDb ∧
+      nextProgram = (.par leftNext rightMid : Semantics.Program)) ∨
+      (∃ leftMid rightMid rightNext,
+        midCfg.program = (.par leftMid rightMid : Semantics.Program) ∧
+        GlobalMultiStepTR R ⟨right, db⟩ ⟨rightMid, midCfg.globalDb⟩ ∧
+        TxnCommitStep txnId rightMid midCfg.globalDb rightNext nextDb ∧
+        nextProgram = (.par leftMid rightNext : Semantics.Program)) := by
+  rcases commitFreeGlobalMultiStepTR_project_left hPrefix with
+    ⟨leftMid, rightMid, hMidProgram, hLeftRun⟩
+  rcases commitFreeGlobalMultiStepTR_project_right hPrefix with
+    ⟨leftMid', rightMid', hMidProgram', hRightRun⟩
+  have hSame :
+      (.par leftMid rightMid : Semantics.Program) =
+        (.par leftMid' rightMid' : Semantics.Program) := by
+    simpa [hMidProgram] using hMidProgram'
+  cases hSame
+  have hCommit' :
+      TxnCommitStep txnId
+        (.par leftMid rightMid : Semantics.Program)
+        midCfg.globalDb
+        nextProgram
+        nextDb := by
+    simpa [hMidProgram] using hCommit
+  rcases txnCommitStep_par_inv hCommit' with hLeftCommit | hRightCommit
+  · rcases hLeftCommit with ⟨leftNext, hNextProgram, hLeftCommit⟩
+    exact Or.inl ⟨leftMid, rightMid, leftNext, hMidProgram, hLeftRun, hLeftCommit, hNextProgram⟩
+  · rcases hRightCommit with ⟨rightNext, hNextProgram, hRightCommit⟩
+    exact Or.inr ⟨leftMid, rightMid, rightNext, hMidProgram, hRightRun, hRightCommit, hNextProgram⟩
+
 /-- Server-layer semantic validity. Besides invariant preservation at quiescent states, this records
 which state relation every commit step must satisfy. -/
 def ParallelValid (Ipre : Assertion) (R : Rely)
@@ -544,8 +1370,37 @@ def ReachableCommitSpecs (Ipre : Assertion) (R : Rely)
         TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
         specs txnId midCfg.globalDb nextDb
 
+/-- TR-faithful server validity: quiescent postcondition plus exact commit specifications, but using
+the Appendix C interleaving relation. -/
+def ParallelValidTR (Ipre : Assertion) (R : Rely)
+    (program : Semantics.Program) (specs : TxnId → StateSpec) (Ipost : Assertion) : Prop :=
+  ∀ db,
+    Ipre db →
+      (∀ finalCfg,
+        GlobalMultiStepTR R ⟨program, db⟩ finalCfg →
+        ProgramDone finalCfg.program →
+        Ipost finalCfg.globalDb) ∧
+      (∀ midCfg nextProgram nextDb txnId,
+        GlobalMultiStepTR R ⟨program, db⟩ midCfg →
+        TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
+        specs txnId midCfg.globalDb nextDb)
+
+def ReachableCommitSpecsTR (Ipre : Assertion) (R : Rely)
+    (program : Semantics.Program) (specs : TxnId → StateSpec) : Prop :=
+  ∀ db,
+    Ipre db →
+      ∀ midCfg nextProgram nextDb txnId,
+        GlobalMultiStepTR R ⟨program, db⟩ midCfg →
+        TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
+        specs txnId midCfg.globalDb nextDb
+
 def CombinedSpecs (leftSpecs rightSpecs : TxnId → StateSpec) : TxnId → StateSpec :=
   fun txnId db db' => leftSpecs txnId db db' ∨ rightSpecs txnId db db'
+
+/-- A commit specification that is only enabled for one distinguished transaction identifier. This
+is the exact server-level shape needed when lifting a proved handler into a parallel composition. -/
+def ExactTxnSpec (targetTxnId : TxnId) (spec : StateSpec) : TxnId → StateSpec :=
+  fun txnId db db' => txnId = targetTxnId ∧ spec db db'
 
 /-- Compatibility condition saying that `program` can treat every spec in `specs` as allowed
 environment interference. This is the current server-level surrogate for a standard RG `par` rule. -/
@@ -583,6 +1438,11 @@ theorem parallelCompatible_symm {R : Rely}
 def HandlerRefines (P : Assertion) (R : Rely)
     (program : Semantics.Program) (spec : StateSpec) (Q : Assertion) : Prop :=
   GlobalValid P R program spec Q
+
+/-- TR-faithful variant of `HandlerRefines`, interpreted over `GlobalMultiStepTR`. -/
+def HandlerRefinesTR (P : Assertion) (R : Rely)
+    (program : Semantics.Program) (spec : StateSpec) (Q : Assertion) : Prop :=
+  _root_.DbAppProgramLogic.Logic.GlobalValidTR P R program spec Q
 
 /-- A verified server with relational request specifications. This is the main object to use when a
 handler spec is not naturally a pure state transformer. -/
@@ -694,6 +1554,42 @@ theorem parallelValid_of_reachableCommitSpecs {I : Assertion} {R : Rely}
   refine ⟨?_, ?_⟩
   · intro finalCfg hRun _hDone
     exact reachableInvariant_of_reachableCommitSpecs hStable hPreserve hCommits hDb hRun
+  · intro midCfg nextProgram nextDb txnId hRun hCommit
+    exact hCommits db hDb midCfg nextProgram nextDb txnId hRun hCommit
+
+theorem reachableInvariant_of_reachableCommitSpecsTR {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ txnId db db', I db → specs txnId db db' → I db')
+    (hCommits : ReachableCommitSpecsTR I R program specs)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : I db)
+    (hRun : GlobalMultiStepTR R ⟨program, db⟩ finalCfg) :
+    I finalCfg.globalDb := by
+  induction hRun with
+  | refl =>
+      simpa using hDb
+  | tail hPrev hLast ih =>
+      cases hLast with
+      | inl hActual =>
+          rcases step_sameDb_or_commit hActual with hEq | hCommit
+          · simpa [hEq] using ih
+          · rcases hCommit with ⟨txnId, hCommit⟩
+            exact hPreserve txnId _ _ ih (hCommits db hDb _ _ _ _ hPrev hCommit)
+      | inr hRely =>
+          rcases hRely with ⟨_hProgram, hR⟩
+          exact hStable _ _ ih hR
+
+theorem parallelValidTR_of_reachableCommitSpecs {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec}
+    (hStable : stableAssertion R I)
+    (hPreserve : ∀ txnId db db', I db → specs txnId db db' → I db')
+    (hCommits : ReachableCommitSpecsTR I R program specs) :
+    ParallelValidTR I R program specs I := by
+  intro db hDb
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun _hDone
+    exact reachableInvariant_of_reachableCommitSpecsTR hStable hPreserve hCommits hDb hRun
   · intro midCfg nextProgram nextDb txnId hRun hCommit
     exact hCommits db hDb midCfg nextProgram nextDb txnId hRun hCommit
 
@@ -909,6 +1805,113 @@ theorem globalMultiStep_preserves_singleTxn {txnId : TxnId} {R : Rely}
   | tail hPrev hLast ih =>
       exact globalInterleavedStep_preserves_singleTxn hLast ih
 
+theorem globalInterleavedStepTR_preserves_singleTxn {txnId : TxnId} {R : Rely}
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStepTR R cfg cfg')
+    (h : SingleTxnProgram txnId cfg.program) :
+    SingleTxnProgram txnId cfg'.program := by
+  cases hStep with
+  | inl hActual =>
+      exact step_preserves_singleTxn hActual h
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, _hR⟩
+      rw [hProgram]
+      exact h
+
+theorem globalMultiStepTR_preserves_singleTxn {txnId : TxnId} {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hRun : GlobalMultiStepTR R cfg₁ cfg₂)
+    (h : SingleTxnProgram txnId cfg₁.program) :
+    SingleTxnProgram txnId cfg₂.program := by
+  induction hRun with
+  | refl =>
+      exact h
+  | tail hPrev hLast ih =>
+      exact globalInterleavedStepTR_preserves_singleTxn hLast ih
+
+theorem globalMultiStepTR_append_rely {R : Rely}
+    {program₀ program : Semantics.Program} {db₀ db db' : Database}
+    (hRun : GlobalMultiStepTR R ⟨program₀, db₀⟩ ⟨program, db⟩)
+    (hR : R db db') :
+    GlobalMultiStepTR R ⟨program₀, db₀⟩ ⟨program, db'⟩ := by
+  exact MultiStep.tail hRun (Or.inr ⟨rfl, hR⟩)
+
+theorem step_not_skip_of_singleTxn_noCommit {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hSingle : SingleTxnProgram txnId program)
+    (hStep : Semantics.Step program db program' db')
+    (hNoCommit : ¬ ∃ otherTxnId, TxnCommitStep otherTxnId program db program' db') :
+    program' ≠ (Command.skip : Semantics.Program) := by
+  cases hStep with
+  | txnStart =>
+      simp
+  | txnExec =>
+      simp
+  | txnCommit hCommit =>
+      intro _hEq
+      exact hNoCommit ⟨_, TxnCommitStep.root hCommit⟩
+  | parLeft =>
+      cases hSingle
+  | parRight =>
+      cases hSingle
+
+theorem commitFreeGlobalMultiStepTR_singleTxn_notSkip {txnId : TxnId} {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hRun : CommitFreeGlobalMultiStepTR R cfg₁ cfg₂)
+    (hSingle : SingleTxnProgram txnId cfg₁.program) :
+    cfg₁.program ≠ (Command.skip : Semantics.Program) →
+    cfg₂.program ≠ (Command.skip : Semantics.Program) := by
+  intro hNotStartSkip
+  revert hSingle
+  induction hRun with
+  | refl =>
+      cases cfg₁ with
+      | mk program db =>
+          intro hSingle
+          cases hSingle with
+          | txn =>
+              simp
+          | runtime =>
+              simp
+          | skip =>
+              exact False.elim (hNotStartSkip rfl)
+  | tail hPrev hStep hNoCommit ih =>
+      intro hSingle
+      have hSingleMid := globalMultiStepTR_preserves_singleTxn hPrev.toMultiStep hSingle
+      cases hStep with
+      | inl hActual =>
+          exact step_not_skip_of_singleTxn_noCommit hSingleMid hActual hNoCommit
+      | inr hRely =>
+          rcases hRely with ⟨hProgram, _hR⟩
+          rw [hProgram]
+          exact ih hSingle
+
+theorem commitFreeGlobalMultiStepTR_par_notDone_of_leftTxn {R : Rely}
+    {txnId : TxnId} {left right : Semantics.Program}
+    {db : Database} {finalCfg : GlobalConfig}
+    (hLeft : SingleTxnProgram txnId left)
+    (hLeftNotSkip : left ≠ (Command.skip : Semantics.Program))
+    (hRun :
+      CommitFreeGlobalMultiStepTR R
+        ⟨(.par left right : Semantics.Program), db⟩
+        finalCfg) :
+    ¬ ProgramDone finalCfg.program := by
+  intro hDone
+  rcases commitFreeGlobalMultiStepTR_project_left_commitFree hRun with
+    ⟨leftFinal, rightFinal, hProgram, hLeftRun⟩
+  have hDoneLeft : ProgramDone leftFinal := by
+    rw [hProgram] at hDone
+    cases hDone with
+    | par hLeftDone _hRightDone =>
+        exact hLeftDone
+  have hSingleFinal : SingleTxnProgram txnId leftFinal := by
+    exact globalMultiStepTR_preserves_singleTxn hLeftRun.toMultiStep hLeft
+  cases hDoneLeft with
+  | skip =>
+      exact commitFreeGlobalMultiStepTR_singleTxn_notSkip hLeftRun hLeft hLeftNotSkip rfl
+  | par hLeftDone _hRightDone =>
+      cases singleTxn_nonParallel hSingleFinal
+
 theorem txnCommitStep_txnId_eq_of_singleTxn {expectedTxnId actualTxnId : TxnId}
     {program program' : Semantics.Program} {db db' : Database}
     (hSingle : SingleTxnProgram expectedTxnId program)
@@ -953,12 +1956,82 @@ theorem txnCommitStep_of_nonParallel {txnId : TxnId}
   | parRight hInner =>
       cases h
 
+/-- Any commit reached in a standalone run of a single transaction satisfies the handler-level state
+specification proved for that transaction. This packages the repeated "reachable runtime state +
+commit step" argument used throughout the server layer. -/
+theorem txnCommitSpec_of_handlerRefines {Ipre : Assertion} {R : Rely}
+    {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
+    {spec : StateSpec} {Ipost : Assertion}
+    (h : HandlerRefines Ipre R (.txn txnId isolation body) spec Ipost)
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database} {actualTxnId : TxnId}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStep R ⟨(.txn txnId isolation body : Semantics.Program), db⟩ midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    actualTxnId = txnId ∧ spec midCfg.globalDb nextDb := by
+  have hSingle : SingleTxnProgram txnId midCfg.program := by
+    exact globalMultiStep_preserves_singleTxn hRun SingleTxnProgram.txn
+  have hTxnIdEq : actualTxnId = txnId := by
+    exact txnCommitStep_txnId_eq_of_singleTxn hSingle hCommit
+  have hNonPar : NonParallel midCfg.program := by
+    exact singleTxn_nonParallel hSingle
+  rcases txnCommitStep_of_nonParallel hNonPar hCommit with
+    ⟨_, _, _, hProgram, hNextSkip, hDbEq, hCommitGuard⟩
+  have hStep : Semantics.Step midCfg.program midCfg.globalDb nextProgram nextDb := by
+    rw [hProgram, hNextSkip, hDbEq]
+    exact Semantics.Step.txnCommit hCommitGuard
+  subst hTxnIdEq
+  rcases h db hDb with ⟨_hPost, hTxnGuaranteed⟩
+  exact ⟨rfl, hTxnGuaranteed midCfg nextProgram nextDb hRun hStep hNextSkip⟩
+
+theorem txnCommitSpec_of_handlerRefinesTR {Ipre : Assertion} {R : Rely}
+    {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
+    {spec : StateSpec} {Ipost : Assertion}
+    (h : HandlerRefinesTR Ipre R (.txn txnId isolation body) spec Ipost)
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database} {actualTxnId : TxnId}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStepTR R ⟨(.txn txnId isolation body : Semantics.Program), db⟩ midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    actualTxnId = txnId ∧ spec midCfg.globalDb nextDb := by
+  have hSingle : SingleTxnProgram txnId midCfg.program := by
+    exact globalMultiStepTR_preserves_singleTxn hRun SingleTxnProgram.txn
+  have hTxnIdEq : actualTxnId = txnId := by
+    exact txnCommitStep_txnId_eq_of_singleTxn hSingle hCommit
+  have hNonPar : NonParallel midCfg.program := by
+    exact singleTxn_nonParallel hSingle
+  rcases txnCommitStep_of_nonParallel hNonPar hCommit with
+    ⟨_, _, _, hProgram, hNextSkip, hDbEq, hCommitGuard⟩
+  have hStep : Semantics.Step midCfg.program midCfg.globalDb nextProgram nextDb := by
+    rw [hProgram, hNextSkip, hDbEq]
+    exact Semantics.Step.txnCommit hCommitGuard
+  subst hTxnIdEq
+  rcases h db hDb with ⟨_hPost, hTxnGuaranteed⟩
+  exact ⟨rfl, hTxnGuaranteed midCfg nextProgram nextDb hRun hStep hNextSkip⟩
+
 theorem programDone_par_skip_right_inv {program : Semantics.Program}
     (hDone : ProgramDone (.par program (Command.skip : Semantics.Program))) :
     ProgramDone program := by
   cases hDone with
   | par hLeft hRight =>
       exact hLeft
+
+theorem programDone_par_skip_left_inv {program : Semantics.Program}
+    (hDone : ProgramDone (.par (Command.skip : Semantics.Program) program)) :
+    ProgramDone program := by
+  cases hDone with
+  | par hLeft hRight =>
+      exact hRight
 
 theorem txnCommitStep_par_skip_right {txnId : TxnId}
     {program program' : Semantics.Program} {db db' : Database}
@@ -972,6 +2045,19 @@ theorem txnCommitStep_par_skip_right {txnId : TxnId}
       exact ⟨_, rfl, hInner⟩
   | parRight hInner =>
       cases hInner
+
+theorem txnCommitStep_par_skip_left {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hCommit :
+      TxnCommitStep txnId (.par (Command.skip : Semantics.Program) program) db program' db') :
+    ∃ programInner,
+      program' = (.par (Command.skip : Semantics.Program) programInner : Semantics.Program) ∧
+      TxnCommitStep txnId program db programInner db' := by
+  cases hCommit with
+  | parLeft hInner =>
+      cases hInner
+  | parRight hInner =>
+      exact ⟨_, rfl, hInner⟩
 
 theorem globalInterleavedStep_par_skip_right {R : Rely}
     {program program' : Semantics.Program} {db db' : Database}
@@ -995,6 +2081,28 @@ theorem globalInterleavedStep_par_skip_right {R : Rely}
       · simpa [refreshVisible] using hProgram
       · exact Or.inr ⟨rfl, by simpa [respectsRely] using hRespect.1⟩
 
+theorem globalInterleavedStep_par_skip_left {R : Rely}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStep R
+        ⟨(.par (Command.skip : Semantics.Program) program : Semantics.Program), db⟩
+        ⟨program', db'⟩) :
+    ∃ programInner,
+      program' = (.par (Command.skip : Semantics.Program) programInner : Semantics.Program) ∧
+      globalInterleavedStep R ⟨program, db⟩ ⟨programInner, db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          cases no_step_from_program_skip hInner
+      | parRight hInner =>
+          exact ⟨_, rfl, Or.inl hInner⟩
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hRespect⟩
+      refine ⟨refreshVisible program db', ?_, ?_⟩
+      · simpa [refreshVisible] using hProgram
+      · exact Or.inr ⟨rfl, by simpa [respectsRely] using hRespect.2⟩
+
 theorem globalMultiStep_par_skip_right {R : Rely}
     {program : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
     (hRun :
@@ -1014,6 +2122,113 @@ theorem globalMultiStep_par_skip_right {R : Rely}
           rcases ih with ⟨midProgram, hMidEq, hPrev'⟩
           cases hMidEq
           rcases globalInterleavedStep_par_skip_right hLast with ⟨midProgram', hLastEq, hLast'⟩
+          exact ⟨midProgram', hLastEq, MultiStep.tail hPrev' hLast'⟩
+
+theorem globalMultiStep_par_skip_left {R : Rely}
+    {program : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      GlobalMultiStep R
+        ⟨(.par (Command.skip : Semantics.Program) program : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ programInner,
+      finalCfg.program = (.par (Command.skip : Semantics.Program) programInner : Semantics.Program) ∧
+      GlobalMultiStep R ⟨program, db⟩ ⟨programInner, finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨program, rfl, MultiStep.refl⟩
+  | tail hPrev hLast ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgramActual midDb =>
+          rcases ih with ⟨midProgram, hMidEq, hPrev'⟩
+          cases hMidEq
+          rcases globalInterleavedStep_par_skip_left hLast with ⟨midProgram', hLastEq, hLast'⟩
+          exact ⟨midProgram', hLastEq, MultiStep.tail hPrev' hLast'⟩
+
+theorem globalInterleavedStepTR_par_skip_right {R : Rely}
+    {program programInner : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStepTR R
+        ⟨(.par program (Command.skip : Semantics.Program) : Semantics.Program), db⟩
+        ⟨programInner, db'⟩) :
+    ∃ programInner',
+      programInner = (.par programInner' (Command.skip : Semantics.Program) : Semantics.Program) ∧
+      globalInterleavedStepTR R ⟨program, db⟩ ⟨programInner', db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          exact ⟨_, rfl, Or.inl hInner⟩
+      | parRight hInner =>
+          cases no_step_from_program_skip hInner
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hR⟩
+      refine ⟨program, ?_, ?_⟩
+      · simpa using hProgram
+      · exact Or.inr ⟨rfl, hR⟩
+
+theorem globalInterleavedStepTR_par_skip_left {R : Rely}
+    {program programInner : Semantics.Program} {db db' : Database}
+    (hStep :
+      globalInterleavedStepTR R
+        ⟨(.par (Command.skip : Semantics.Program) program : Semantics.Program), db⟩
+        ⟨programInner, db'⟩) :
+    ∃ programInner',
+      programInner = (.par (Command.skip : Semantics.Program) programInner' : Semantics.Program) ∧
+      globalInterleavedStepTR R ⟨program, db⟩ ⟨programInner', db'⟩ := by
+  cases hStep with
+  | inl hActual =>
+      cases hActual with
+      | parLeft hInner =>
+          cases no_step_from_program_skip hInner
+      | parRight hInner =>
+          exact ⟨_, rfl, Or.inl hInner⟩
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, hR⟩
+      refine ⟨program, ?_, ?_⟩
+      · simpa using hProgram
+      · exact Or.inr ⟨rfl, hR⟩
+
+theorem globalMultiStepTR_par_skip_right {R : Rely}
+    {program : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      GlobalMultiStepTR R
+        ⟨(.par program (Command.skip : Semantics.Program) : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ programInner,
+      finalCfg.program = (.par programInner (Command.skip : Semantics.Program) : Semantics.Program) ∧
+      GlobalMultiStepTR R ⟨program, db⟩ ⟨programInner, finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨program, rfl, MultiStep.refl⟩
+  | tail hPrev hLast ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgramActual midDb =>
+          rcases ih with ⟨midProgram, hMidEq, hPrev'⟩
+          cases hMidEq
+          rcases globalInterleavedStepTR_par_skip_right hLast with ⟨midProgram', hLastEq, hLast'⟩
+          exact ⟨midProgram', hLastEq, MultiStep.tail hPrev' hLast'⟩
+
+theorem globalMultiStepTR_par_skip_left {R : Rely}
+    {program : Semantics.Program} {db : Database} {finalCfg : GlobalConfig}
+    (hRun :
+      GlobalMultiStepTR R
+        ⟨(.par (Command.skip : Semantics.Program) program : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ programInner,
+      finalCfg.program = (.par (Command.skip : Semantics.Program) programInner : Semantics.Program) ∧
+      GlobalMultiStepTR R ⟨program, db⟩ ⟨programInner, finalCfg.globalDb⟩ := by
+  induction hRun with
+  | refl =>
+      exact ⟨program, rfl, MultiStep.refl⟩
+  | tail hPrev hLast ih =>
+      rename_i cfgMid cfgFinal
+      cases cfgMid with
+      | mk midProgramActual midDb =>
+          rcases ih with ⟨midProgram, hMidEq, hPrev'⟩
+          cases hMidEq
+          rcases globalInterleavedStepTR_par_skip_left hLast with ⟨midProgram', hLastEq, hLast'⟩
           exact ⟨midProgram', hLastEq, MultiStep.tail hPrev' hLast'⟩
 
 theorem ParallelValid.invariant {I : Assertion} {R : Rely}
@@ -1068,6 +2283,80 @@ theorem ParallelValid.reachableCommitSpecs {Ipre : Assertion} {R : Rely}
     ReachableCommitSpecs Ipre R program specs := by
   intro db hDb midCfg nextProgram nextDb txnId hRun hCommit
   exact ParallelValid.commitSpec h hDb hRun hCommit
+
+theorem ParallelValidTR.invariant {I : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec}
+    (h : ParallelValidTR I R program specs I)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : I db)
+    (hRun : GlobalMultiStepTR R ⟨program, db⟩ finalCfg)
+    (hDone : ProgramDone finalCfg.program) :
+    I finalCfg.globalDb := by
+  exact (h db hDb).1 finalCfg hRun hDone
+
+theorem ParallelValidTR.commitSpec {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValidTR Ipre R program specs Ipost)
+    {db : Database} (hDb : Ipre db)
+    {midCfg : GlobalConfig} {nextProgram : Semantics.Program} {nextDb : Database}
+    {txnId : TxnId}
+    (hRun : GlobalMultiStepTR R ⟨program, db⟩ midCfg)
+    (hCommit : TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb) :
+    specs txnId midCfg.globalDb nextDb := by
+  exact (h db hDb).2 midCfg nextProgram nextDb txnId hRun hCommit
+
+theorem ParallelValidTR.reachableCommitSpecs {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValidTR Ipre R program specs Ipost) :
+    ReachableCommitSpecsTR Ipre R program specs := by
+  intro db hDb midCfg nextProgram nextDb txnId hRun hCommit
+  exact ParallelValidTR.commitSpec h hDb hRun hCommit
+
+theorem parallelValidTR_commitSequence {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValidTR Ipre R program specs Ipost)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStepTR R ⟨program, db⟩ finalCfg) :
+    ∃ commits, CommitSequence specs db commits finalCfg.globalDb := by
+  induction hRun with
+  | refl =>
+      exact ⟨[], CommitSequence.nil⟩
+  | tail hPrev hLast ih =>
+      rcases ih with ⟨commits, hSeq⟩
+      cases globalInterleavedStepTR_sameDb_or_commit hSilent hLast with
+      | inl hEq =>
+          refine ⟨commits, ?_⟩
+          simpa [hEq] using hSeq
+      | inr hCommit =>
+          rcases hCommit with ⟨txnId, hCommit⟩
+          refine ⟨commits ++ [txnId], ?_⟩
+          exact CommitSequence.snoc hSeq (ParallelValidTR.commitSpec hValid hDb hPrev hCommit)
+
+theorem parallelValidTR_commitLog {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValidTR Ipre R program specs Ipost)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStepTR R ⟨program, db⟩ finalCfg) :
+    ∃ events, CommitLog specs db events finalCfg.globalDb := by
+  rcases parallelValidTR_commitSequence hSilent hValid hDb hRun with ⟨commits, hSeq⟩
+  exact CommitLog.ofCommitSequence hSeq
+
+theorem parallelValidTR_eventFoldl_of_graphSpecs {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {fs : TxnId → StateTransformer} {Ipost : Assertion}
+    (hSilent : ∀ db db', R db db' → db' = db)
+    (hValid : ParallelValidTR Ipre R program (fun txnId => StateSpec.graph (fs txnId)) Ipost)
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : Ipre db)
+    (hRun : GlobalMultiStepTR R ⟨program, db⟩ finalCfg) :
+    ∃ events,
+      finalCfg.globalDb =
+        List.foldl (fun current (event : CommitEvent) => fs event.txnId current) db events := by
+  rcases parallelValidTR_commitLog hSilent hValid hDb hRun with ⟨events, hLog⟩
+  exact ⟨events, CommitLog.graph_implies_foldl hLog⟩
 
 theorem parallelValid_commitSequence {Ipre : Assertion} {R : Rely}
     {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
@@ -1508,6 +2797,45 @@ theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
     (fun _ _ hSpec => hSpec)
     h
 
+theorem txnParallelValidTR_of_handlerRefines_at {Ipre : Assertion} {R : Rely}
+    {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
+    {spec : StateSpec} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (hSpecAt : ∀ db db', spec db db' → specs txnId db db')
+    (h : HandlerRefinesTR Ipre R (.txn txnId isolation body) spec Ipost) :
+    ParallelValidTR Ipre R (.txn txnId isolation body) specs Ipost := by
+  intro db hDb
+  rcases h db hDb with ⟨hPost, hTxn⟩
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun hDone
+    have hSingle : SingleTxnProgram txnId finalCfg.program := by
+      exact globalMultiStepTR_preserves_singleTxn hRun SingleTxnProgram.txn
+    have hNonPar : NonParallel finalCfg.program := by
+      exact singleTxn_nonParallel hSingle
+    have hSkip : finalCfg.program = (Command.skip : Semantics.Program) := by
+      exact programDone_eq_skip_of_nonParallel hDone hNonPar
+    exact hPost finalCfg hRun hSkip
+  · intro midCfg nextProgram nextDb txnId' hRun hCommit
+    have hSingle : SingleTxnProgram txnId midCfg.program := by
+      exact globalMultiStepTR_preserves_singleTxn hRun SingleTxnProgram.txn
+    have hTxnIdEq : txnId' = txnId := by
+      exact txnCommitStep_txnId_eq_of_singleTxn hSingle hCommit
+    rcases txnCommitStep_of_nonParallel (singleTxn_nonParallel hSingle) hCommit with
+      ⟨_, _, _, hProgram, hNext, hDbEq, hCommitGuard⟩
+    have hStep : Semantics.Step midCfg.program midCfg.globalDb nextProgram nextDb := by
+      rw [hProgram, hNext, hDbEq]
+      exact Semantics.Step.txnCommit hCommitGuard
+    subst hTxnIdEq
+    exact hSpecAt _ _ (hTxn midCfg nextProgram nextDb hRun hStep hNext)
+
+theorem txnParallelValidTR_of_handlerRefines {Ipre : Assertion} {R : Rely}
+    {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
+    {spec : StateSpec} {Ipost : Assertion}
+    (h : HandlerRefinesTR Ipre R (.txn txnId isolation body) spec Ipost) :
+    ParallelValidTR Ipre R (.txn txnId isolation body) (fun _ => spec) Ipost := by
+  exact txnParallelValidTR_of_handlerRefines_at
+    (fun _ _ hSpec => hSpec)
+    h
+
 theorem parallelValid_par_skip_right {Ipre : Assertion} {R : Rely}
     {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
     (h : ParallelValid Ipre R program specs Ipost) :
@@ -1525,6 +2853,736 @@ theorem parallelValid_par_skip_right {Ipre : Assertion} {R : Rely}
       ⟨nextInner, hNextEq, hCommitInner⟩
     subst hNextEq
     exact hCommit ⟨midProgram, midCfg.globalDb⟩ nextInner nextDb txnId hRun' hCommitInner
+
+/-- TR-style first-commit theorem for a parallel pair of transactions. If the pair runs without any
+earlier commit and then commits, that commit is justified by the corresponding single-transaction
+proof under the other transaction's guarantee. This is the first half of the Appendix B
+`RG-Par` argument. -/
+theorem txnPair_firstCommitSpec {I : Assertion} {R : Rely}
+    {txnIdLeft txnIdRight : TxnId}
+    {isolationLeft isolationRight : IsolationSpec Database}
+    {bodyLeft bodyRight : Semantics.Program}
+    {GLeft GRight : StateSpec}
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database}
+    {actualTxnId : TxnId}
+    (hI : I db)
+    (hLeft :
+      HandlerRefines I (fun db db' => R db db' ∨ GRight db db')
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        GLeft
+        I)
+    (hRight :
+      HandlerRefines I (fun db db' => R db db' ∨ GLeft db db')
+        (.txn txnIdRight isolationRight bodyRight)
+        GRight
+        I)
+    (hPrefix :
+      CommitFreeGlobalMultiStep R
+        ⟨(.par
+            (.txn txnIdLeft isolationLeft bodyLeft)
+            (.txn txnIdRight isolationRight bodyRight) : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    (actualTxnId = txnIdLeft ∧ GLeft midCfg.globalDb nextDb) ∨
+      (actualTxnId = txnIdRight ∧ GRight midCfg.globalDb nextDb) := by
+  rcases commitFreePrefix_firstCommit_view hPrefix hCommit with
+    hLeftView | hRightView
+  · rcases hLeftView with
+      ⟨leftMid, rightMid, leftNext, _hMidProgram, hLeftRun, hLeftCommit, _hNextProgram⟩
+    have hSingle :
+        SingleTxnProgram txnIdLeft leftMid := by
+      exact globalMultiStep_preserves_singleTxn hLeftRun SingleTxnProgram.txn
+    have hTxnIdEq : actualTxnId = txnIdLeft := by
+      exact txnCommitStep_txnId_eq_of_singleTxn hSingle hLeftCommit
+    have hNonPar : NonParallel leftMid := by
+      exact singleTxn_nonParallel hSingle
+    rcases txnCommitStep_of_nonParallel hNonPar hLeftCommit with
+      ⟨_, _, _, _hProgram, hLeftNextSkip, _hDbEq, _hCommitGuard⟩
+    have hRunAug :
+        GlobalMultiStep (fun db db' => R db db' ∨ GRight db db')
+          ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+          ⟨leftMid, midCfg.globalDb⟩ := by
+      exact globalMultiStep_mono (fun _ _ hR => Or.inl hR) hLeftRun
+    rcases hLeft db hI with ⟨_hPost, hTxnGuaranteed⟩
+    have hSpec :
+        GLeft midCfg.globalDb nextDb := by
+      exact hTxnGuaranteed
+        ⟨leftMid, midCfg.globalDb⟩
+        leftNext
+        nextDb
+        hRunAug
+        (TxnCommitStep.step hLeftCommit)
+        hLeftNextSkip
+    exact Or.inl ⟨hTxnIdEq, hSpec⟩
+  · rcases hRightView with
+      ⟨leftMid, rightMid, rightNext, _hMidProgram, hRightRun, hRightCommit, _hNextProgram⟩
+    have hSingle :
+        SingleTxnProgram txnIdRight rightMid := by
+      exact globalMultiStep_preserves_singleTxn hRightRun SingleTxnProgram.txn
+    have hTxnIdEq : actualTxnId = txnIdRight := by
+      exact txnCommitStep_txnId_eq_of_singleTxn hSingle hRightCommit
+    have hNonPar : NonParallel rightMid := by
+      exact singleTxn_nonParallel hSingle
+    rcases txnCommitStep_of_nonParallel hNonPar hRightCommit with
+      ⟨_, _, _, _hProgram, hRightNextSkip, _hDbEq, _hCommitGuard⟩
+    have hRunAug :
+        GlobalMultiStep (fun db db' => R db db' ∨ GLeft db db')
+          ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+          ⟨rightMid, midCfg.globalDb⟩ := by
+      exact globalMultiStep_mono (fun _ _ hR => Or.inl hR) hRightRun
+    rcases hRight db hI with ⟨_hPost, hTxnGuaranteed⟩
+    have hSpec :
+        GRight midCfg.globalDb nextDb := by
+      exact hTxnGuaranteed
+        ⟨rightMid, midCfg.globalDb⟩
+        rightNext
+        nextDb
+        hRunAug
+        (TxnCommitStep.step hRightCommit)
+        hRightNextSkip
+    exact Or.inr ⟨hTxnIdEq, hSpec⟩
+
+theorem txnPair_firstCommitSpecTR {I : Assertion} {R : Rely}
+    {txnIdLeft txnIdRight : TxnId}
+    {isolationLeft isolationRight : IsolationSpec Database}
+    {bodyLeft bodyRight : Semantics.Program}
+    {GLeft GRight : StateSpec}
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database}
+    {actualTxnId : TxnId}
+    (hI : I db)
+    (hLeft :
+      HandlerRefinesTR I (fun db db' => R db db' ∨ GRight db db')
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        GLeft
+        I)
+    (hRight :
+      HandlerRefinesTR I (fun db db' => R db db' ∨ GLeft db db')
+        (.txn txnIdRight isolationRight bodyRight)
+        GRight
+        I)
+    (hPrefix :
+      CommitFreeGlobalMultiStepTR R
+        ⟨(.par
+            (.txn txnIdLeft isolationLeft bodyLeft)
+            (.txn txnIdRight isolationRight bodyRight) : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    (actualTxnId = txnIdLeft ∧ GLeft midCfg.globalDb nextDb) ∨
+      (actualTxnId = txnIdRight ∧ GRight midCfg.globalDb nextDb) := by
+  rcases commitFreePrefix_firstCommit_viewTR hPrefix hCommit with
+    hLeftView | hRightView
+  · rcases hLeftView with
+      ⟨leftMid, rightMid, leftNext, _hMidProgram, hLeftRun, hLeftCommit, _hNextProgram⟩
+    have hRunAug :
+        GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+          ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+          ⟨leftMid, midCfg.globalDb⟩ := by
+      exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hLeftRun
+    rcases txnCommitSpec_of_handlerRefinesTR hLeft hI hRunAug hLeftCommit with
+      ⟨hTxnIdEq, hSpec⟩
+    exact Or.inl ⟨hTxnIdEq, hSpec⟩
+  · rcases hRightView with
+      ⟨leftMid, rightMid, rightNext, _hMidProgram, hRightRun, hRightCommit, _hNextProgram⟩
+    have hRunAug :
+        GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+          ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+          ⟨rightMid, midCfg.globalDb⟩ := by
+      exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hRightRun
+    rcases txnCommitSpec_of_handlerRefinesTR hRight hI hRunAug hRightCommit with
+      ⟨hTxnIdEq, hSpec⟩
+    exact Or.inr ⟨hTxnIdEq, hSpec⟩
+
+/-- Generalized second-phase rule for `skip || t`: if the remaining transaction already has a
+standalone run under the augmented rely, then any later commit in the parallel configuration is
+justified by the same handler proof. This isolates the only extra ingredient still needed for a full
+RG-Par theorem under the current server semantics. -/
+theorem txnRightCommitSpec_after_leftCommitted_from_state {I : Assertion} {R : Rely}
+    {txnIdRight : TxnId}
+    {isolationRight : IsolationSpec Database}
+    {bodyRight : Semantics.Program}
+    {rightStart : Semantics.Program} {startDb : Database}
+    {GLeft GRight : StateSpec}
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database}
+    {actualTxnId : TxnId}
+    (hStartI : I startDb)
+    (hRight :
+      HandlerRefines I (fun db db' => R db db' ∨ GLeft db db')
+        (.txn txnIdRight isolationRight bodyRight)
+        GRight
+        I)
+    (hStandalone :
+      GlobalMultiStep (fun db db' => R db db' ∨ GLeft db db')
+        ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), startDb⟩
+        ⟨rightStart, db⟩)
+    (hRun :
+      GlobalMultiStep R
+        ⟨(.par
+            (Command.skip : Semantics.Program)
+            rightStart : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    actualTxnId = txnIdRight ∧ GRight midCfg.globalDb nextDb := by
+  rcases globalMultiStep_par_skip_left hRun with ⟨rightMid, hMidProgram, hRightRun⟩
+  rcases txnCommitStep_par_skip_left (by simpa [hMidProgram] using hCommit) with
+    ⟨rightNext, hNextProgram, hRightCommit⟩
+  have hRightRunAug :
+      GlobalMultiStep (fun db db' => R db db' ∨ GLeft db db')
+        ⟨rightStart, db⟩
+        ⟨rightMid, midCfg.globalDb⟩ := by
+    exact globalMultiStep_mono (fun _ _ hR => Or.inl hR) hRightRun
+  have hReach :
+      GlobalMultiStep (fun db db' => R db db' ∨ GLeft db db')
+        ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), startDb⟩
+        ⟨rightMid, midCfg.globalDb⟩ := by
+    exact MultiStep.trans hStandalone hRightRunAug
+  rcases txnCommitSpec_of_handlerRefines hRight hStartI hReach hRightCommit with
+    ⟨hTxnIdEq, hSpec⟩
+  exact ⟨hTxnIdEq, hSpec⟩
+
+theorem txnRightCommitSpec_after_leftCommitted_from_stateTR {I : Assertion} {R : Rely}
+    {txnIdRight : TxnId}
+    {isolationRight : IsolationSpec Database}
+    {bodyRight : Semantics.Program}
+    {rightStart : Semantics.Program} {startDb : Database}
+    {GLeft GRight : StateSpec}
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database}
+    {actualTxnId : TxnId}
+    (hStartI : I startDb)
+    (hRight :
+      HandlerRefinesTR I (fun db db' => R db db' ∨ GLeft db db')
+        (.txn txnIdRight isolationRight bodyRight)
+        GRight
+        I)
+    (hStandalone :
+      GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+        ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), startDb⟩
+        ⟨rightStart, db⟩)
+    (hRun :
+      GlobalMultiStepTR R
+        ⟨(.par
+            (Command.skip : Semantics.Program)
+            rightStart : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    actualTxnId = txnIdRight ∧ GRight midCfg.globalDb nextDb := by
+  rcases globalMultiStepTR_par_skip_left hRun with ⟨rightMid, hMidProgram, hRightRun⟩
+  rcases txnCommitStep_par_skip_left (by simpa [hMidProgram] using hCommit) with
+    ⟨rightNext, _hNextProgram, hRightCommit⟩
+  have hRightRunAug :
+      GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+        ⟨rightStart, db⟩
+        ⟨rightMid, midCfg.globalDb⟩ := by
+    exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hRightRun
+  have hReach :
+      GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+        ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), startDb⟩
+        ⟨rightMid, midCfg.globalDb⟩ := by
+    exact MultiStep.trans hStandalone hRightRunAug
+  rcases txnCommitSpec_of_handlerRefinesTR hRight hStartI hReach hRightCommit with
+    ⟨hTxnIdEq, hSpec⟩
+  exact ⟨hTxnIdEq, hSpec⟩
+
+/-- Symmetric generalized second-phase rule for `t || skip`. -/
+theorem txnLeftCommitSpec_after_rightCommitted_from_state {I : Assertion} {R : Rely}
+    {txnIdLeft : TxnId}
+    {isolationLeft : IsolationSpec Database}
+    {bodyLeft : Semantics.Program}
+    {leftStart : Semantics.Program} {startDb : Database}
+    {GLeft GRight : StateSpec}
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database}
+    {actualTxnId : TxnId}
+    (hStartI : I startDb)
+    (hLeft :
+      HandlerRefines I (fun db db' => R db db' ∨ GRight db db')
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        GLeft
+        I)
+    (hStandalone :
+      GlobalMultiStep (fun db db' => R db db' ∨ GRight db db')
+        ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), startDb⟩
+        ⟨leftStart, db⟩)
+    (hRun :
+      GlobalMultiStep R
+        ⟨(.par
+            leftStart
+            (Command.skip : Semantics.Program) : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    actualTxnId = txnIdLeft ∧ GLeft midCfg.globalDb nextDb := by
+  rcases globalMultiStep_par_skip_right hRun with ⟨leftMid, hMidProgram, hLeftRun⟩
+  rcases txnCommitStep_par_skip_right (by simpa [hMidProgram] using hCommit) with
+    ⟨leftNext, hNextProgram, hLeftCommit⟩
+  have hLeftRunAug :
+      GlobalMultiStep (fun db db' => R db db' ∨ GRight db db')
+        ⟨leftStart, db⟩
+        ⟨leftMid, midCfg.globalDb⟩ := by
+    exact globalMultiStep_mono (fun _ _ hR => Or.inl hR) hLeftRun
+  have hReach :
+      GlobalMultiStep (fun db db' => R db db' ∨ GRight db db')
+        ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), startDb⟩
+        ⟨leftMid, midCfg.globalDb⟩ := by
+    exact MultiStep.trans hStandalone hLeftRunAug
+  rcases txnCommitSpec_of_handlerRefines hLeft hStartI hReach hLeftCommit with
+    ⟨hTxnIdEq, hSpec⟩
+  exact ⟨hTxnIdEq, hSpec⟩
+
+theorem txnLeftCommitSpec_after_rightCommitted_from_stateTR {I : Assertion} {R : Rely}
+    {txnIdLeft : TxnId}
+    {isolationLeft : IsolationSpec Database}
+    {bodyLeft : Semantics.Program}
+    {leftStart : Semantics.Program} {startDb : Database}
+    {GLeft GRight : StateSpec}
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database}
+    {actualTxnId : TxnId}
+    (hStartI : I startDb)
+    (hLeft :
+      HandlerRefinesTR I (fun db db' => R db db' ∨ GRight db db')
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        GLeft
+        I)
+    (hStandalone :
+      GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+        ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), startDb⟩
+        ⟨leftStart, db⟩)
+    (hRun :
+      GlobalMultiStepTR R
+        ⟨(.par
+            leftStart
+            (Command.skip : Semantics.Program) : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    actualTxnId = txnIdLeft ∧ GLeft midCfg.globalDb nextDb := by
+  rcases globalMultiStepTR_par_skip_right hRun with ⟨leftMid, hMidProgram, hLeftRun⟩
+  rcases txnCommitStep_par_skip_right (by simpa [hMidProgram] using hCommit) with
+    ⟨leftNext, _hNextProgram, hLeftCommit⟩
+  have hLeftRunAug :
+      GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+        ⟨leftStart, db⟩
+        ⟨leftMid, midCfg.globalDb⟩ := by
+    exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hLeftRun
+  have hReach :
+      GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+        ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), startDb⟩
+        ⟨leftMid, midCfg.globalDb⟩ := by
+    exact MultiStep.trans hStandalone hLeftRunAug
+  rcases txnCommitSpec_of_handlerRefinesTR hLeft hStartI hReach hLeftCommit with
+    ⟨hTxnIdEq, hSpec⟩
+  exact ⟨hTxnIdEq, hSpec⟩
+
+/-- TR-faithful packaging of the two-transaction RG-Par proof: every commit reachable from the
+parallel pair is explained by exactly one of the two component guarantees. -/
+theorem txnPair_reachableCommitSpecsTR {I : Assertion} {R : Rely}
+    {txnIdLeft txnIdRight : TxnId}
+    {isolationLeft isolationRight : IsolationSpec Database}
+    {bodyLeft bodyRight : Semantics.Program}
+    {GLeft GRight : StateSpec}
+    (hLeft :
+      HandlerRefinesTR I (fun db db' => R db db' ∨ GRight db db')
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        GLeft
+        I)
+    (hRight :
+      HandlerRefinesTR I (fun db db' => R db db' ∨ GLeft db db')
+        (.txn txnIdRight isolationRight bodyRight)
+        GRight
+        I) :
+    ReachableCommitSpecsTR I R
+      (.par
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        (.txn txnIdRight isolationRight bodyRight) : Semantics.Program)
+      (CombinedSpecs (ExactTxnSpec txnIdLeft GLeft) (ExactTxnSpec txnIdRight GRight)) := by
+  intro db hI midCfg nextProgram nextDb actualTxnId hRun hCommit
+  rcases globalMultiStepTR_split_first_commit hRun with hNoCommit | hSplit
+  · simpa [CombinedSpecs, ExactTxnSpec] using
+      (txnPair_firstCommitSpecTR hI hLeft hRight hNoCommit hCommit)
+  · rcases hSplit with
+      ⟨firstMidCfg, firstNextCfg, _firstTxnId, hPrefix, _hFirstStep, hFirstCommit, hTail⟩
+    rcases commitFreePrefix_firstCommit_viewTR hPrefix hFirstCommit with
+      hLeftFirst | hRightFirst
+    · rcases hLeftFirst with
+        ⟨leftMid, rightMid, leftNext, hMidProgram, hLeftRun, hLeftCommit, hNextProgram⟩
+      rcases commitFreeGlobalMultiStepTR_project_right hPrefix with
+        ⟨leftMid', rightMid', hMidProgramRight, hRightRun⟩
+      have hSame :
+          (.par leftMid rightMid : Semantics.Program) =
+            (.par leftMid' rightMid' : Semantics.Program) := by
+        simpa [hMidProgram] using hMidProgramRight
+      cases hSame
+      have hLeftRunAug :
+          GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+            ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+            ⟨leftMid, firstMidCfg.globalDb⟩ := by
+        exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hLeftRun
+      rcases txnCommitSpec_of_handlerRefinesTR hLeft hI hLeftRunAug hLeftCommit with
+        ⟨_hLeftTxnIdEq, hFirstSpec⟩
+      have hLeftSingle : SingleTxnProgram txnIdLeft leftMid := by
+        exact globalMultiStepTR_preserves_singleTxn hLeftRun SingleTxnProgram.txn
+      rcases txnCommitStep_of_nonParallel (singleTxn_nonParallel hLeftSingle) hLeftCommit with
+        ⟨_, _, _, _hProgramEq, hLeftNextSkip, _hFlushEq, _hGuard⟩
+      have hFirstNextProgram :
+          firstNextCfg.program =
+            (.par
+              (Command.skip : Semantics.Program)
+              rightMid : Semantics.Program) := by
+        simpa [hLeftNextSkip] using hNextProgram
+      have hRightRunAugBefore :
+          GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+            ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+            ⟨rightMid, firstMidCfg.globalDb⟩ := by
+        exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hRightRun
+      have hRightStandalone :
+          GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+            ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+            ⟨rightMid, firstNextCfg.globalDb⟩ := by
+        exact globalMultiStepTR_append_rely hRightRunAugBefore (Or.inr hFirstSpec)
+      have hSecondPhase :
+          GlobalMultiStepTR R
+            ⟨(.par
+                (Command.skip : Semantics.Program)
+                rightMid : Semantics.Program), firstNextCfg.globalDb⟩
+            midCfg := by
+        cases firstNextCfg with
+        | mk program db' =>
+            simp at hFirstNextProgram
+            simpa [hFirstNextProgram] using hTail
+      rcases txnRightCommitSpec_after_leftCommitted_from_stateTR
+          hI hRight hRightStandalone hSecondPhase hCommit with
+        ⟨hTxnIdEq, hSpec⟩
+      exact Or.inr ⟨hTxnIdEq, hSpec⟩
+    · rcases hRightFirst with
+        ⟨leftMid, rightMid, rightNext, hMidProgram, hRightRun, hRightCommit, hNextProgram⟩
+      rcases commitFreeGlobalMultiStepTR_project_left hPrefix with
+        ⟨leftMid', rightMid', hMidProgramLeft, hLeftRun⟩
+      have hSame :
+          (.par leftMid rightMid : Semantics.Program) =
+            (.par leftMid' rightMid' : Semantics.Program) := by
+        simpa [hMidProgram] using hMidProgramLeft
+      cases hSame
+      have hRightRunAug :
+          GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+            ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+            ⟨rightMid, firstMidCfg.globalDb⟩ := by
+        exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hRightRun
+      rcases txnCommitSpec_of_handlerRefinesTR hRight hI hRightRunAug hRightCommit with
+        ⟨_hRightTxnIdEq, hFirstSpec⟩
+      have hRightSingle : SingleTxnProgram txnIdRight rightMid := by
+        exact globalMultiStepTR_preserves_singleTxn hRightRun SingleTxnProgram.txn
+      rcases txnCommitStep_of_nonParallel (singleTxn_nonParallel hRightSingle) hRightCommit with
+        ⟨_, _, _, _hProgramEq, hRightNextSkip, _hFlushEq, _hGuard⟩
+      have hFirstNextProgram :
+          firstNextCfg.program =
+            (.par
+              leftMid
+              (Command.skip : Semantics.Program) : Semantics.Program) := by
+        simpa [hRightNextSkip] using hNextProgram
+      have hLeftRunAugBefore :
+          GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+            ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+            ⟨leftMid, firstMidCfg.globalDb⟩ := by
+        exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hLeftRun
+      have hLeftStandalone :
+          GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+            ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+            ⟨leftMid, firstNextCfg.globalDb⟩ := by
+        exact globalMultiStepTR_append_rely hLeftRunAugBefore (Or.inr hFirstSpec)
+      have hSecondPhase :
+          GlobalMultiStepTR R
+            ⟨(.par
+                leftMid
+                (Command.skip : Semantics.Program) : Semantics.Program), firstNextCfg.globalDb⟩
+            midCfg := by
+        cases firstNextCfg with
+        | mk program db' =>
+            simp at hFirstNextProgram
+            simpa [hFirstNextProgram] using hTail
+      rcases txnLeftCommitSpec_after_rightCommitted_from_stateTR
+          hI hLeft hLeftStandalone hSecondPhase hCommit with
+        ⟨hTxnIdEq, hSpec⟩
+      exact Or.inl ⟨hTxnIdEq, hSpec⟩
+
+/-- TR-faithful server validity for a parallel pair of transactions. This is the packaged Appendix
+C.14 theorem for the server layer: the pair preserves the invariant and every commit belongs to the
+appropriate component guarantee. -/
+theorem txnPair_parallelValidTR {I : Assertion} {R : Rely}
+    {txnIdLeft txnIdRight : TxnId}
+    {isolationLeft isolationRight : IsolationSpec Database}
+    {bodyLeft bodyRight : Semantics.Program}
+    {GLeft GRight : StateSpec}
+    (hLeft :
+      HandlerRefinesTR I (fun db db' => R db db' ∨ GRight db db')
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        GLeft
+        I)
+    (hRight :
+      HandlerRefinesTR I (fun db db' => R db db' ∨ GLeft db db')
+        (.txn txnIdRight isolationRight bodyRight)
+        GRight
+        I) :
+    ParallelValidTR I R
+      (.par
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        (.txn txnIdRight isolationRight bodyRight) : Semantics.Program)
+      (CombinedSpecs (ExactTxnSpec txnIdLeft GLeft) (ExactTxnSpec txnIdRight GRight))
+      I := by
+  intro db hI
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun hDone
+    rcases globalMultiStepTR_split_first_commit hRun with hNoCommit | hSplit
+    · exact False.elim <|
+        commitFreeGlobalMultiStepTR_par_notDone_of_leftTxn
+          SingleTxnProgram.txn
+          (by simp)
+          hNoCommit
+          hDone
+    · rcases hSplit with
+        ⟨firstMidCfg, firstNextCfg, _firstTxnId, hPrefix, _hFirstStep, hFirstCommit, hTail⟩
+      rcases commitFreePrefix_firstCommit_viewTR hPrefix hFirstCommit with
+        hLeftFirst | hRightFirst
+      · rcases hLeftFirst with
+          ⟨leftMid, rightMid, leftNext, hMidProgram, hLeftRun, hLeftCommit, hNextProgram⟩
+        rcases commitFreeGlobalMultiStepTR_project_right hPrefix with
+          ⟨leftMid', rightMid', hMidProgramRight, hRightRun⟩
+        have hSame :
+            (.par leftMid rightMid : Semantics.Program) =
+              (.par leftMid' rightMid' : Semantics.Program) := by
+          simpa [hMidProgram] using hMidProgramRight
+        cases hSame
+        have hLeftRunAug :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+              ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+              ⟨leftMid, firstMidCfg.globalDb⟩ := by
+          exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hLeftRun
+        rcases txnCommitSpec_of_handlerRefinesTR hLeft hI hLeftRunAug hLeftCommit with
+          ⟨_hLeftTxnIdEq, hFirstSpec⟩
+        have hLeftSingle : SingleTxnProgram txnIdLeft leftMid := by
+          exact globalMultiStepTR_preserves_singleTxn hLeftRun SingleTxnProgram.txn
+        rcases txnCommitStep_of_nonParallel (singleTxn_nonParallel hLeftSingle) hLeftCommit with
+          ⟨_, _, _, _hProgramEq, hLeftNextSkip, _hFlushEq, _hGuard⟩
+        have hFirstNextProgram :
+            firstNextCfg.program =
+              (.par
+                (Command.skip : Semantics.Program)
+                rightMid : Semantics.Program) := by
+          simpa [hLeftNextSkip] using hNextProgram
+        have hRightRunAugBefore :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+              ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+              ⟨rightMid, firstMidCfg.globalDb⟩ := by
+          exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hRightRun
+        have hRightStandalone :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+              ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+              ⟨rightMid, firstNextCfg.globalDb⟩ := by
+          exact globalMultiStepTR_append_rely hRightRunAugBefore (Or.inr hFirstSpec)
+        have hSecondPhase :
+            GlobalMultiStepTR R
+              ⟨(.par
+                  (Command.skip : Semantics.Program)
+                  rightMid : Semantics.Program), firstNextCfg.globalDb⟩
+              finalCfg := by
+          cases firstNextCfg with
+          | mk program db' =>
+              simp at hFirstNextProgram
+              simpa [hFirstNextProgram] using hTail
+        rcases globalMultiStepTR_par_skip_left hSecondPhase with
+          ⟨finalRight, hFinalProgram, hRightTail⟩
+        have hRightTailAug :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+              ⟨rightMid, firstNextCfg.globalDb⟩
+              ⟨finalRight, finalCfg.globalDb⟩ := by
+          exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hRightTail
+        have hRightFull :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+              ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+              ⟨finalRight, finalCfg.globalDb⟩ := by
+          exact MultiStep.trans hRightStandalone hRightTailAug
+        have hDoneRight : ProgramDone finalRight := by
+          rw [hFinalProgram] at hDone
+          exact programDone_par_skip_left_inv hDone
+        have hSingleFinalRight : SingleTxnProgram txnIdRight finalRight := by
+          exact globalMultiStepTR_preserves_singleTxn hRightFull SingleTxnProgram.txn
+        have hFinalRightSkip :
+            finalRight = (Command.skip : Semantics.Program) := by
+          exact programDone_eq_skip_of_nonParallel hDoneRight
+            (singleTxn_nonParallel hSingleFinalRight)
+        exact (hRight db hI).1 ⟨finalRight, finalCfg.globalDb⟩ hRightFull hFinalRightSkip
+      · rcases hRightFirst with
+          ⟨leftMid, rightMid, rightNext, hMidProgram, hRightRun, hRightCommit, hNextProgram⟩
+        rcases commitFreeGlobalMultiStepTR_project_left hPrefix with
+          ⟨leftMid', rightMid', hMidProgramLeft, hLeftRun⟩
+        have hSame :
+            (.par leftMid rightMid : Semantics.Program) =
+              (.par leftMid' rightMid' : Semantics.Program) := by
+          simpa [hMidProgram] using hMidProgramLeft
+        cases hSame
+        have hRightRunAug :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GLeft db db')
+              ⟨(.txn txnIdRight isolationRight bodyRight : Semantics.Program), db⟩
+              ⟨rightMid, firstMidCfg.globalDb⟩ := by
+          exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hRightRun
+        rcases txnCommitSpec_of_handlerRefinesTR hRight hI hRightRunAug hRightCommit with
+          ⟨_hRightTxnIdEq, hFirstSpec⟩
+        have hRightSingle : SingleTxnProgram txnIdRight rightMid := by
+          exact globalMultiStepTR_preserves_singleTxn hRightRun SingleTxnProgram.txn
+        rcases txnCommitStep_of_nonParallel (singleTxn_nonParallel hRightSingle) hRightCommit with
+          ⟨_, _, _, _hProgramEq, hRightNextSkip, _hFlushEq, _hGuard⟩
+        have hFirstNextProgram :
+            firstNextCfg.program =
+              (.par
+                leftMid
+                (Command.skip : Semantics.Program) : Semantics.Program) := by
+          simpa [hRightNextSkip] using hNextProgram
+        have hLeftRunAugBefore :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+              ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+              ⟨leftMid, firstMidCfg.globalDb⟩ := by
+          exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hLeftRun
+        have hLeftStandalone :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+              ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+              ⟨leftMid, firstNextCfg.globalDb⟩ := by
+          exact globalMultiStepTR_append_rely hLeftRunAugBefore (Or.inr hFirstSpec)
+        have hSecondPhase :
+            GlobalMultiStepTR R
+              ⟨(.par
+                  leftMid
+                  (Command.skip : Semantics.Program) : Semantics.Program), firstNextCfg.globalDb⟩
+              finalCfg := by
+          cases firstNextCfg with
+          | mk program db' =>
+              simp at hFirstNextProgram
+              simpa [hFirstNextProgram] using hTail
+        rcases globalMultiStepTR_par_skip_right hSecondPhase with
+          ⟨finalLeft, hFinalProgram, hLeftTail⟩
+        have hLeftTailAug :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+              ⟨leftMid, firstNextCfg.globalDb⟩
+              ⟨finalLeft, finalCfg.globalDb⟩ := by
+          exact globalMultiStepTR_mono (fun _ _ hR => Or.inl hR) hLeftTail
+        have hLeftFull :
+            GlobalMultiStepTR (fun db db' => R db db' ∨ GRight db db')
+              ⟨(.txn txnIdLeft isolationLeft bodyLeft : Semantics.Program), db⟩
+              ⟨finalLeft, finalCfg.globalDb⟩ := by
+          exact MultiStep.trans hLeftStandalone hLeftTailAug
+        have hDoneLeft : ProgramDone finalLeft := by
+          rw [hFinalProgram] at hDone
+          exact programDone_par_skip_right_inv hDone
+        have hSingleFinalLeft : SingleTxnProgram txnIdLeft finalLeft := by
+          exact globalMultiStepTR_preserves_singleTxn hLeftFull SingleTxnProgram.txn
+        have hFinalLeftSkip :
+            finalLeft = (Command.skip : Semantics.Program) := by
+          exact programDone_eq_skip_of_nonParallel hDoneLeft
+            (singleTxn_nonParallel hSingleFinalLeft)
+        exact (hLeft db hI).1 ⟨finalLeft, finalCfg.globalDb⟩ hLeftFull hFinalLeftSkip
+  · intro midCfg nextProgram nextDb txnId hRun hCommit
+    exact txnPair_reachableCommitSpecsTR hLeft hRight db hI midCfg nextProgram nextDb txnId hRun hCommit
+
+/-- Once the left branch has already terminated, any subsequent commit in `skip || t` must come from
+the remaining right transaction and is justified by its single-transaction proof. -/
+theorem txnRightCommitSpec_after_leftCommitted {I : Assertion} {R : Rely}
+    {txnIdRight : TxnId}
+    {isolationRight : IsolationSpec Database}
+    {bodyRight : Semantics.Program}
+    {GLeft GRight : StateSpec}
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database}
+    {actualTxnId : TxnId}
+    (hI : I db)
+    (hRight :
+      HandlerRefines I (fun db db' => R db db' ∨ GLeft db db')
+        (.txn txnIdRight isolationRight bodyRight)
+        GRight
+        I)
+    (hRun :
+      GlobalMultiStep R
+        ⟨(.par
+            (Command.skip : Semantics.Program)
+            (.txn txnIdRight isolationRight bodyRight) : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    actualTxnId = txnIdRight ∧ GRight midCfg.globalDb nextDb := by
+  exact txnRightCommitSpec_after_leftCommitted_from_state
+    hI
+    hRight
+    MultiStep.refl
+    hRun
+    hCommit
+
+/-- Symmetric version of `txnRightCommitSpec_after_leftCommitted` for `t || skip`. -/
+theorem txnLeftCommitSpec_after_rightCommitted {I : Assertion} {R : Rely}
+    {txnIdLeft : TxnId}
+    {isolationLeft : IsolationSpec Database}
+    {bodyLeft : Semantics.Program}
+    {GLeft GRight : StateSpec}
+    {db : Database} {midCfg : GlobalConfig}
+    {nextProgram : Semantics.Program} {nextDb : Database}
+    {actualTxnId : TxnId}
+    (hI : I db)
+    (hLeft :
+      HandlerRefines I (fun db db' => R db db' ∨ GRight db db')
+        (.txn txnIdLeft isolationLeft bodyLeft)
+        GLeft
+        I)
+    (hRun :
+      GlobalMultiStep R
+        ⟨(.par
+            (.txn txnIdLeft isolationLeft bodyLeft)
+            (Command.skip : Semantics.Program) : Semantics.Program), db⟩
+        midCfg)
+    (hCommit :
+      TxnCommitStep actualTxnId
+        midCfg.program
+        midCfg.globalDb
+        nextProgram
+        nextDb) :
+    actualTxnId = txnIdLeft ∧ GLeft midCfg.globalDb nextDb := by
+  exact txnLeftCommitSpec_after_rightCommitted_from_state
+    hI
+    hLeft
+    MultiStep.refl
+    hRun
+    hCommit
 
 end Server
 
