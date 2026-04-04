@@ -1,29 +1,20 @@
 # このプロジェクトの歩き方
 
-この文書は、「どこから読めばこの repo を理解できるか」をまとめた案内です。  
-先に結論を書くと、全部を最初から順番に読む必要はありません。目的ごとに読むべき入口が違います。
+この文書は、「どこから読めば理解できるか」の案内です。  
+全部を順番に読む必要はありません。目的ごとにランドマークだけ追う方が速いです。
 
-重要な定義・定理だけをまとめて追いたい場合は、先に [LANDMARKS.md](LANDMARKS.md) を見る方が向いています。
+重要な定義・定理の解説だけを見たい場合は [LANDMARKS.md](LANDMARKS.md) を見てください。
 
-## まず全体像
+## 全体像
 
-この repo は大きく 4 層あります。
+この repo は大きく 4 層です。
 
-1. `T` の構文と operational semantics
+1. `T` の構文と実行意味論
 2. rely-guarantee logic とその soundness
 3. symbolic transformer / VCG / first-order membership
-4. request / handler / server correctness の上位層
+4. 実アプリ向けの handler / server wrapper
 
-global 側の interleaving には 2 本あります。
-
-- `globalInterleavedStep`
-  旧来の operational 版
-- `globalInterleavedStepTR`
-  TR Appendix C.2 に忠実な版
-
-論文忠実に追いたいときは、`Logic.lean` と `Server.lean` では後者を優先して読んでください。
-
-対応するファイルは次の通りです。
+対応ファイルは次の通りです。
 
 - `DbAppProgramLogic/Syntax.lean`
 - `DbAppProgramLogic/Semantics.lean`
@@ -34,27 +25,22 @@ global 側の interleaving には 2 本あります。
 - `DbAppProgramLogic/Server.lean`
 - `DbAppProgramLogic/Examples.lean`
 
-`DbAppProgramLogic/Basic.lean` は全部まとめて import するための入口ですが、理解のためにはあまり向いていません。
+`DbAppProgramLogic/Basic.lean` は全部 import する入口で、理解の入口には向きません。
 
 ## いちばんおすすめの読み順
 
-### A. まず「この repo は何を証明しているのか」を知りたい
+### A. 「この repo は何を証明しているのか」を先に知りたい
 
-この順で読むのがいちばん速いです。
+1. `DbAppProgramLogic/Examples.lean`
+2. `DbAppProgramLogic/Transformer.lean`
+3. `DbAppProgramLogic/Logic.lean`
+4. `DbAppProgramLogic/Semantics.lean`
+5. `DbAppProgramLogic/Syntax.lean`
+6. 必要なら `DbAppProgramLogic/Server.lean`
 
-1. `README.md`
-2. `DbAppProgramLogic/Examples.lean`
-3. `DbAppProgramLogic/Server.lean`
-4. `DbAppProgramLogic/Transformer.lean`
-5. `DbAppProgramLogic/Logic.lean`
-6. `DbAppProgramLogic/Semantics.lean`
-7. `DbAppProgramLogic/Syntax.lean`
+この順だと、まず使い方を見て、その後に意味論へ降りられます。
 
-意図は、末端の定義から積み上げるのではなく、「最終的に何が使えるのか」から逆向きに辿ることです。
-
-### B. 論文の Sec. 4, Sec. 5 を対応づけながら読みたい
-
-この順が自然です。
+### B. 論文の Sec. 4, Sec. 5 に沿って読みたい
 
 1. `DbAppProgramLogic/Syntax.lean`
 2. `DbAppProgramLogic/Semantics.lean`
@@ -64,266 +50,193 @@ global 側の interleaving には 2 本あります。
 6. `DbAppProgramLogic/FirstOrder.lean`
 7. `DbAppProgramLogic/Examples.lean`
 
-`Server.lean` は論文本体そのものではなく、実アプリ verification のための上位層です。論文本体だけ追うなら後回しで大丈夫です。
+`Server.lean` は論文本体の外側にある実アプリ向け wrapper なので後回しでよいです。
 
-### C. API サーバー verification に使いたい
-
-この順が実用的です。
+### C. 実アプリ verification に使いたい
 
 1. `DbAppProgramLogic/Examples.lean`
 2. `DbAppProgramLogic/Server.lean`
 3. `DbAppProgramLogic/Transformer.lean`
 4. 必要に応じて `DbAppProgramLogic/Logic.lean`
 
-この読み方では、`HandlerRefines`, `ParallelValid`, `CommitLog`, request-level spec の流れを先に掴み、そのあと必要なら core logic に降ります。
+この読み方では、まず `HandlerRefines` と `ParallelValid` を見て、必要になったら core logic に降ります。
 
 ## ファイルごとの役割
 
 ### `Syntax.lean`
 
-論文の言語 `T` の構文です。  
-ここでまず見るべきものは `Command` です。
+論文の言語 `T` の構文です。最初に見るべきものは `Command` です。
 
-重要な点:
+特に重要なのは:
 
-- `txn` は source syntax
-- `txnRuntime` は実行時ノード
-- `foreachRuntime` も実行時ノード
-- `par` は構文としては入っている
+- `txn`
+- `txnRuntime`
+- `foreach`
+- `foreachRuntime`
+- `par`
 
-つまり、この repo は source syntax だけでなく runtime syntax も明示しています。
+この repo は source syntax だけでなく runtime syntax も `Command` に入れています。
 
 ### `Semantics.lean`
 
-実行時モデルです。最重要なのは次です。
+実行時モデルです。最初に見るべきものは:
 
 - `Row`
-- `Database`
 - `IsolationSpec`
+- `Database.flush`
 - `Semantics.LocalStep`
 - `Semantics.Step`
 
-ここで最初に混乱しやすいのは、`RecordLit` と `Row` が別物なことです。
+まず区別すべきなのは:
 
-- `RecordLit` は user-visible なレコード
-- `Row` は hidden metadata を持つ実行時行
+- `RecordLit`
+  ユーザが書くレコード
+- `Row`
+  hidden metadata を持つ runtime row
 
-さらに `txnRuntime txnId isolation localDb snapshot body` の 4 つ目は、**現在の global DB ではなく transaction が保持している snapshot** です。
+それから `txnRuntime txnId isolation localDb snapshot body` の 4 つ目は transaction が保持している `snapshot` です。
 
 ### `Logic.lean`
 
-Sec. 4 の中心です。最初に見るべき定義は次です。
+Sec. 4 の中心です。最初に見るべきものは:
 
+- `stableAssertion`
+- `stableBiAssertion`
+- `stableIsolation`
+- `relyMod`
+- `localInterleavedStep`
+- `globalInterleavedStep`
 - `LocalValid`
 - `GlobalValid`
-- `GlobalValidTR`
 - `LocalRG`
 - `GlobalRG`
 - `localRG_sound`
 - `globalRG_sound`
 
-読む順は、
+この file の読み筋は:
 
-1. `stableAssertion`, `stableBiAssertion`, `relyMod`
-2. `localInterleavedStep`, `globalInterleavedStep`
-3. `globalInterleavedStepTR`
-4. `LocalValid`, `GlobalValid`, `GlobalValidTR`
-5. `LocalRG`, `GlobalRG`
-6. `localRG_sound`, `globalRG_sound`
+1. rely/stability の定義
+2. interleaved semantics
+3. judgment の意味論
+4. inductive proof rules
+5. soundness theorems
 
-です。`globalInterleavedStep` は cached snapshot を eager に更新する operational 版、`globalInterleavedStepTR` は rely で program を変えない論文忠実版です。`False` rely では `globalValid_false_to_TR_false` が両者の橋になります。
-
-このファイルでは、actual step と rely step を混ぜた interleaving を先に定義し、その上で judgment の意味論を定義してから soundness を証明しています。
+です。
 
 ### `SetLanguage.lean`
 
-Fig. 7 に対応する集合言語 `S` です。  
-最初に見るべきものは:
+Fig. 7 に対応する集合言語 `S` です。最初に見るべきものは:
 
 - `SetExpr`
 - `denote`
 - `abstractGlobal`
 - `weakenToInvariant`
 
-注意点として、現状の `S` は「完全 deep embedding」ではありません。式や論理部分の一部は shallow に持っています。
+いまの `S` は完全 deep embedding ではなく、一部に shallow predicate を含みます。
 
 ### `Transformer.lean`
 
-Sec. 5 の中心です。ここには 2 種類の transformer があります。
+Sec. 5 の中心です。最初に見るべきものは:
 
 - `inferEffect`
-  - concrete な semantic effect
+- `TransactionVCG`, `vcg`
 - `inferSetEffect`
-  - `SetExpr` を返す symbolic effect
+- `symbolicVcg`
+- `symbolicPostForTxn`
 
-最初に見る順は:
-
-1. `instantiateExpr`, `instantiateCommand`
-2. `inferEffect`
-3. `TransactionVCG`, `vcg`
-4. `inferSetEffect`
-5. `symbolicVcg`, `symbolicPostForTxn`
-
-この repo の VCG は、「いきなり Hoare logic を計算する」のではなく、まず effect を推論し、それが semantics と一致することを証明する方針で作られています。
+この repo の VCG は、まず effect を推論し、それが semantics と一致することを証明してから `GlobalValid` に上げる方針です。
 
 ### `FirstOrder.lean`
 
-`S` / transaction body を first-order membership formula に落とす層です。  
-これは Sec. 5.2 に向かう途中段階です。
+`S` / transaction body を first-order membership formula に落とす層です。
 
-見るべきものは:
+最初に見るべきものは:
 
 - `Formula`
 - `MembershipFormula`
 - `inferMembershipFull`
 
-このファイルは「solver までつながる完成版」ではなく、symbolic postcondition を first-order 風の式に落とす橋です。
+solver までつながる完成版ではなく、symbolic postcondition を first-order 風に読む橋です。
 
 ### `Server.lean`
 
-論文本体の core ではなく、実アプリ verification 用の上位層です。  
+論文本体の外側にある、実アプリ verification 用の薄い wrapper です。
+
 最初に見るべきものは:
 
+- `StateSpec`
 - `HandlerRefines`
-- `HandlerRefinesTR`
+- `ProgramDone`
+- `TxnCommitStep`
 - `ParallelValid`
-- `ParallelValidTR`
-- `CommitEvent`, `CommitLog`
-- `HandlerFamilySpec`
-- `VerifiedRequestServerSpec`
+- `txnParallelValid_of_handlerRefines`
 
-大事な点は、このファイルの主結果が「標準的な RG の一般 `par` 規則」ではなく、
-
-- commit ごとの spec
-- commit log
-- commit order での spec 合成
-
-だということです。
-
-つまり、現状の server layer は「branchwise parallel rule」より「server-level trace theorem」を主眼にしています。
-
-ただし TR 側には 2 本の transaction に対する packaged theorem として `txnPair_parallelValidTR` が入っています。Appendix B/C の `RG-Par` 議論を、first commit と second phase に分けた形で実装したものです。
+いまの server 層は、まず単一 transaction を server-style spec に持ち上げるところまでを正しく保っています。一般の `par` proof rule はここにはまだ入っていません。
 
 ### `Examples.lean`
 
-最初に読むべき concrete 例です。  
-おすすめの順は:
+最初に読むべき concrete 例です。おすすめ順は:
 
 1. `zeroBalanceInsert_valid`
-2. `zeroBalanceInsert_valid_any_TR_false`
-3. `zeroBalanceInsert_valid_any_TR_identity`
-4. `zeroBalanceHandler_refines_graph`
-5. `zeroBalanceServer_parallelValid`
-6. `zeroBalanceVerifiedServerSpec`
-7. `addInterest*`
+2. `zeroBalanceTxn_parallelValid`
+3. `zeroBalance_symbolicVcg_contains_row`
+4. `addInterest_symbolicVcg_contains_updatedRow`
+5. `addInterest_inferMembershipFull_contains_updatedRow`
 
-`zeroBalance` 系は最小例です。特に `*_TR_*` が付いた theorem は、TR-faithful な global semantics を辿る入口です。`addInterest` 系は read/write を含む少し論文寄りの例です。
+`zeroBalance` は最小例、`addInterest` は read/write を含む例です。
 
-## 理解のために最初に区別すべき概念
+## 最初に区別すべき概念
 
-### 1. `RecordLit` と `Row`
-
-- `RecordLit` はユーザーが書くレコード
-- `Row` は runtime row
-
-`Row` には hidden metadata が入っています。
-
-### 2. `localDb`, `snapshot`, `globalDb`
-
-この 3 つを混同すると読みづらくなります。
+### 1. `localDb`, `snapshot`, `globalDb`
 
 - `localDb`
-  - まだ commit していない transaction-local な delta
+  未コミットの transaction-local delta
 - `snapshot`
-  - transaction runtime node が保持している visible database
+  runtime transaction node が保持している DB view
 - `globalDb`
-  - top-level machine state にある現在の global database
+  top-level machine state にある現在の global DB
 
-### 3. actual step と rely step
+### 2. actual step と rely step
 
-`Logic.lean` では interleaved semantics を使っています。
+`Logic.lean` の interleaving では:
 
-- actual step: 実際の machine step
-- rely step: 環境による interference
+- actual step
+  `Semantics.Step`
+- rely step
+  program はそのままで outer DB だけが `R` に沿って変わる
 
-ここでも global 側は 2 本に分かれています。
+です。
 
-- `globalInterleavedStep`
-  rely step で `refreshVisible` を使う
-- `globalInterleavedStepTR`
-  rely step で program は不変
-
-`refreshVisible` は global DB を変える関数ではなく、**変化した global DB を transaction runtime node 内の snapshot に反映する bookkeeping** です。
-
-### 4. semantic effect と symbolic effect
+### 3. semantic effect と symbolic effect
 
 `Transformer.lean` には 2 種類の effect があります。
 
 - `inferEffect`
-  - concrete result を返す
+  concrete result を返す
 - `inferSetEffect`
-  - symbolic `SetExpr` を返す
+  symbolic `SetExpr` を返す
 
-前者が proof engineering の土台で、後者が論文 Fig. 7/8 に寄せた層です。
+前者が proof engineering の土台、後者が Fig. 7/8 に寄せた層です。
 
 ## まず追うべき定理
 
-「大きい theorem だけを先に見たい」なら次です。
+大きい theorem だけ先に見たいなら次です。
 
 1. `Logic.localRG_sound`
 2. `Logic.globalRG_sound`
-3. `Logic.globalValid_false_to_TR_false`
-4. `Logic.globalValidTR_of_silentRely`
-5. `Transformer.vcg_sound`
-6. `Transformer.vcg_sound_false`
-7. `Server.txnPair_parallelValidTR`
-8. `Server.parallelValid_foldl_of_graphSpecs`
-9. `Server.parallelValid_requestGraphSpecs_sound`
+3. `Logic.txnGlobalValid_of_localValid`
+4. `Transformer.vcg_sound`
+5. `Transformer.vcg_sound_false`
+6. `Server.txnParallelValid_of_handlerRefines`
 
-この順で見ると、core logic から server-level correctness までどう積み上がっているかが分かります。
+## 迷ったときの最短ルート
 
-## 逆に、最初は後回しでよいところ
+「コードは全部読めないが、何が正しいと証明されているかだけ掴みたい」なら、
 
-- `FirstOrder.lean` の細かい encoding 補題
-- `SetLanguage.lean` の simp 補題
-- `Examples.lean` の後半の exact/hidden txn-id 付き server object
+1. `Examples.zeroBalanceInsert_valid`
+2. `Transformer.vcg_sound_false`
+3. `Logic.GlobalValid`
+4. `Logic.globalRG_sound`
+5. `Semantics.Step`
 
-これらは使うと便利ですが、最初のキャッチアップには不要です。
-
-## この repo を「使う」なら何を見るか
-
-transaction 単体を検証したいなら:
-
-1. `Examples.lean` の `zeroBalanceInsert_valid`
-2. `Transformer.vcg`
-3. `Transformer.vcg_sound_false`
-
-handler family / API サーバーまで行きたいなら:
-
-1. `Server.HandlerRefines`
-2. `Server.HandlerFamilySpec`
-3. `Server.VerifiedRequestServerSpec`
-4. `Server.parallelValid_requestGraphSpecs_sound`
-
-## 現状の限界
-
-理解のために、未実装部分も先に知っておくとよいです。
-
-- `GlobalRG.par` はまだない
-- 一般の `ParallelValid.par` もまだない
-- server layer は commit-order / request-trace theorem を主結果にしている
-- `S -> FOL` の完全 deep encoding と solver 連携は未完成
-
-なので、「論文の RG 並列規則をそのまま mechanize 済み」とはまだ言えません。  
-一方で、「transaction 単体の soundness」「VCG」「request/server correctness の commit-order story」はかなり使える状態です。
-
-## 迷ったら
-
-迷ったら次の順で開くと外しません。
-
-1. `DbAppProgramLogic/Examples.lean`
-2. `DbAppProgramLogic/Server.lean`
-3. `DbAppProgramLogic/Transformer.lean`
-4. `DbAppProgramLogic/Logic.lean`
-
-この順は、「何ができるか」から「なぜそれが正しいか」へ降りる読み方です。
+の順に辿るのが一番速いです。

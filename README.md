@@ -26,7 +26,6 @@
   - local/global judgment の意味論
   - local/global rely-guarantee rule
   - soundness theorem
-  - TR-faithful な top-level interleaving `globalInterleavedStepTR`
 - `DbAppProgramLogic/SetLanguage.lean`
   - Fig. 7 に対応する集合言語 `S` の構文
   - `S` の denotation
@@ -42,10 +41,8 @@
 - `DbAppProgramLogic/Server.lean`
   - handler-level refinement の別名 `HandlerRefines`
   - parallel / server 実行用の `ProgramDone`, `TxnCommitStep`, `ParallelValid`
-  - compatibility 条件 `ProgramAcceptsSpecs`
-  - request family / server object を表す `HandlerFamily{Spec}`, `VerifiedRequestServer{Spec}`, `VerifiedTxnIndexedRequestServerSpec`
-  - `TxnIndexedRequestSpec` と `RequestSpec.hideTxnIds`
-  - commit-order の合成定理と `CommitLog`
+  - `StateSpec`, `RequestSpec`, `CommitSequence`, `CommitLog`
+  - 単一 transaction を server-level spec へ持ち上げる補題
 - `DbAppProgramLogic/Examples.lean`
   - 現状の基盤を使った小さな検証例
 
@@ -70,7 +67,6 @@
 | Fig. 6 の local/global RG judgment | `Logic.lean` の `LocalRG`, `GlobalRG` | 論文の proof rule に対応します |
 | RG judgment の意味論 | `Logic.lean` の `LocalValid`, `GlobalValid`, `txnGuaranteed` | rule が何を意味するかを与える側です |
 | local/global interleaving | `Logic.lean` の `localInterleavedStep`, `globalInterleavedStep` | 実際の machine step と interference step を合成しています |
-| TR Appendix C.2 の top-level interleaving | `Logic.lean` の `globalInterleavedStepTR`, `GlobalMultiStepTR`, `GlobalValidTR`, `txnGuaranteedTR` | rely step が outer DB だけを変え、program は変えない論文忠実側の定義です |
 | Sec. 4 の stability | `Logic.lean` の `stableAssertion`, `stableBiAssertion`, `stableIsolation`, `relyMod` | 論文中の stability family に対応します |
 | Theorem 4.3 | `Logic.lean` の `localRG_sound`, `globalRG_sound` | RG rule が semantic validity を含意することを示します |
 | Fig. 7 の集合言語 `S` | `SetLanguage.lean` の `SetExpr` | ただし `φ`, `ϕ` は深い構文ではなく shallow な predicate として表現しています |
@@ -81,13 +77,9 @@
 | weakened symbolic VCG | `Transformer.lean` の `symbolicVcg`, `symbolicVcgForTxn`, `symbolicPostForTxn` | symbolic postcondition を transaction に持ち上げる入口です |
 | Sec. 5.2 に向けた FOL membership 層 | `FirstOrder.lean` の `MembershipFormula`, `inferMembershipFull*` | full 自動化ではないが、transaction body から row-membership を first-order 風に落とす層です |
 | Sec. 5 の transaction-level bridge | `Logic.lean` の `txnGlobalValid_of_localValid` と `Transformer.lean` の `vcg_sound`, `vcg_sound_false` | 推論した effect を `GlobalValid` に戻します |
-| 実アプリ向けの handler spec 層 | `Server.lean` の `HandlerRefines`, `HandlerFamily{Spec}`, `TxnIndexedRequestSpec` | 論文の top-level invariant judgment を壊さず、上位層で `P/Q`、request family、内部 txn-id 依存 spec を持つための追加層です |
+| 実アプリ向けの handler spec 層 | `Server.lean` の `HandlerRefines`, `TxnIndexedRequestSpec`, `RequestSpec.hideTxnIds` | `GlobalValid` を handler/request 側で読みやすく包む追加層です |
 | parallel / server の quiescent semantics | `Server.lean` の `ProgramDone`, `TxnCommitStep`, `ParallelValid` | 論文本体にはない追加層で、API サーバーのような並列 handler 群を扱うためのものです |
-| parallel compatibility | `Server.lean` の `ProgramAcceptsSpecs` | sibling handler の commit spec を rely として受けられることを表す追加条件です |
-| commit-order 合成定理 | `Server.lean` の `parallelValid_commitSequence`, `parallelValid_foldl_of_graphSpecs`, `parallelValid_commitLog`, `reachableGraphSpecs_sound`, `parallelValid_requestGraphSpecs_sound` | closed-system 仮定の下で、停止時 state が commit 順の仕様合成になり、各 commit の `txnId / before / after` log も抽出できます |
-| request/server object | `Server.lean` の `VerifiedRequestServerSpec`, `VerifiedRequestServer`, `VerifiedTxnIndexedRequestServerSpec`, `VerifiedRequestServerSpec.ofTxnIndexedSpecs` | relation spec と `state -> state` spec の両方を request trace つき server object として包み、必要なら内部 txn-id 付き exact spec と hidden spec を両方持てる追加層です |
-| TR Appendix B/C の parallel pair 定理 | `Server.lean` の `txnPair_parallelValidTR` | 2 本の transaction について、相手 guarantee を rely に入れた `HandlerRefinesTR` から pair の `ParallelValidTR` を導く packaged theorem です |
-| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceServer_*`, `zeroBalanceVerifiedServer*`, `zeroBalanceVerifiedTxnIndexedServerSpec*`, `addInterest*` | transaction 単体、server-level request trace、event-level trace、txn-id 付き exact spec とそれを隠した request spec の小例があります |
+| 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceTxn_parallelValid`, `addInterest*` | transaction 単体、最小 server wrapper、symbolic/FOL の小例があります |
 
 ## Lean 側でどうエンコードしたか
 
@@ -175,23 +167,12 @@ rely relation 自体は:
 
 で表現し、global rely と isolation guard を合わせたものが `relyMod` です。
 
-また、global 側には現在 2 本の interleaving があります。
+global 側の interleaving はいまは 1 本で、論文 Appendix C.2 に合わせて
 
-- `globalInterleavedStep`
-  - 旧来の operational な interleaving
-  - rely step のとき `refreshVisible` で runtime node の cached snapshot も更新する
-- `globalInterleavedStepTR`
-  - TR Appendix C.2 に忠実な interleaving
-  - rely step では outer DB だけが動き、program はそのまま
+- actual step は `Semantics.Step`
+- rely step は outer DB だけを変え、program はそのまま
 
-前者は既存の `globalRG_sound` や request/server 層で長く使ってきた operational variant、後者は parallel composition を論文どおりに組み直すための paper-faithful variant です。
-
-旧来の interleaving では、そのために:
-
-- `refreshVisible`
-- `respectsRely`
-
-を導入しています。ここは論文より Lean の方が operational に細かく書かれている部分です。`False` rely では両者は一致し、`Logic.globalValid_false_to_TR_false` がその橋になっています。
+という形です。`txnRuntime` の cached snapshot は、transaction 自身が actual step を取るときに `Semantics.Step.txnExec` を通じて参照されます。
 
 ### 5. semantic effect と explicit `S` の 2 層を持っている
 
@@ -269,9 +250,6 @@ Lean 側では現在、これを 2 段に分けています。
 - local/global RG rule
 - `localRG_sound`
 - `globalRG_sound`
-- `globalInterleavedStepTR`, `GlobalValidTR`
-- `globalValid_false_to_TR_false`
-- `globalValidTR_of_silentRely`
 
 つまり、Fig. 6 の rule system が意味論的に sound であるところまでは入っています。
 

@@ -615,7 +615,7 @@ inductive Step : Program → Database → Program → Database → Prop where
       Step (.txn txnId isolation body) globalDb (.txnRuntime txnId isolation [] globalDb body) globalDb
   | txnExec {txnId isolation localDb snapshot body body' localDb' currentDb} :
       isolation.exec localDb snapshot currentDb →
-      LocalStep snapshot txnId body localDb body' localDb' →
+      LocalStep currentDb txnId body localDb body' localDb' →
       Step
         (.txnRuntime txnId isolation localDb snapshot body)
         currentDb

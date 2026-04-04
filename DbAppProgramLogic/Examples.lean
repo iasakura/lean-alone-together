@@ -6,11 +6,12 @@ namespace DbAppProgramLogic
 namespace Examples
 
 /-!
-Small end-to-end examples for the current development.
+Small end-to-end examples for the corrected development.
 
-The `zeroBalance` fragment is the recommended first example: it shows how a simple transaction proof
-feeds into handler and server-level results. The later `addInterest` fragment exercises the symbolic
-set-language and first-order layers on a transaction that both reads and writes.
+The `zeroBalance` fragment is the recommended first example: it shows a simple VCG proof, its
+symbolic postcondition, and the minimal paper-faithful server wrapper for a single transaction. The
+`addInterest` fragment exercises the symbolic set-language and first-order layers on a transaction
+that both reads and writes.
 -/
 
 /-! ## Zero-balance insert example -/
@@ -40,6 +41,9 @@ def zeroBalanceGuarantee : Guarantee :=
 def zeroBalanceGuaranteeOf (txnId : TxnId) : Guarantee :=
   fun db db' => db' = Database.flush [zeroBalanceRowOf txnId] db
 
+def zeroBalanceApply : StateTransformer :=
+  fun db => Database.flush [zeroBalanceRow] db
+
 def identityGuarantee : Guarantee :=
   StateSpec.graph id
 
@@ -47,6 +51,11 @@ theorem identityGuarantee_silent :
     ∀ db db' : Database, identityGuarantee db db' → db' = db := by
   intro db db' hId
   exact hId
+
+theorem false_rely_silent :
+    ∀ db db' : Database, (fun _ _ => False) db db' → db' = db := by
+  intro db db' hFalse
+  exact False.elim hFalse
 
 theorem nonnegativeBalances_flush_zeroBalanceRow {db : Database}
     (hDb : nonnegativeBalances db) :
@@ -171,40 +180,6 @@ theorem zeroBalanceInsert_valid_any (txnId : TxnId) :
     (zeroBalance_guarantee_ok_any txnId)
     (zeroBalance_preserves_invariant_any txnId)
 
-theorem zeroBalanceInsert_valid_any_TR_false (txnId : TxnId) :
-    Logic.GlobalValidTR nonnegativeBalances (fun _ _ => False)
-      (.txn txnId Database.uniqueIds zeroBalanceInsertBody)
-      (zeroBalanceGuaranteeOf txnId)
-      nonnegativeBalances := by
-  exact _root_.DbAppProgramLogic.Logic.globalValid_false_to_TR_false
-    (zeroBalanceInsert_valid_any txnId)
-
-theorem zeroBalanceInsert_valid_any_TR_identity (txnId : TxnId) :
-    Server.HandlerRefinesTR nonnegativeBalances identityGuarantee
-      (.txn txnId Database.uniqueIds zeroBalanceInsertBody)
-      (zeroBalanceGuaranteeOf txnId)
-      nonnegativeBalances := by
-  exact _root_.DbAppProgramLogic.Logic.globalValidTR_of_silentRely
-    (zeroBalanceInsert_valid_any_TR_false txnId)
-    identityGuarantee_silent
-
-def zeroBalanceApply : StateTransformer :=
-  fun db => Database.flush [zeroBalanceRow] db
-
-def zeroBalanceServer : Semantics.Program :=
-  .par (.txn 0 Database.uniqueIds zeroBalanceInsertBody) .skip
-
-def zeroBalanceRequestOf : TxnId → Unit :=
-  fun _ => ()
-
-def zeroBalanceRequestApply : RequestTransformer Unit :=
-  fun _ => zeroBalanceApply
-
-theorem false_rely_silent :
-    ∀ db db' : Database, (fun _ _ => False) db db' → db' = db := by
-  intro db db' hFalse
-  exact False.elim hFalse
-
 theorem zeroBalanceHandler_refines_graph :
     Server.HandlerRefines nonnegativeBalances (fun _ _ => False)
       (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
@@ -213,317 +188,23 @@ theorem zeroBalanceHandler_refines_graph :
   simpa [Server.HandlerRefines, StateSpec.graph, zeroBalanceApply, zeroBalanceGuarantee] using
     zeroBalanceInsert_valid
 
-def zeroBalanceTxnSpec : TxnIndexedRequestSpec Unit :=
-  fun _ txnId => zeroBalanceGuaranteeOf txnId
-
-def zeroBalanceAbstractSpec : RequestSpec Unit :=
-  RequestSpec.hideTxnIds zeroBalanceRequestOf zeroBalanceTxnSpec
-
-theorem zeroBalanceHandler_refines_abstract (txnId : TxnId) :
-    Server.HandlerRefines nonnegativeBalances (fun _ _ => False)
-      (.txn txnId Database.uniqueIds zeroBalanceInsertBody)
-      (zeroBalanceAbstractSpec ())
-      nonnegativeBalances := by
-  refine Logic.globalValid_conseq (zeroBalanceInsert_valid_any txnId) ?_ ?_
-  · intro db hDb
-    exact hDb
-  · intro db db' hGuarantee
-    exact ⟨txnId, rfl, hGuarantee⟩
-
-theorem zeroBalanceServer_parallelValid :
+theorem zeroBalanceTxn_parallelValid :
     Server.ParallelValid nonnegativeBalances (fun _ _ => False)
-      zeroBalanceServer
+      (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
       (fun _ => StateSpec.graph zeroBalanceApply)
       nonnegativeBalances := by
-  exact Server.parallelValid_par_skip_right
-    (Server.txnParallelValid_of_handlerRefines zeroBalanceHandler_refines_graph)
+  exact Server.txnParallelValid_of_handlerRefines zeroBalanceHandler_refines_graph
 
-theorem zeroBalanceServer_parallelValid_abstract :
-    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
-      zeroBalanceServer
-      (RequestSpec.assign zeroBalanceRequestOf zeroBalanceAbstractSpec)
-      nonnegativeBalances := by
-  refine Server.parallelValid_mono zeroBalanceServer_parallelValid ?_
-  intro txnId db db' hGraph
-  exact ⟨0, rfl, hGraph⟩
-
-theorem zeroBalanceServer_parallelValid_txnIndexed :
-    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
-      zeroBalanceServer
-      (fun txnId => zeroBalanceTxnSpec (zeroBalanceRequestOf txnId) txnId)
-      nonnegativeBalances := by
-  refine Server.parallelValid_par_skip_right ?_
-  simpa [zeroBalanceTxnSpec, zeroBalanceRequestOf] using
-    (DbAppProgramLogic.Server.txnParallelValid_of_handlerRefines_at
-      (txnId := 0)
-      (specs := fun txnId => zeroBalanceTxnSpec (zeroBalanceRequestOf txnId) txnId)
-      (hSpecAt := by
-        intro db db' hSpec
-        simpa [zeroBalanceTxnSpec, zeroBalanceRequestOf] using hSpec)
-      (zeroBalanceInsert_valid_any 0))
-
-def zeroBalanceHandlerFamilySpec : DbAppProgramLogic.Server.HandlerFamilySpec Unit where
-  invariant := nonnegativeBalances
-  rely := fun _ _ => False
-  handlers := fun _ txnId => .txn txnId Database.uniqueIds zeroBalanceInsertBody
-  specs := zeroBalanceAbstractSpec
-  handlerSound := by
-    intro _req txnId
-    exact zeroBalanceHandler_refines_abstract txnId
-
-def zeroBalanceVerifiedServerSpec : DbAppProgramLogic.Server.VerifiedRequestServerSpec Unit :=
-  DbAppProgramLogic.Server.VerifiedRequestServerSpec.ofHandlerFamilySpec
-    zeroBalanceHandlerFamilySpec
-    false_rely_silent
-    zeroBalanceRequestOf
-    zeroBalanceServer
-    zeroBalanceServer_parallelValid_abstract
-
-def zeroBalanceVerifiedTxnIndexedServerSpecExact :
-    DbAppProgramLogic.Server.VerifiedTxnIndexedRequestServerSpec Unit where
-  invariant := nonnegativeBalances
-  rely := fun _ _ => False
-  silent := false_rely_silent
-  requestOf := zeroBalanceRequestOf
-  specs := zeroBalanceTxnSpec
-  program := zeroBalanceServer
-  valid := zeroBalanceServer_parallelValid_txnIndexed
-
-def zeroBalanceVerifiedTxnIndexedServerSpec : DbAppProgramLogic.Server.VerifiedRequestServerSpec Unit :=
-  DbAppProgramLogic.Server.VerifiedTxnIndexedRequestServerSpec.hideTxnIds
-    zeroBalanceVerifiedTxnIndexedServerSpecExact
-
-theorem zeroBalanceServer_invariant {db : Database} {finalCfg : GlobalConfig}
+theorem zeroBalanceTxn_parallelValid_invariant
+    {db : Database} {finalCfg : GlobalConfig}
     (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg)
+    (hRun :
+      Logic.GlobalMultiStep (fun _ _ => False)
+        ⟨(.txn 0 Database.uniqueIds zeroBalanceInsertBody), db⟩
+        finalCfg)
     (hDone : Server.ProgramDone finalCfg.program) :
     nonnegativeBalances finalCfg.globalDb := by
-  exact Server.ParallelValid.invariant zeroBalanceServer_parallelValid hDb hRun hDone
-
-theorem zeroBalanceServer_commit_order {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    ∃ commits : List TxnId,
-      finalCfg.globalDb =
-        List.foldl (fun current (_ : TxnId) => zeroBalanceApply current) db commits := by
-  exact Server.parallelValid_foldl_of_graphSpecs
-    false_rely_silent
-    zeroBalanceServer_parallelValid
-    hDb
-    hRun
-
-theorem zeroBalanceServer_commit_log {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    ∃ events, Server.CommitLog (fun _ => StateSpec.graph zeroBalanceApply) db events finalCfg.globalDb := by
-  exact Server.parallelValid_commitLog
-    false_rely_silent
-    zeroBalanceServer_parallelValid
-    hDb
-    hRun
-
-theorem zeroBalanceServer_reachableCommitSpecs :
-    Server.ReachableCommitSpecs nonnegativeBalances (fun _ _ => False)
-      zeroBalanceServer
-      (fun _ => StateSpec.graph zeroBalanceApply) := by
-  exact Server.ParallelValid.reachableCommitSpecs zeroBalanceServer_parallelValid
-
-theorem zeroBalanceServer_prefix_invariant {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    nonnegativeBalances finalCfg.globalDb := by
-  exact Server.reachableInvariant_of_reachableCommitSpecs
-    (Logic.stableAssertion_false nonnegativeBalances)
-    (by
-      intro _txnId db db' hInv hSpec
-      rcases hSpec with rfl
-      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
-    zeroBalanceServer_reachableCommitSpecs
-    hDb
-    hRun
-
-theorem zeroBalanceServer_event_commit_order_via_reachable
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    ∃ events,
-      finalCfg.globalDb =
-        List.foldl
-          (fun current (_event : Server.CommitEvent) => zeroBalanceApply current)
-          db
-          events := by
-  exact Server.eventFoldl_of_reachableGraphSpecs
-    (Logic.stableAssertion_false nonnegativeBalances)
-    (by
-      intro _txnId db hInv
-      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
-    false_rely_silent
-    zeroBalanceServer_reachableCommitSpecs
-    hDb
-    hRun
-
-theorem zeroBalanceServer_prefix_sound
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    nonnegativeBalances finalCfg.globalDb ∧
-  ∃ events,
-        finalCfg.globalDb =
-          List.foldl
-            (fun current (_event : Server.CommitEvent) => zeroBalanceApply current)
-            db
-            events := by
-  exact DbAppProgramLogic.Server.reachableGraphSpecs_sound
-    (Logic.stableAssertion_false nonnegativeBalances)
-    (by
-      intro _txnId db hInv
-      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
-    false_rely_silent
-    zeroBalanceServer_reachableCommitSpecs
-    hDb
-    hRun
-
-theorem zeroBalanceServer_request_family_sound
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    nonnegativeBalances finalCfg.globalDb ∧
-      ∃ events,
-        finalCfg.globalDb =
-          List.foldl
-            (fun current req => zeroBalanceRequestApply req current)
-        db
-        (Server.CommitLog.requests zeroBalanceRequestOf events) := by
-  exact DbAppProgramLogic.Server.reachableRequestGraphSpecs_sound
-    (Logic.stableAssertion_false nonnegativeBalances)
-    (by
-      intro _req db hInv
-      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
-    false_rely_silent
-    (by
-      intro db hDb midCfg nextProgram nextDb txnId hReach hCommit
-      change StateSpec.graph (zeroBalanceRequestApply (zeroBalanceRequestOf txnId)) midCfg.globalDb nextDb
-      exact zeroBalanceServer_reachableCommitSpecs
-        db hDb midCfg nextProgram nextDb txnId hReach hCommit)
-    hDb
-    hRun
-
-theorem zeroBalanceServer_request_family_sound_of_parallelValid
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    nonnegativeBalances finalCfg.globalDb ∧
-      ∃ events,
-        finalCfg.globalDb =
-          List.foldl
-            (fun current req => zeroBalanceRequestApply req current)
-            db
-            (Server.CommitLog.requests zeroBalanceRequestOf events) := by
-  exact DbAppProgramLogic.Server.parallelValid_requestGraphSpecs_sound
-    (Logic.stableAssertion_false nonnegativeBalances)
-    (by
-      intro _req db hInv
-      exact nonnegativeBalances_flush_zeroBalanceRow hInv)
-    false_rely_silent
-    (by
-      simpa [RequestSpec.graphAssign, RequestSpec.assign, zeroBalanceRequestApply, zeroBalanceRequestOf]
-        using zeroBalanceServer_parallelValid)
-    hDb
-    hRun
-
-theorem zeroBalanceVerifiedServerSpec_events
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    ∃ events : List Server.CommitEvent,
-      ∀ event ∈ events,
-        zeroBalanceAbstractSpec () event.before event.after := by
-  exact DbAppProgramLogic.Server.VerifiedRequestServerSpec.requestEvents
-    zeroBalanceVerifiedServerSpec
-    hDb
-    hRun
-
-theorem zeroBalanceServer_txnIndexed_events
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    ∃ events : List Server.CommitEvent,
-      ∀ event ∈ events,
-        zeroBalanceTxnSpec (zeroBalanceRequestOf event.txnId) event.txnId
-          event.before event.after := by
-  rcases Server.parallelValid_commitLog
-      false_rely_silent
-      zeroBalanceServer_parallelValid_txnIndexed
-      hDb
-      hRun with
-    ⟨events, hLog⟩
-  exact ⟨events, Server.CommitLog.events_match_specs hLog⟩
-
-theorem zeroBalanceVerifiedTxnIndexedServerSpec_events_exact
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    ∃ events : List Server.CommitEvent,
-      ∀ event ∈ events,
-        zeroBalanceTxnSpec (zeroBalanceRequestOf event.txnId) event.txnId
-          event.before event.after := by
-  exact DbAppProgramLogic.Server.VerifiedTxnIndexedRequestServerSpec.requestEventsExact
-    zeroBalanceVerifiedTxnIndexedServerSpecExact
-    hDb
-    hRun
-
-theorem zeroBalanceVerifiedTxnIndexedServerSpec_events
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    ∃ events : List Server.CommitEvent,
-      ∀ event ∈ events,
-        zeroBalanceAbstractSpec () event.before event.after := by
-  simpa using
-    (DbAppProgramLogic.Server.VerifiedRequestServerSpec.requestEvents
-      zeroBalanceVerifiedTxnIndexedServerSpec
-      hDb
-      hRun)
-
-def zeroBalanceVerifiedServer : DbAppProgramLogic.Server.VerifiedRequestServer Unit where
-  invariant := nonnegativeBalances
-  rely := fun _ _ => False
-  silent := false_rely_silent
-  requestOf := zeroBalanceRequestOf
-  transformer := zeroBalanceRequestApply
-  program := zeroBalanceServer
-  stable := Logic.stableAssertion_false nonnegativeBalances
-  preserve := by
-    intro _req db hInv
-    exact nonnegativeBalances_flush_zeroBalanceRow hInv
-  valid := by
-    simpa [RequestSpec.graphAssign, RequestSpec.assign, zeroBalanceRequestApply, zeroBalanceRequestOf]
-      using zeroBalanceServer_parallelValid
-
-theorem zeroBalanceVerifiedServer_sound
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    nonnegativeBalances finalCfg.globalDb ∧
-      ∃ events : List Server.CommitEvent,
-        finalCfg.globalDb =
-          List.foldl
-            (fun current req => zeroBalanceRequestApply req current)
-            db
-            (DbAppProgramLogic.Server.VerifiedRequestServer.requestTrace zeroBalanceVerifiedServer events) := by
-  exact DbAppProgramLogic.Server.VerifiedRequestServer.sound zeroBalanceVerifiedServer hDb hRun
-
-theorem zeroBalanceVerifiedServer_events_exact
-    {db : Database} {finalCfg : GlobalConfig}
-    (hDb : nonnegativeBalances db)
-    (hRun : Logic.GlobalMultiStep (fun _ _ => False) ⟨zeroBalanceServer, db⟩ finalCfg) :
-    ∃ events : List Server.CommitEvent,
-      ∀ event ∈ events,
-        event.after = zeroBalanceRequestApply (zeroBalanceRequestOf event.txnId) event.before := by
-  exact DbAppProgramLogic.Server.VerifiedRequestServer.requestEvents
-    zeroBalanceVerifiedServer
-    hDb
-    hRun
+  exact Server.ParallelValid.invariant zeroBalanceTxn_parallelValid hDb hRun hDone
 
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =

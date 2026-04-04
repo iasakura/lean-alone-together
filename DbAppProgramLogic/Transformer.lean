@@ -2613,9 +2613,10 @@ theorem effectPost_stable_of_commitStable {R : Rely} {I : Assertion}
     Logic.stableBiAssertion (Logic.relyMod R isolation.commit) (effectPost I F) := by
   intro localDb visibleDb visibleDb' hPost hRely
   rcases hPost with ⟨hEffectDb, hIvisible⟩
-  rcases hRely with ⟨hR, hIso⟩
+  rcases hRely with ⟨baseDb, hR, hIsoVisible, hIsoVisible'⟩
   constructor
-  · have hEq : F visibleDb = F visibleDb' := hEffect localDb visibleDb visibleDb' ⟨hR, hIso⟩
+  · have hEq : F visibleDb = F visibleDb' := by
+      exact hEffect localDb visibleDb visibleDb' ⟨baseDb, hR, hIsoVisible, hIsoVisible'⟩
     rw [hEq] at hEffectDb
     exact hEffectDb
   · exact hI _ _ hIvisible hR
@@ -2652,11 +2653,13 @@ theorem effectLocalValid_false (txnId : TxnId) (body : Semantics.Program)
 theorem vcg_sound {R : Rely} {I : Assertion} {G : Guarantee}
     (txnId : TxnId) (isolation : IsolationSpec Database) (body : Semantics.Program)
     (hStableI : Logic.stableAssertion R I)
+    (hExecStable : Logic.stableIsolation R isolation.exec)
     (hLocal :
       Logic.LocalValid (Logic.relyMod R isolation.exec) txnId
         (fun localDb visible => localDb = [] ∧ I visible)
         body
         (effectPost I (vcg R I G txnId isolation body).effect))
+    (hCommitIsoStable : Logic.stableIsolation R isolation.commit)
     (hCommit : (vcg R I G txnId isolation body).commitStable)
     (hGuarantee : (vcg R I G txnId isolation body).guaranteeOk)
     (hPreserve : (vcg R I G txnId isolation body).preservesInvariant) :
@@ -2669,7 +2672,7 @@ theorem vcg_sound {R : Rely} {I : Assertion} {G : Guarantee}
     simpa [vcg] using hGuarantee
   have hPreserve' : ∀ db db', I db → G db db' → I db' := by
     simpa [vcg] using hPreserve
-  refine Logic.txnGlobalValid_of_localValid hStableI ?_ hLocal ?_ ?_ hPreserve'
+  refine Logic.txnGlobalValid_of_localValid hStableI hExecStable hCommitIsoStable ?_ hLocal ?_ ?_ hPreserve'
   · intro localDb visibleDb
     constructor <;> intro h <;> simpa using h
   · exact effectPost_stable_of_commitStable hCommit' hStableI
@@ -2711,7 +2714,9 @@ theorem vcg_sound_false {I : Assertion} {G : Guarantee}
           | inl hLocalStep =>
               exact Or.inl hLocalStep
           | inr hRely =>
-              exact False.elim hRely.2.2.2.1
+              rcases hRely with ⟨_, _, _, hRely⟩
+              rcases hRely with ⟨_, hFalse, _, _⟩
+              exact False.elim hFalse
     have hMulti' :
         Logic.LocalMultiStep (fun _ _ _ => False) txnId (IsolationSpec Database)
           ⟨body, localDb, visibleDb⟩ finalCfg := by
@@ -2723,7 +2728,9 @@ theorem vcg_sound_false {I : Assertion} {G : Guarantee}
     simp [vcg, Logic.relyMod, effectStable]
   exact vcg_sound txnId isolation body
     (Logic.stableAssertion_false I)
+    (Logic.stableIsolation_false isolation.exec)
     hLocal'
+    (Logic.stableIsolation_false isolation.commit)
     hCommit
     hGuarantee
     hPreserve

@@ -94,7 +94,8 @@ theorem stableIsolation_of_relySubset {R R' : Rely}
 
 /-- Restrict a global rely by the isolation guard currently required by a running transaction. -/
 def relyMod (R : Rely) (I : Database → Database → Database → Prop) : LocalRely :=
-  fun localDb visibleDb visibleDb' => R visibleDb visibleDb' ∧ I localDb visibleDb visibleDb'
+  fun localDb visibleDb visibleDb' =>
+    ∃ baseDb, R visibleDb visibleDb' ∧ I localDb baseDb visibleDb ∧ I localDb baseDb visibleDb'
 
 /-- Local executions interleave actual transaction steps with environment steps that only change the
 visible database. -/
@@ -119,66 +120,10 @@ theorem localInterleavedStep_mono {R R' : LocalRely} {txnId : TxnId}
       rcases hRely with ⟨hCmd, hLocal, hNotSkip, hRely⟩
       exact Or.inr ⟨hCmd, hLocal, hNotSkip, hSub _ _ _ hRely⟩
 
-/-- Update the cached visible database stored inside runtime transaction nodes after a rely step. -/
-def refreshVisible : Semantics.Program → Database → Semantics.Program
-  | .txnRuntime txnId isolation localDb _ body, visibleDb =>
-      .txnRuntime txnId isolation localDb visibleDb body
-  | .par left right, visibleDb =>
-      .par (refreshVisible left visibleDb) (refreshVisible right visibleDb)
-  | program, _ =>
-      program
-
-/-- Check whether a global database transition is acceptable as rely interference for a whole
-runtime program. For transactions, this bundles the rely relation with the active isolation guard. -/
-def respectsRely (R : Rely) : Semantics.Program → Database → Database → Prop
-  | .txnRuntime _ isolation localDb snapshot .skip, db, db' =>
-      R db db' ∧ isolation.commit localDb snapshot db'
-  | .txnRuntime _ isolation localDb snapshot _body, db, db' =>
-      R db db' ∧ isolation.exec localDb snapshot db'
-  | .par left right, db, db' =>
-      respectsRely R left db db' ∧ respectsRely R right db db'
-  | _, db, db' =>
-      R db db'
-
-theorem respectsRely_mono {R R' : Rely}
-    (hSub : ∀ db db', R' db db' → R db db')
-    {program : Semantics.Program} {db db' : Database} :
-    respectsRely R' program db db' →
-    respectsRely R program db db' := by
-  induction program generalizing db db' with
-  | txnRuntime txnId isolation localDb snapshot body =>
-      by_cases hBody : body = (Command.skip : Semantics.Program)
-      · intro hRespect
-        have hPair : R' db db' ∧ isolation.commit localDb snapshot db' := by
-          simpa [respectsRely, hBody] using hRespect
-        exact by
-          simpa [respectsRely, hBody] using ⟨hSub _ _ hPair.1, hPair.2⟩
-      · intro hRespect
-        have hPair : R' db db' ∧ isolation.exec localDb snapshot db' := by
-          simpa [respectsRely, hBody] using hRespect
-        exact by
-          simpa [respectsRely, hBody] using ⟨hSub _ _ hPair.1, hPair.2⟩
-  | par left right ihLeft ihRight =>
-      intro hRespect
-      have hPair : respectsRely R' left db db' ∧ respectsRely R' right db db' := by
-        simpa [respectsRely] using hRespect
-      exact by
-        simpa [respectsRely] using ⟨ihLeft hPair.1, ihRight hPair.2⟩
-  | _ =>
-      intro hRespect
-      simpa [respectsRely] using hSub _ _ hRespect
-
-/-- Top-level interleaving: either take a real machine step or update the program's visible state by
-an allowed rely step. -/
+/-- Paper-faithful top-level interleaving from Appendix C.2: a rely step changes only the outer
+global database, leaving the program state unchanged. Runtime transaction nodes therefore keep
+their cached snapshot until they themselves take an actual step. -/
 def globalInterleavedStep (R : Rely) : GlobalConfig → GlobalConfig → Prop
-  | ⟨program, globalDb⟩, ⟨program', globalDb'⟩ =>
-      Semantics.Step program globalDb program' globalDb' ∨
-        (program' = refreshVisible program globalDb' ∧ respectsRely R program globalDb globalDb')
-
-/-- TR-faithful top-level interleaving from Appendix C.2: a rely step changes only the outer global
-database, leaving the program state unchanged. Runtime transaction nodes therefore keep their cached
-snapshot until they themselves take an actual step. -/
-def globalInterleavedStepTR (R : Rely) : GlobalConfig → GlobalConfig → Prop
   | ⟨program, globalDb⟩, ⟨program', globalDb'⟩ =>
       Semantics.Step program globalDb program' globalDb' ∨
         (program' = program ∧ R globalDb globalDb')
@@ -188,10 +133,6 @@ abbrev LocalMultiStep (R : LocalRely) (txnId : TxnId) (ι : Type) :=
 
 abbrev GlobalMultiStep (R : Rely) :=
   MultiStep (globalInterleavedStep R)
-
-/-- Reflexive-transitive closure of the TR-faithful top-level interleaving. -/
-abbrev GlobalMultiStepTR (R : Rely) :=
-  MultiStep (globalInterleavedStepTR R)
 
 theorem globalInterleavedStep_mono {R R' : Rely}
     (hSub : ∀ db db', R' db db' → R db db')
@@ -203,57 +144,8 @@ theorem globalInterleavedStep_mono {R R' : Rely}
   | inl hActual =>
       exact Or.inl hActual
   | inr hRely =>
-      rcases hRely with ⟨hProgram, hRespect⟩
-      exact Or.inr ⟨hProgram, respectsRely_mono hSub hRespect⟩
-
-theorem globalInterleavedStepTR_mono {R R' : Rely}
-    (hSub : ∀ db db', R' db db' → R db db')
-    {cfg cfg' : GlobalConfig} :
-    globalInterleavedStepTR R' cfg cfg' →
-    globalInterleavedStepTR R cfg cfg' := by
-  intro hStep
-  cases hStep with
-  | inl hActual =>
-      exact Or.inl hActual
-  | inr hRely =>
       rcases hRely with ⟨hProgram, hR⟩
       exact Or.inr ⟨hProgram, hSub _ _ hR⟩
-
-theorem not_respectsRely_false {program : Semantics.Program} {db db' : Database} :
-    ¬ respectsRely (fun _ _ => False) program db db' := by
-  induction program generalizing db db' with
-  | txnRuntime txnId isolation localDb snapshot body ih =>
-      by_cases hBody : body = (Command.skip : Semantics.Program)
-      · simp [respectsRely, hBody]
-      · simp [respectsRely, hBody]
-  | par left right ihLeft ihRight =>
-      simp [respectsRely, ihLeft, ihRight]
-  | _ =>
-      simp [respectsRely]
-
-/-- With `False` rely, both global interleavings collapse to actual machine steps only. -/
-theorem globalInterleavedStep_false_iff_TR_false {cfg cfg' : GlobalConfig} :
-    globalInterleavedStep (fun _ _ => False) cfg cfg' ↔
-      globalInterleavedStepTR (fun _ _ => False) cfg cfg' := by
-  cases cfg with
-  | mk program db =>
-      cases cfg' with
-      | mk program' db' =>
-          constructor
-          · intro hStep
-            cases hStep with
-            | inl hActual =>
-                exact Or.inl hActual
-            | inr hRely =>
-                rcases hRely with ⟨_, hRespect⟩
-                exact False.elim (not_respectsRely_false hRespect)
-          · intro hStep
-            cases hStep with
-            | inl hActual =>
-                exact Or.inl hActual
-            | inr hRely =>
-                rcases hRely with ⟨_, hFalse⟩
-                exact False.elim hFalse
 
 theorem localMultiStep_mono {R R' : LocalRely} {txnId : TxnId} {ι : Type}
     (hSub : ∀ localDb visibleDb visibleDb',
@@ -269,54 +161,6 @@ theorem globalMultiStep_mono {R R' : Rely}
     GlobalMultiStep R' cfg cfg' →
     GlobalMultiStep R cfg cfg' := by
   exact MultiStep.mono (fun hStep => globalInterleavedStep_mono hSub hStep)
-
-theorem globalMultiStepTR_mono {R R' : Rely}
-    (hSub : ∀ db db', R' db db' → R db db')
-    {cfg cfg' : GlobalConfig} :
-    GlobalMultiStepTR R' cfg cfg' →
-    GlobalMultiStepTR R cfg cfg' := by
-  exact MultiStep.mono (fun hStep => globalInterleavedStepTR_mono hSub hStep)
-
-/-- Under `False` rely, the original global interleaving and the TR-faithful one reach exactly the
-same configurations. -/
-theorem globalMultiStep_false_iff_TR_false {cfg cfg' : GlobalConfig} :
-    GlobalMultiStep (fun _ _ => False) cfg cfg' ↔
-      GlobalMultiStepTR (fun _ _ => False) cfg cfg' := by
-  constructor <;> intro hMulti
-  · exact MultiStep.mono
-      (fun hStep => (globalInterleavedStep_false_iff_TR_false).1 hStep)
-      hMulti
-  · exact MultiStep.mono
-      (fun hStep => (globalInterleavedStep_false_iff_TR_false).2 hStep)
-      hMulti
-
-/-- A TR rely that cannot change the global database contributes only self-loops, so its traces can
-be collapsed to `False`-rely traces with the same endpoints. -/
-theorem globalMultiStepTR_of_silentRely {R : Rely}
-    (hSilent : ∀ db db', R db db' → db' = db)
-    {cfg cfg' : GlobalConfig} :
-    GlobalMultiStepTR R cfg cfg' →
-    GlobalMultiStepTR (fun _ _ => False) cfg cfg' := by
-  intro hMulti
-  induction hMulti with
-  | refl =>
-      exact MultiStep.refl
-  | tail hPrev hLast ih =>
-      rename_i cfg₂ cfg₃
-      cases hLast with
-      | inl hActual =>
-          exact MultiStep.tail ih (Or.inl hActual)
-      | inr hRely =>
-          rcases hRely with ⟨hProgram, hR⟩
-          cases cfg₂ with
-          | mk program db =>
-              cases cfg₃ with
-              | mk program' db' =>
-                  simp at hProgram
-                  have hDb : db' = db := hSilent _ _ hR
-                  subst hProgram
-                  subst hDb
-                  simpa using ih
 
 /-- Semantic validity for local judgments: whenever the command reaches `skip`, the postcondition
 holds on the final local/visible databases. -/
@@ -336,14 +180,6 @@ def txnGuaranteed (R : Rely) (G : Guarantee) (program : Semantics.Program) (db :
     nextProgram = (Command.skip : Semantics.Program) →
     G midCfg.globalDb nextDb
 
-/-- TR-faithful semantic guarantee judgment using `GlobalMultiStepTR`. -/
-def txnGuaranteedTR (R : Rely) (G : Guarantee) (program : Semantics.Program) (db : Database) : Prop :=
-  ∀ midCfg nextProgram nextDb,
-    GlobalMultiStepTR R ⟨program, db⟩ midCfg →
-    Semantics.Step midCfg.program midCfg.globalDb nextProgram nextDb →
-    nextProgram = (Command.skip : Semantics.Program) →
-    G midCfg.globalDb nextDb
-
 /-- Semantic validity for top-level programs: the program preserves the global assertion and its
 commits satisfy the guarantee relation. -/
 def GlobalValid (Ipre : Assertion) (R : Rely)
@@ -356,30 +192,11 @@ def GlobalValid (Ipre : Assertion) (R : Rely)
         Ipost finalCfg.globalDb) ∧
       txnGuaranteed R G program db
 
-/-- TR-faithful top-level semantic validity using `GlobalMultiStepTR`. -/
-def GlobalValidTR (Ipre : Assertion) (R : Rely)
-    (program : Semantics.Program) (G : Guarantee) (Ipost : Assertion) : Prop :=
-  ∀ db,
-    Ipre db →
-      (∀ finalCfg,
-        GlobalMultiStepTR R ⟨program, db⟩ finalCfg →
-        finalCfg.program = (Command.skip : Semantics.Program) →
-        Ipost finalCfg.globalDb) ∧
-      txnGuaranteedTR R G program db
-
 theorem txnGuaranteed_mono {R : Rely} {G G' : Guarantee}
     {program : Semantics.Program} {db : Database}
     (hTxn : txnGuaranteed R G program db)
     (hImp : ∀ db db', G db db' → G' db db') :
     txnGuaranteed R G' program db := by
-  intro midCfg nextProgram nextDb hMulti hStep hSkip
-  exact hImp _ _ (hTxn midCfg nextProgram nextDb hMulti hStep hSkip)
-
-theorem txnGuaranteedTR_mono {R : Rely} {G G' : Guarantee}
-    {program : Semantics.Program} {db : Database}
-    (hTxn : txnGuaranteedTR R G program db)
-    (hImp : ∀ db db', G db db' → G' db db') :
-    txnGuaranteedTR R G' program db := by
   intro midCfg nextProgram nextDb hMulti hStep hSkip
   exact hImp _ _ (hTxn midCfg nextProgram nextDb hMulti hStep hSkip)
 
@@ -392,16 +209,6 @@ theorem globalValid_conseq {Ipre Imid Ipost : Assertion} {R : Rely}
   intro db hDb
   rcases hValid db (hPre _ hDb) with ⟨hPost, hTxn⟩
   refine ⟨hPost, txnGuaranteed_mono hTxn hG⟩
-
-theorem globalValidTR_conseq {Ipre Imid Ipost : Assertion} {R : Rely}
-    {program : Semantics.Program} {G G' : Guarantee}
-    (hValid : GlobalValidTR Imid R program G Ipost)
-    (hPre : ∀ db, Ipre db → Imid db)
-    (hG : ∀ db db', G db db' → G' db db') :
-    GlobalValidTR Ipre R program G' Ipost := by
-  intro db hDb
-  rcases hValid db (hPre _ hDb) with ⟨hPost, hTxn⟩
-  refine ⟨hPost, txnGuaranteedTR_mono hTxn hG⟩
 
 theorem localValid_of_relySubset {R R' : LocalRely} {txnId : TxnId}
     {P : BiAssertion} {c : Command ι Database} {Q : BiAssertion}
@@ -420,14 +227,6 @@ theorem txnGuaranteed_of_relySubset {R R' : Rely} {G : Guarantee}
   intro midCfg nextProgram nextDb hMulti hStep hSkip
   exact hTxn _ _ _ (globalMultiStep_mono hSub hMulti) hStep hSkip
 
-theorem txnGuaranteedTR_of_relySubset {R R' : Rely} {G : Guarantee}
-    {program : Semantics.Program} {db : Database}
-    (hTxn : txnGuaranteedTR R G program db)
-    (hSub : ∀ db db', R' db db' → R db db') :
-    txnGuaranteedTR R' G program db := by
-  intro midCfg nextProgram nextDb hMulti hStep hSkip
-  exact hTxn _ _ _ (globalMultiStepTR_mono hSub hMulti) hStep hSkip
-
 theorem globalValid_of_relySubset {Ipre Ipost : Assertion} {R R' : Rely}
     {program : Semantics.Program} {G : Guarantee}
     (hValid : GlobalValid Ipre R program G Ipost)
@@ -438,45 +237,6 @@ theorem globalValid_of_relySubset {Ipre Ipost : Assertion} {R R' : Rely}
   refine ⟨?_, txnGuaranteed_of_relySubset hTxn hSub⟩
   intro finalCfg hRun hSkip
   exact hPost _ (globalMultiStep_mono hSub hRun) hSkip
-
-theorem globalValidTR_of_relySubset {Ipre Ipost : Assertion} {R R' : Rely}
-    {program : Semantics.Program} {G : Guarantee}
-    (hValid : GlobalValidTR Ipre R program G Ipost)
-    (hSub : ∀ db db', R' db db' → R db db') :
-    GlobalValidTR Ipre R' program G Ipost := by
-  intro db hDb
-  rcases hValid db hDb with ⟨hPost, hTxn⟩
-  refine ⟨?_, txnGuaranteedTR_of_relySubset hTxn hSub⟩
-  intro finalCfg hRun hSkip
-  exact hPost _ (globalMultiStepTR_mono hSub hRun) hSkip
-
-/-- A `False`-rely proof is also a TR-faithful `False`-rely proof because the two interleavings
-agree when no rely steps are available. -/
-theorem globalValid_false_to_TR_false {Ipre Ipost : Assertion}
-    {program : Semantics.Program} {G : Guarantee}
-    (hValid : GlobalValid Ipre (fun _ _ => False) program G Ipost) :
-    GlobalValidTR Ipre (fun _ _ => False) program G Ipost := by
-  intro db hDb
-  rcases hValid db hDb with ⟨hPost, hTxn⟩
-  refine ⟨?_, ?_⟩
-  · intro finalCfg hRun hSkip
-    exact hPost _ (globalMultiStep_false_iff_TR_false.mpr hRun) hSkip
-  · intro midCfg nextProgram nextDb hRun hStep hSkip
-    exact hTxn _ _ _ (globalMultiStep_false_iff_TR_false.mpr hRun) hStep hSkip
-
-/-- TR validity is insensitive to silent rely steps that leave the global database unchanged. -/
-theorem globalValidTR_of_silentRely {Ipre Ipost : Assertion} {R : Rely}
-    {program : Semantics.Program} {G : Guarantee}
-    (hValid : GlobalValidTR Ipre (fun _ _ => False) program G Ipost)
-    (hSilent : ∀ db db', R db db' → db' = db) :
-    GlobalValidTR Ipre R program G Ipost := by
-  intro db hDb
-  rcases hValid db hDb with ⟨hPost, hTxn⟩
-  refine ⟨?_, ?_⟩
-  · intro finalCfg hRun hSkip
-    exact hPost _ (globalMultiStepTR_of_silentRely hSilent hRun) hSkip
-  · intro midCfg nextProgram nextDb hRun hStep hSkip
-    exact hTxn _ _ _ (globalMultiStepTR_of_silentRely hSilent hRun) hStep hSkip
 
 theorem localInterleavedStep_of_localStep (R : LocalRely) (txnId : TxnId)
     {cmd cmd' : Command ι Database} {localDb localDb' visibleDb : Database}
@@ -507,22 +267,48 @@ theorem step_txn_inv {txnId : TxnId} {isolation : IsolationSpec Database}
       exact ⟨rfl, rfl⟩
 
 theorem step_txnRuntime_inv {txnId : TxnId} {isolation : IsolationSpec Database}
-    {localDb visibleDb : Database} {currentBody program' : Semantics.Program} {db' : Database}
+    {localDb snapshot currentDb : Database} {currentBody program' : Semantics.Program} {db' : Database}
     (h :
-      Semantics.Step (.txnRuntime txnId isolation localDb visibleDb currentBody) visibleDb program' db') :
+      Semantics.Step (.txnRuntime txnId isolation localDb snapshot currentBody) currentDb program' db') :
     (∃ body' localDb',
         currentBody ≠ (Command.skip : Semantics.Program) ∧
-        program' = (.txnRuntime txnId isolation localDb' visibleDb body' : Semantics.Program) ∧
-        db' = visibleDb ∧
-        Semantics.LocalStep visibleDb txnId currentBody localDb body' localDb') ∨
+        program' = (.txnRuntime txnId isolation localDb' currentDb body' : Semantics.Program) ∧
+        db' = currentDb ∧
+        Semantics.LocalStep currentDb txnId currentBody localDb body' localDb') ∨
       (currentBody = (Command.skip : Semantics.Program) ∧
         program' = (Command.skip : Semantics.Program) ∧
-        db' = Database.flush localDb visibleDb ∧
-        isolation.commit localDb visibleDb visibleDb) := by
+        db' = Database.flush localDb currentDb ∧
+        isolation.commit localDb snapshot currentDb) := by
   cases h with
   | txnExec hExec hLocal =>
       left
-      refine ⟨_, _, ?_, rfl, rfl, hLocal⟩
+      refine ⟨_, _, ?_, rfl, rfl, ?_⟩
+      · intro hSkip
+        cases hSkip
+        cases hLocal
+      · simpa using hLocal
+  | txnCommit hCommit =>
+      right
+      exact ⟨rfl, rfl, rfl, hCommit⟩
+
+theorem step_txnRuntime_inv_full {txnId : TxnId} {isolation : IsolationSpec Database}
+    {localDb snapshot currentDb : Database} {currentBody program' : Semantics.Program} {db' : Database}
+    (h :
+      Semantics.Step (.txnRuntime txnId isolation localDb snapshot currentBody) currentDb program' db') :
+    (∃ body' localDb',
+        currentBody ≠ (Command.skip : Semantics.Program) ∧
+        program' = (.txnRuntime txnId isolation localDb' currentDb body' : Semantics.Program) ∧
+        db' = currentDb ∧
+        isolation.exec localDb snapshot currentDb ∧
+        Semantics.LocalStep currentDb txnId currentBody localDb body' localDb') ∨
+      (currentBody = (Command.skip : Semantics.Program) ∧
+        program' = (Command.skip : Semantics.Program) ∧
+        db' = Database.flush localDb currentDb ∧
+        isolation.commit localDb snapshot currentDb) := by
+  cases h with
+  | txnExec hExec hLocal =>
+      left
+      refine ⟨_, _, ?_, rfl, rfl, hExec, hLocal⟩
       intro hSkip
       cases hSkip
       cases hLocal
@@ -560,11 +346,11 @@ theorem skipGlobalFwd_preserves (R : Rely) (I : Assertion)
                 | inl hActual =>
                     exact False.elim (no_step_from_program_skip hActual)
                 | inr hRely =>
-                    rcases hRely with ⟨hProgram, hRespect⟩
+                    rcases hRely with ⟨hProgram, hR⟩
                     have hEqProgram : programMid = (Command.skip : Semantics.Program) := by
-                      simpa [refreshVisible] using hProgram
+                      simpa using hProgram
                     have hI'' : I dbMid := by
-                      exact hStable _ _ hI' (by simpa [respectsRely] using hRespect)
+                      exact hStable _ _ hI' hR
                     exact ih hEqProgram hI''
   exact hAux hPath rfl hI
 
@@ -1947,49 +1733,151 @@ theorem localRG_sound {R : LocalRely} {txnId : TxnId}
   | conseq hStable hPre hRG hPost ih =>
       exact localValid_conseq hPre ih hPost
 
+/-- Endpoints relevant to `RG-Txn`: either the transaction has already committed, or it is poised to
+commit from a runtime `skip` state. -/
+def ReadyToFinish : GlobalConfig → Prop
+  | ⟨program, currentDb⟩ =>
+      program = (Command.skip : Semantics.Program) ∨
+        ∃ txnId isolation localDb snapshot,
+          program = (.txnRuntime txnId isolation localDb snapshot (Command.skip : Semantics.Program)
+            : Semantics.Program) ∧
+          isolation.commit localDb snapshot currentDb
+
+theorem execIsolation_of_future_ready {R : Rely} {txnId : TxnId}
+    {isolation : IsolationSpec Database}
+    (hExecStable : stableIsolation R isolation.exec)
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hPath : MultiStepFwd (globalInterleavedStep R) cfg₁ cfg₂) :
+    ∀ localDb snapshot currentDb currentBody,
+      cfg₁ = ⟨(.txnRuntime txnId isolation localDb snapshot currentBody : Semantics.Program), currentDb⟩ →
+      currentBody ≠ (Command.skip : Semantics.Program) →
+      ReadyToFinish cfg₂ →
+      isolation.exec localDb snapshot currentDb := by
+  intro localDb snapshot currentDb currentBody hStart hNotSkip hReady
+  induction hPath generalizing localDb snapshot currentDb currentBody with
+  | refl =>
+      cases hStart
+      rcases hReady with hSkip | ⟨_txnId', _isolation', localDb', snapshot', hProgram, _⟩
+      · cases hSkip
+      · have hBodySkip : currentBody = (Command.skip : Semantics.Program) := by
+          injection hProgram
+        exact False.elim (hNotSkip hBodySkip)
+  | @cons cfgStart cfgMid cfgFinal hStep hRest ih =>
+      cases hStart
+      cases hStep with
+      | inl hActual =>
+          rcases step_txnRuntime_inv_full (by simpa using hActual) with
+            ⟨_, _, _, _, _, hExec, _⟩ | hCommit
+          ·
+              exact hExec
+          ·
+              exact False.elim (hNotSkip hCommit.1)
+      | inr hRely =>
+          rcases hRely with ⟨hProgram, hR⟩
+          cases cfgMid with
+          | mk programMid dbMid =>
+              have hMidProgram :
+                  programMid =
+                    (.txnRuntime txnId isolation localDb snapshot currentBody : Semantics.Program) := by
+                simpa using hProgram
+              subst hMidProgram
+              have hMid :
+                  isolation.exec localDb snapshot dbMid := by
+                exact ih localDb snapshot dbMid currentBody rfl hNotSkip hReady
+              exact (hExecStable _ _ _ _ hMid hR).1
+
+theorem commitIsolation_of_future_ready {R : Rely} {txnId : TxnId}
+    {isolation : IsolationSpec Database}
+    (hCommitStable : stableIsolation R isolation.commit)
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hPath : MultiStepFwd (globalInterleavedStep R) cfg₁ cfg₂) :
+    ∀ localDb snapshot currentDb,
+      cfg₁ = ⟨(.txnRuntime txnId isolation localDb snapshot (Command.skip : Semantics.Program)
+        : Semantics.Program), currentDb⟩ →
+      ReadyToFinish cfg₂ →
+      isolation.commit localDb snapshot currentDb := by
+  intro localDb snapshot currentDb hStart hReady
+  induction hPath generalizing localDb snapshot currentDb with
+  | refl =>
+      cases hStart
+      rcases hReady with hSkip | ⟨txnId', isolation', localDb', snapshot', hProgram, hCommit⟩
+      · cases hSkip
+      · injection hProgram with hTxnId hIso hLocal hSnapshot
+        subst hTxnId hIso hLocal hSnapshot
+        simpa using hCommit
+  | @cons cfgStart cfgMid cfgFinal hStep hRest ih =>
+      cases hStart
+      cases hStep with
+      | inl hActual =>
+          rcases step_txnRuntime_inv_full (by simpa using hActual) with
+            ⟨_, _, hNotSkip, _, _, _, _⟩ | hCommit
+          · exact False.elim (hNotSkip rfl)
+          · simpa using hCommit.2.2.2
+      | inr hRely =>
+          rcases hRely with ⟨hProgram, hR⟩
+          cases cfgMid with
+          | mk programMid dbMid =>
+              have hMidProgram :
+                  programMid =
+                    (.txnRuntime txnId isolation localDb snapshot (Command.skip : Semantics.Program)
+                      : Semantics.Program) := by
+                simpa using hProgram
+              subst hMidProgram
+              have hMid :
+                  isolation.commit localDb snapshot dbMid := by
+                exact ih localDb snapshot dbMid rfl hReady
+              exact (hCommitStable _ _ _ _ hMid hR).1
+
 theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
     {I : Assertion} {isolation : IsolationSpec Database} {body : Semantics.Program}
     {P Q : BiAssertion} {G : Guarantee}
     (hStableI : stableAssertion R I)
+    (hExecStable : stableIsolation R isolation.exec)
     (hPre : ∀ localDb visibleDb, P localDb visibleDb ↔ localDb = [] ∧ I visibleDb)
     (hBody : LocalValid (relyMod R isolation.exec) txnId P body Q)
-    (hCommitStable : stableBiAssertion (relyMod R isolation.commit) Q)
+    (hQStable : stableBiAssertion (relyMod R isolation.commit) Q)
+    (hCommitStable : stableIsolation R isolation.commit)
     (hGuarantee : ∀ localDb visibleDb, Q localDb visibleDb → G visibleDb (Database.flush localDb visibleDb))
     (hPreserve : ∀ db db', I db → G db db' → I db')
     {startDb : Database} (hStartI : I startDb) :
     ∀ {cfg₁ cfg₂ : GlobalConfig},
       MultiStepFwd (globalInterleavedStep R) cfg₁ cfg₂ →
-      ∀ localDb visibleDb currentBody,
+      ∀ localDb snapshot currentDb currentBody,
         cfg₁ =
-          ⟨(.txnRuntime txnId isolation localDb visibleDb currentBody : Semantics.Program), visibleDb⟩ →
-        I visibleDb →
+          ⟨(.txnRuntime txnId isolation localDb snapshot currentBody : Semantics.Program), currentDb⟩ →
+        ReadyToFinish cfg₂ →
+        I currentDb →
         (if currentBody = (Command.skip : Semantics.Program) then
-           Q localDb visibleDb
+           Q localDb currentDb
          else
            LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
              ⟨body, [], startDb⟩
-             ⟨currentBody, localDb, visibleDb⟩) →
+             ⟨currentBody, localDb, currentDb⟩) →
         match cfg₂.program with
-        | .txnRuntime _ _ localDb' visibleDb' body' =>
-            cfg₂.globalDb = visibleDb' ∧
-              I visibleDb' ∧
+        | .txnRuntime _ _ localDb' _ body' =>
+            I cfg₂.globalDb ∧
               (if body' = (Command.skip : Semantics.Program) then
-                 Q localDb' visibleDb'
+                 Q localDb' cfg₂.globalDb
                else
                  LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                    ⟨body, [], startDb⟩
-                   ⟨body', localDb', visibleDb'⟩)
+                   ⟨body', localDb', cfg₂.globalDb⟩)
         | .skip => I cfg₂.globalDb
         | _ => False := by
   classical
   intro cfg₁ cfg₂ hPath
   induction hPath with
   | refl =>
-      intro localDb visibleDb currentBody hStart hIvisible hState
+      intro localDb snapshot currentDb currentBody hStart hReady hIcurrent hState
       cases hStart
-      exact ⟨rfl, hIvisible, hState⟩
+      rcases hReady with hSkip | ⟨txnId', isolation', localDb', snapshot', hProgram, _⟩
+      · cases hSkip
+      · have hBodySkip : currentBody = (Command.skip : Semantics.Program) := by
+          injection hProgram
+        subst hBodySkip
+        exact ⟨hIcurrent, by simpa using hState⟩
   | @cons cfgStart cfgMid cfgFinal hStep hRest ih =>
-      intro localDb visibleDb currentBody hStart hIvisible hState
+      intro localDb snapshot currentDb currentBody hStart hReady hIcurrent hState
       cases hStart
       cases hStep with
       | inl hActual =>
@@ -1998,94 +1886,100 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
           · cases cfgMid with
             | mk programMid dbMid =>
                 subst hProgram
-                have hDbMid : dbMid = visibleDb := by
+                have hDbMid : dbMid = currentDb := by
                   simpa using hDbEq
                 subst dbMid
                 have hLocalPath :
                       LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                         ⟨body, [], startDb⟩
-                        ⟨currentBody, localDb, visibleDb⟩ := by
+                        ⟨currentBody, localDb, currentDb⟩ := by
                     simpa [hNotSkip] using hState
                 have hLocalPath' :
                     LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                       ⟨body, [], startDb⟩
-                      ⟨body', localDb', visibleDb⟩ := by
+                      ⟨body', localDb', currentDb⟩ := by
                   exact MultiStep.tail hLocalPath
                     (localInterleavedStep_of_localStep (relyMod R isolation.exec) txnId hLocal)
                 by_cases hNextSkip : body' = (Command.skip : Semantics.Program)
                 · have hStartP : P [] startDb := by
                     exact (hPre [] startDb).2 ⟨rfl, hStartI⟩
                   subst body'
-                  have hQ' : Q localDb' visibleDb := by
+                  have hQ' : Q localDb' currentDb := by
                     exact hBody [] startDb
-                      ⟨(Command.skip : Semantics.Program), localDb', visibleDb⟩
+                      ⟨(Command.skip : Semantics.Program), localDb', currentDb⟩
                       hStartP
                       hLocalPath'
                       rfl
-                  exact ih localDb' visibleDb (Command.skip : Semantics.Program) rfl hIvisible
-                    (by simpa using hQ')
-                · exact ih localDb' visibleDb body' rfl hIvisible
+                  exact ih localDb' currentDb currentDb (Command.skip : Semantics.Program) rfl
+                    hReady hIcurrent (by simpa using hQ')
+                · exact ih localDb' currentDb currentDb body' rfl hReady hIcurrent
                     (by simpa [hNextSkip] using hLocalPath')
-          · rcases hCommit with ⟨hBodySkip, hProgram, hDbEq, hCommitGuard⟩
+          · rcases hCommit with ⟨hBodySkip, hProgram, hDbEq, _hCommitGuard⟩
             cases cfgMid with
             | mk programMid dbMid =>
                 subst hProgram
-                have hDbMid : dbMid = Database.flush localDb visibleDb := by
+                have hDbMid : dbMid = Database.flush localDb currentDb := by
                   simpa using hDbEq
                 subst hDbMid
-                have hQ : Q localDb visibleDb := by
+                have hQ : Q localDb currentDb := by
                   simpa [hBodySkip] using hState
-                have hCommitted : I (Database.flush localDb visibleDb) := by
-                  exact hPreserve _ _ hIvisible (hGuarantee _ _ hQ)
+                have hCommitted : I (Database.flush localDb currentDb) := by
+                  exact hPreserve _ _ hIcurrent (hGuarantee _ _ hQ)
                 rcases skipGlobalFwd_preserves R I hStableI hRest hCommitted with ⟨hFinalSkip, hIFinal⟩
                 simpa [hFinalSkip] using hIFinal
       | inr hRely =>
           cases cfgMid with
           | mk programMid dbMid =>
-              rcases hRely with ⟨hProgram, hRespect⟩
+              rcases hRely with ⟨hProgram, hR⟩
               have hEqProgram :
                   programMid =
-                    (.txnRuntime txnId isolation localDb dbMid currentBody : Semantics.Program) := by
-                simpa [refreshVisible] using hProgram
+                    (.txnRuntime txnId isolation localDb snapshot currentBody : Semantics.Program) := by
+                simpa using hProgram
               subst hEqProgram
-              have hIvisible' : I dbMid := by
-                by_cases hBodySkip : currentBody = (Command.skip : Semantics.Program)
-                · have hRespect' : R visibleDb dbMid ∧ isolation.commit localDb visibleDb dbMid := by
-                    simpa [respectsRely, hBodySkip] using hRespect
-                  exact hStableI _ _ hIvisible hRespect'.1
-                · have hRespect' : R visibleDb dbMid ∧ isolation.exec localDb visibleDb dbMid := by
-                    simpa [respectsRely, hBodySkip] using hRespect
-                  exact hStableI _ _ hIvisible hRespect'.1
+              have hIcurrent' : I dbMid := by
+                exact hStableI _ _ hIcurrent hR
               by_cases hBodySkip : currentBody = (Command.skip : Semantics.Program)
-              · have hQ : Q localDb visibleDb := by
+              · have hQ : Q localDb currentDb := by
                   simpa [hBodySkip] using hState
+                subst hBodySkip
+                have hCommitMid : isolation.commit localDb snapshot dbMid := by
+                  exact commitIsolation_of_future_ready hCommitStable hRest localDb snapshot dbMid rfl hReady
+                have hCommitCurrent : isolation.commit localDb snapshot currentDb := by
+                  exact (hCommitStable _ _ _ _ hCommitMid hR).1
                 have hCommitRely :
-                    relyMod R isolation.commit localDb visibleDb dbMid := by
-                  simpa [relyMod, respectsRely, hBodySkip] using hRespect
+                    relyMod R isolation.commit localDb currentDb dbMid := by
+                  exact ⟨snapshot, hR, hCommitCurrent, hCommitMid⟩
                 have hQ' : Q localDb dbMid := by
-                  exact hCommitStable _ _ _ hQ hCommitRely
-                exact ih localDb dbMid currentBody rfl hIvisible'
-                  (by simpa [hBodySkip] using hQ')
+                  exact hQStable _ _ _ hQ hCommitRely
+                exact ih localDb snapshot dbMid (Command.skip : Semantics.Program) rfl hReady hIcurrent'
+                  (by simpa using hQ')
               · have hLocalPath :
                     LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                       ⟨body, [], startDb⟩
-                      ⟨currentBody, localDb, visibleDb⟩ := by
+                      ⟨currentBody, localDb, currentDb⟩ := by
                   simpa [hBodySkip] using hState
+                have hExecMid : isolation.exec localDb snapshot dbMid := by
+                  exact execIsolation_of_future_ready hExecStable hRest
+                    localDb snapshot dbMid currentBody rfl hBodySkip hReady
+                have hExecCurrent : isolation.exec localDb snapshot currentDb := by
+                  exact (hExecStable _ _ _ _ hExecMid hR).1
                 have hExecRely :
-                    relyMod R isolation.exec localDb visibleDb dbMid := by
-                  simpa [relyMod, respectsRely, hBodySkip] using hRespect
+                    relyMod R isolation.exec localDb currentDb dbMid := by
+                  exact ⟨snapshot, hR, hExecCurrent, hExecMid⟩
                 have hLocalPath' :
                     LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                       ⟨body, [], startDb⟩
                       ⟨currentBody, localDb, dbMid⟩ := by
                   exact MultiStep.tail hLocalPath (Or.inr ⟨rfl, rfl, hBodySkip, hExecRely⟩)
-                exact ih localDb dbMid currentBody rfl hIvisible'
+                exact ih localDb snapshot dbMid currentBody rfl hReady hIcurrent'
                   (by simpa [hBodySkip] using hLocalPath')
 
 theorem txnProgramFwd_sound {R : Rely} {txnId : TxnId}
     {I : Assertion} {isolation : IsolationSpec Database} {body : Semantics.Program}
     {P Q : BiAssertion} {G : Guarantee} :
     stableAssertion R I →
+    stableIsolation R isolation.exec →
+    stableIsolation R isolation.commit →
     (∀ localDb visibleDb, P localDb visibleDb ↔ localDb = [] ∧ I visibleDb) →
     LocalValid (relyMod R isolation.exec) txnId P body Q →
     stableBiAssertion (relyMod R isolation.commit) Q →
@@ -2095,23 +1989,25 @@ theorem txnProgramFwd_sound {R : Rely} {txnId : TxnId}
       MultiStepFwd (globalInterleavedStep R) cfg₁ cfg₂ →
       ∀ currentDb,
         cfg₁ = ⟨(.txn txnId isolation body : Semantics.Program), currentDb⟩ →
+        ReadyToFinish cfg₂ →
         I currentDb →
         match cfg₂.program with
         | .txn _ _ _ => I cfg₂.globalDb
-        | .txnRuntime _ _ localDb visibleDb body' =>
-            cfg₂.globalDb = visibleDb ∧
-              I visibleDb ∧
-              (body' = (Command.skip : Semantics.Program) → Q localDb visibleDb)
+        | .txnRuntime _ _ localDb _ body' =>
+            I cfg₂.globalDb ∧
+              (body' = (Command.skip : Semantics.Program) → Q localDb cfg₂.globalDb)
         | .skip => I cfg₂.globalDb
         | _ => False := by
-  intro hStableI hPre hBody hCommitStable hGuarantee hPreserve cfg₁ cfg₂ hPath
+  intro hStableI hExecStable hCommitIsoStable hPre hBody hCommitStable hGuarantee hPreserve cfg₁ cfg₂ hPath
   induction hPath with
   | refl =>
-      intro currentDb hStart hI
+      intro currentDb hStart hReady hI
       cases hStart
-      simpa using hI
+      have : False := by
+        simpa [ReadyToFinish] using hReady
+      exact False.elim this
   | @cons cfgStart cfgMid cfgFinal hStep hRest ih =>
-      intro currentDb hStart hI
+      intro currentDb hStart hReady hI
       cases hStart
       cases hStep with
       | inl hActual =>
@@ -2133,12 +2029,14 @@ theorem txnProgramFwd_sound {R : Rely} {txnId : TxnId}
                     MultiStep.refl
                     rfl
                 have hRun :=
-                  txnRuntimeFwd_sound hStableI hPre hBody hCommitStable hGuarantee hPreserve hI
-                    hRest [] currentDb (Command.skip : Semantics.Program) rfl hI (by simpa using hQ)
+                  txnRuntimeFwd_sound hStableI hExecStable hPre hBody hCommitStable
+                    hCommitIsoStable hGuarantee hPreserve hI
+                    hRest [] currentDb currentDb (Command.skip : Semantics.Program) rfl hReady hI
+                    (by simpa using hQ)
                 cases hFinalProgram : cfgFinal.program with
-                | txnRuntime txnId' isolation' localDb visibleDb body' =>
-                    rcases (by simpa [hFinalProgram] using hRun) with ⟨hDbEq', hIvis, hState'⟩
-                    refine ⟨hDbEq', hIvis, ?_⟩
+                | txnRuntime txnId' isolation' localDb snapshot body' =>
+                    rcases (by simpa [hFinalProgram] using hRun) with ⟨hIvis, hState'⟩
+                    refine ⟨hIvis, ?_⟩
                     intro hSkipFinal
                     simpa [hSkipFinal] using hState'
                 | txn txnId' isolation' body' =>
@@ -2166,16 +2064,17 @@ theorem txnProgramFwd_sound {R : Rely} {txnId : TxnId}
                 | par left right =>
                     simpa [hFinalProgram] using hRun
               · have hRun :=
-                  txnRuntimeFwd_sound hStableI hPre hBody hCommitStable hGuarantee hPreserve hI
-                    hRest [] currentDb body rfl hI
+                  txnRuntimeFwd_sound hStableI hExecStable hPre hBody hCommitStable
+                    hCommitIsoStable hGuarantee hPreserve hI
+                    hRest [] currentDb currentDb body rfl hReady hI
                     (by simpa [hBodySkip] using (MultiStep.refl :
                       LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                         ⟨body, [], currentDb⟩
                         ⟨body, [], currentDb⟩))
                 cases hFinalProgram : cfgFinal.program with
-                | txnRuntime txnId' isolation' localDb visibleDb body' =>
-                    rcases (by simpa [hFinalProgram] using hRun) with ⟨hDbEq', hIvis, hState'⟩
-                    refine ⟨hDbEq', hIvis, ?_⟩
+                | txnRuntime txnId' isolation' localDb snapshot body' =>
+                    rcases (by simpa [hFinalProgram] using hRun) with ⟨hIvis, hState'⟩
+                    refine ⟨hIvis, ?_⟩
                     intro hSkipFinal
                     simpa [hSkipFinal] using hState'
                 | txn txnId' isolation' body' =>
@@ -2205,38 +2104,126 @@ theorem txnProgramFwd_sound {R : Rely} {txnId : TxnId}
       | inr hRely =>
           cases cfgMid with
           | mk programMid dbMid =>
-              rcases hRely with ⟨hProgram, hRespect⟩
+              rcases hRely with ⟨hProgram, hR⟩
               have hEqProgram : programMid = (.txn txnId isolation body : Semantics.Program) := by
-                simpa [refreshVisible] using hProgram
+                simpa using hProgram
               subst hEqProgram
-              have hR : R currentDb dbMid := by
-                simpa [respectsRely] using hRespect
               have hI' : I dbMid := by
                 exact hStableI _ _ hI hR
-              exact ih dbMid rfl hI'
+              exact ih dbMid rfl hReady hI'
 
 theorem txnGlobalValid_of_localValid {R : Rely} {I : Assertion} {txnId : TxnId}
     {isolation : IsolationSpec Database} {body : Semantics.Program}
     {P Q : BiAssertion} {G : Guarantee} :
     stableAssertion R I →
+    stableIsolation R isolation.exec →
+    stableIsolation R isolation.commit →
     (∀ localDb visibleDb, P localDb visibleDb ↔ localDb = [] ∧ I visibleDb) →
     LocalValid (relyMod R isolation.exec) txnId P body Q →
     stableBiAssertion (relyMod R isolation.commit) Q →
     (∀ localDb visibleDb, Q localDb visibleDb → G visibleDb (Database.flush localDb visibleDb)) →
     (∀ db db', I db → G db db' → I db') →
     GlobalValid I R (.txn txnId isolation body) G I := by
-  intro hStableI hPre hLocal hQstable hGuarantee hPreserve
+  intro hStableI hExecStable hCommitIsoStable hPre hLocal hQstable hGuarantee hPreserve
   intro db hI
   refine ⟨?_, ?_⟩
   · intro finalCfg hMulti hSkip
     have hReach :=
-      txnProgramFwd_sound hStableI hPre hLocal hQstable hGuarantee hPreserve
-        (MultiStep.toFwd hMulti) db rfl hI
+      txnProgramFwd_sound hStableI hExecStable hCommitIsoStable hPre hLocal hQstable
+        hGuarantee hPreserve (MultiStep.toFwd hMulti) db rfl (Or.inl hSkip) hI
     simpa [hSkip] using hReach
   · intro midCfg nextProgram nextDb hMulti hStep hNextSkip
+    have hReadyMid : ReadyToFinish midCfg := by
+      cases hMidProgram : midCfg.program with
+      | txn txnId' isolation' body' =>
+          have hStep' :
+              Semantics.Step (.txn txnId' isolation' body') midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep' with
+          | txnStart =>
+              cases hNextSkip
+      | txnRuntime txnId' isolation' localDb snapshot currentBody =>
+          have hStep' :
+              Semantics.Step
+                (.txnRuntime txnId' isolation' localDb snapshot currentBody)
+                midCfg.globalDb
+                nextProgram
+                nextDb := by
+            simpa [hMidProgram] using hStep
+          rcases step_txnRuntime_inv hStep' with
+            _hExec | hCommit
+          · cases hNextSkip
+            rcases _hExec with ⟨body', localDb', _hNotSkip, hProgram, _hDbEq, _hLocal⟩
+            cases hProgram
+          · rcases hCommit with ⟨hBodySkip, hProgram, _hDbEq, hCommitGuard⟩
+            exact Or.inr ⟨txnId', isolation', localDb, snapshot,
+              by simpa [hMidProgram, hBodySkip], hCommitGuard⟩
+      | skip =>
+          have hStep' :
+              Semantics.Step (Command.skip : Semantics.Program) midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          exact False.elim (no_step_from_program_skip hStep')
+      | letE x expr body' =>
+          have hStep' :
+              Semantics.Step (.letE x expr body') midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | ite cond thenBranch elseBranch =>
+          have hStep' :
+              Semantics.Step (.ite cond thenBranch elseBranch) midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | seq left right =>
+          have hStep' :
+              Semantics.Step (.seq left right) midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | insert expr =>
+          have hStep' :
+              Semantics.Step (.insert expr) midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | delete source predicate =>
+          have hStep' :
+              Semantics.Step (.delete source predicate) midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | select binder source predicate body' =>
+          have hStep' :
+              Semantics.Step (.select binder source predicate body') midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | update source updateExpr predicate =>
+          have hStep' :
+              Semantics.Step (.update source updateExpr predicate) midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | foreach source doneVar elemVar body' =>
+          have hStep' :
+              Semantics.Step (.foreach source doneVar elemVar body') midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | foreachRuntime done remaining doneVar elemVar body' =>
+          have hStep' :
+              Semantics.Step
+                (.foreachRuntime done remaining doneVar elemVar body')
+                midCfg.globalDb
+                nextProgram
+                nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep'
+      | par left right =>
+          have hStep' :
+              Semantics.Step (.par left right) midCfg.globalDb nextProgram nextDb := by
+            simpa [hMidProgram] using hStep
+          cases hStep' with
+          | parLeft hLeft =>
+              cases hNextSkip
+          | parRight hRight =>
+              cases hNextSkip
     have hReach :=
-      txnProgramFwd_sound hStableI hPre hLocal hQstable hGuarantee hPreserve
-        (MultiStep.toFwd hMulti) db rfl hI
+      txnProgramFwd_sound hStableI hExecStable hCommitIsoStable hPre hLocal hQstable
+        hGuarantee hPreserve (MultiStep.toFwd hMulti) db rfl hReadyMid hI
     cases hMidProgram : midCfg.program with
     | txn txnId' isolation' body' =>
         have hStep' :
@@ -2245,22 +2232,22 @@ theorem txnGlobalValid_of_localValid {R : Rely} {I : Assertion} {txnId : TxnId}
         cases hStep' with
         | txnStart =>
             cases hNextSkip
-    | txnRuntime txnId' isolation' localDb visibleDb currentBody =>
-        rcases (by simpa [hMidProgram] using hReach) with ⟨hDbEq, _hIvisible, hState⟩
+    | txnRuntime txnId' isolation' localDb snapshot currentBody =>
+        rcases (by simpa [hMidProgram] using hReach) with ⟨_hIvisible, hState⟩
         have hStep' :
             Semantics.Step
-              (.txnRuntime txnId' isolation' localDb visibleDb currentBody)
-              visibleDb
+              (.txnRuntime txnId' isolation' localDb snapshot currentBody)
+              midCfg.globalDb
               nextProgram
               nextDb := by
-          simpa [hMidProgram, hDbEq] using hStep
+          simpa [hMidProgram] using hStep
         rcases step_txnRuntime_inv hStep' with
           ⟨body', localDb', _hNotSkip, hProgram, hDbEq', _hLocal⟩ | hCommit
         · cases hNextSkip
           cases hProgram
         · rcases hCommit with ⟨hBodySkip, hProgram, hDbEq', _hCommitGuard⟩
           have hQ := hState hBodySkip
-          simpa [hDbEq, hDbEq'] using hGuarantee localDb visibleDb hQ
+          simpa [hDbEq'] using hGuarantee localDb midCfg.globalDb hQ
     | skip =>
         have hStep' :
             Semantics.Step (Command.skip : Semantics.Program) midCfg.globalDb nextProgram nextDb := by
@@ -2313,86 +2300,8 @@ theorem globalRG_sound {R : Rely} {I : Assertion} {program : Semantics.Program}
     GlobalValid I R program G Ipost := by
   induction h with
   | txn hStableI hExecStable hCommitStable hPre hLocal hQstable hGuarantee hPreserve =>
-      intro db hI
-      refine ⟨?_, ?_⟩
-      · intro finalCfg hMulti hSkip
-        have hReach :=
-          txnProgramFwd_sound hStableI hPre (localRG_sound hLocal) hQstable hGuarantee hPreserve
-            (MultiStep.toFwd hMulti) db rfl hI
-        simpa [hSkip] using hReach
-      · intro midCfg nextProgram nextDb hMulti hStep hNextSkip
-        have hReach :=
-          txnProgramFwd_sound hStableI hPre (localRG_sound hLocal) hQstable hGuarantee hPreserve
-            (MultiStep.toFwd hMulti) db rfl hI
-        cases hMidProgram : midCfg.program with
-        | txn txnId' isolation' body' =>
-            have hStep' :
-                Semantics.Step (.txn txnId' isolation' body') midCfg.globalDb nextProgram nextDb := by
-              simpa [hMidProgram] using hStep
-            cases hStep' with
-            | txnStart =>
-                cases hNextSkip
-        | txnRuntime txnId' isolation' localDb visibleDb currentBody =>
-            rcases (by simpa [hMidProgram] using hReach) with ⟨hDbEq, _hIvisible, hState⟩
-            have hStep' :
-                Semantics.Step
-                  (.txnRuntime txnId' isolation' localDb visibleDb currentBody)
-                  visibleDb
-                  nextProgram
-                  nextDb := by
-              simpa [hMidProgram, hDbEq] using hStep
-            rcases step_txnRuntime_inv hStep' with
-              ⟨body', localDb', _hNotSkip, hProgram, hDbEq', _hLocal⟩ | hCommit
-            · cases hNextSkip
-              cases hProgram
-            · rcases hCommit with ⟨hBodySkip, hProgram, hDbEq', _hCommitGuard⟩
-              have hQ := hState hBodySkip
-              simpa [hDbEq, hDbEq'] using hGuarantee localDb visibleDb hQ
-        | skip =>
-            have hStep' :
-                Semantics.Step (Command.skip : Semantics.Program) midCfg.globalDb nextProgram nextDb := by
-              simpa [hMidProgram] using hStep
-            exact False.elim (no_step_from_program_skip hStep')
-        | letE x expr body' =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | ite cond thenBranch elseBranch =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | seq left right =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | insert expr =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | delete source predicate =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | select binder source predicate body' =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | update source updateExpr predicate =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | foreach source doneVar elemVar body' =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | foreachRuntime done remaining doneVar elemVar body' =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
-        | par left right =>
-            have hFalse : False := by
-              simpa [hMidProgram] using hReach
-            exact False.elim hFalse
+      exact txnGlobalValid_of_localValid hStableI hExecStable hCommitStable hPre
+        (localRG_sound hLocal) hQstable hGuarantee hPreserve
   | conseq hRG ih hPre hStableI' hG hPreserve =>
       exact globalValid_conseq hPreserve ih hStableI'
 
