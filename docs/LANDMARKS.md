@@ -185,10 +185,24 @@ constructor が proof rule です。`letE`, `ite`, `seq`, `select`, `insert`, `d
 top-level proof system です。
 
 読み方:
-主な constructor は `txn` と `conseq` です。
+- `txn`
+  単一 transaction の規則
+- `par`
+  標準的な RG 並列合成規則
+- `conseq`
+  consequence
 
 本質:
-transaction-local proof と top-level invariant / guarantee をつなぐ場所です。一般の `par` rule はまだここにはありません。
+transaction-local proof と top-level invariant / guarantee をつなぐ場所です。`par` は
+
+- 左は `R ∨ Gright` の下で正しい
+- 右は `R ∨ Gleft` の下で正しい
+
+なら
+
+- `left || right` は `R` の下で正しい
+
+という、論文の RG 合成規則そのものです。
 
 ## 12. `localRG_sound`
 [localRG_sound](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Logic.lean)
@@ -224,7 +238,7 @@ GlobalRG ... I program G Ipost → GlobalValid ... I program G Ipost
 Theorem 4.3 の global 側です。
 
 証明方針:
-芯は `txnRuntimeFwd_sound`, `txnProgramFwd_sound`, `txnGlobalValid_of_localValid` にあります。global execution を local proof に読み替えて closure しています。
+芯は `txnRuntimeFwd_sound`, `txnProgramFwd_sound`, `txnGlobalValid_of_localValid` にあります。global execution を local proof に読み替えて closure しています。`par` case は `globalValid_par` を使って、左右の実行を「相手側 guarantee を rely に足した run」として射影する形です。
 
 ## 14. `SetExpr`
 [SetExpr](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/SetLanguage.lean)

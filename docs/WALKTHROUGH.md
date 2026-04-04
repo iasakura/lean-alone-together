@@ -123,6 +123,8 @@ Sec. 4 の中心です。最初に見るべきものは:
 
 です。
 
+`GlobalRG` では `txn` の次に `par` を見るのが重要です。ここが論文 Appendix B の並列合成規則に対応します。対応する意味論側の主定理は `globalValid_par` です。
+
 ### `SetLanguage.lean`
 
 Fig. 7 に対応する集合言語 `S` です。最初に見るべきものは:
@@ -166,12 +168,10 @@ solver までつながる完成版ではなく、symbolic postcondition を firs
 
 - `StateSpec`
 - `HandlerRefines`
-- `ProgramDone`
-- `TxnCommitStep`
 - `ParallelValid`
 - `txnParallelValid_of_handlerRefines`
 
-いまの server 層は、まず単一 transaction を server-style spec に持ち上げるところまでを正しく保っています。一般の `par` proof rule はここにはまだ入っていません。
+`ProgramDone` / `TxnCommitStep` 自体は `Logic.lean` 側の canonical な定義を使います。`Server.lean` は `GlobalRG.par` や `GlobalValid` を request/server 仕様として読む薄い wrapper です。
 
 ### `Examples.lean`
 
@@ -225,9 +225,10 @@ solver までつながる完成版ではなく、symbolic postcondition を firs
 1. `Logic.localRG_sound`
 2. `Logic.globalRG_sound`
 3. `Logic.txnGlobalValid_of_localValid`
-4. `Transformer.vcg_sound`
-5. `Transformer.vcg_sound_false`
-6. `Server.txnParallelValid_of_handlerRefines`
+4. `Logic.globalValid_par`
+5. `Transformer.vcg_sound`
+6. `Transformer.vcg_sound_false`
+7. `Server.txnParallelValid_of_handlerRefines`
 
 ## 迷ったときの最短ルート
 

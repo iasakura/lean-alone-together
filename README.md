@@ -26,6 +26,7 @@
   - local/global judgment の意味論
   - local/global rely-guarantee rule
   - soundness theorem
+  - canonical な `par` 合成規則 `GlobalRG.par`
 - `DbAppProgramLogic/SetLanguage.lean`
   - Fig. 7 に対応する集合言語 `S` の構文
   - `S` の denotation
@@ -40,9 +41,10 @@
   - `select`, `foreach` を含む full body encoder とその soundness
 - `DbAppProgramLogic/Server.lean`
   - handler-level refinement の別名 `HandlerRefines`
-  - parallel / server 実行用の `ProgramDone`, `TxnCommitStep`, `ParallelValid`
+  - `Logic` の `ProgramDone`, `TxnCommitStep` を使う server-level wrapper
+  - parallel / server 実行用の `ParallelValid`
   - `StateSpec`, `RequestSpec`, `CommitSequence`, `CommitLog`
-  - 単一 transaction を server-level spec へ持ち上げる補題
+  - `GlobalRG.par` / `GlobalValid` を request/server 仕様へ読む補題
 - `DbAppProgramLogic/Examples.lean`
   - 現状の基盤を使った小さな検証例
 
@@ -64,7 +66,7 @@
 | `Iww` | `Semantics.lean` の `Database.writeWriteConflictFree` | write-write conflict を防ぐ commit 側条件です |
 | `Iss` | `Semantics.lean` の `IsolationSpec.snapshot` | transaction が snapshot 上で動くことを表す generic な仕様です |
 | snapshot isolation 的な組み合わせ | `Semantics.lean` の `Database.snapshotIsolation` | snapshot 実行 + write-write conflict 回避です |
-| Fig. 6 の local/global RG judgment | `Logic.lean` の `LocalRG`, `GlobalRG` | 論文の proof rule に対応します |
+| Fig. 6 / Appendix B の local/global RG judgment | `Logic.lean` の `LocalRG`, `GlobalRG` | `GlobalRG.par` も含めて論文の proof rule に対応します |
 | RG judgment の意味論 | `Logic.lean` の `LocalValid`, `GlobalValid`, `txnGuaranteed` | rule が何を意味するかを与える側です |
 | local/global interleaving | `Logic.lean` の `localInterleavedStep`, `globalInterleavedStep` | 実際の machine step と interference step を合成しています |
 | Sec. 4 の stability | `Logic.lean` の `stableAssertion`, `stableBiAssertion`, `stableIsolation`, `relyMod` | 論文中の stability family に対応します |
@@ -78,7 +80,7 @@
 | Sec. 5.2 に向けた FOL membership 層 | `FirstOrder.lean` の `MembershipFormula`, `inferMembershipFull*` | full 自動化ではないが、transaction body から row-membership を first-order 風に落とす層です |
 | Sec. 5 の transaction-level bridge | `Logic.lean` の `txnGlobalValid_of_localValid` と `Transformer.lean` の `vcg_sound`, `vcg_sound_false` | 推論した effect を `GlobalValid` に戻します |
 | 実アプリ向けの handler spec 層 | `Server.lean` の `HandlerRefines`, `TxnIndexedRequestSpec`, `RequestSpec.hideTxnIds` | `GlobalValid` を handler/request 側で読みやすく包む追加層です |
-| parallel / server の quiescent semantics | `Server.lean` の `ProgramDone`, `TxnCommitStep`, `ParallelValid` | 論文本体にはない追加層で、API サーバーのような並列 handler 群を扱うためのものです |
+| parallel / server の quiescent semantics | `Logic.lean` の `ProgramDone`, `TxnCommitStep` と `Server.lean` の `ParallelValid` | 論文本体の `par` 規則の上に、API サーバーのような並列 handler 群を読むための追加層です |
 | 検証例 | `Examples.lean` の `zeroBalanceInsert_valid`, `zeroBalanceTxn_parallelValid`, `addInterest*` | transaction 単体、最小 server wrapper、symbolic/FOL の小例があります |
 
 ## Lean 側でどうエンコードしたか

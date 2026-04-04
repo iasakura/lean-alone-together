@@ -34,6 +34,66 @@ noncomputable local instance : DecidableEq Semantics.Program := by
   classical
   infer_instance
 
+/-- Quiescent top-level programs: every parallel branch has terminated. -/
+inductive ProgramDone : Semantics.Program → Prop where
+  | skip :
+      ProgramDone (Command.skip : Semantics.Program)
+  | par {left right : Semantics.Program} :
+      ProgramDone left →
+      ProgramDone right →
+      ProgramDone (.par left right : Semantics.Program)
+
+/-- Commit events lifted through nested `par` structure. These are the semantically relevant
+events that contribute to a program's guarantee relation. -/
+inductive TxnCommitStep :
+    TxnId → Semantics.Program → Database → Semantics.Program → Database → Prop where
+  | root {txnId : TxnId} {isolation : IsolationSpec Database}
+      {localDb snapshot currentDb : Database} :
+      isolation.commit localDb snapshot currentDb →
+      TxnCommitStep
+        txnId
+        (.txnRuntime txnId isolation localDb snapshot (Command.skip : Semantics.Program))
+        currentDb
+        (Command.skip : Semantics.Program)
+        (Database.flush localDb currentDb)
+  | parLeft {txnId : TxnId} {left left' right : Semantics.Program}
+      {db db' : Database} :
+      TxnCommitStep txnId left db left' db' →
+      TxnCommitStep txnId (.par left right) db (.par left' right) db'
+  | parRight {txnId : TxnId} {left right right' : Semantics.Program}
+      {db db' : Database} :
+      TxnCommitStep txnId right db right' db' →
+      TxnCommitStep txnId (.par left right) db (.par left right') db'
+
+theorem TxnCommitStep.step {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (h : TxnCommitStep txnId program db program' db') :
+    Semantics.Step program db program' db' := by
+  induction h with
+  | root hCommit =>
+      exact Semantics.Step.txnCommit hCommit
+  | parLeft hInner ih =>
+      exact Semantics.Step.parLeft ih
+  | parRight hInner ih =>
+      exact Semantics.Step.parRight ih
+
+/-- Single-transaction programs never contain top-level `par`; they are exactly the shapes
+reachable from one top-level `txn`. -/
+inductive SingleTxnProgram (txnId : TxnId) : Semantics.Program → Prop where
+  | txn {isolation : IsolationSpec Database} {body : Semantics.Program} :
+      SingleTxnProgram txnId (.txn txnId isolation body)
+  | runtime {isolation : IsolationSpec Database}
+      {localDb snapshot : Database} {body : Semantics.Program} :
+      SingleTxnProgram txnId (.txnRuntime txnId isolation localDb snapshot body)
+  | skip :
+      SingleTxnProgram txnId (Command.skip : Semantics.Program)
+
+theorem singleTxn_done_eq_skip {txnId : TxnId} {program : Semantics.Program}
+    (hSingle : SingleTxnProgram txnId program)
+    (hDone : ProgramDone program) :
+    program = (Command.skip : Semantics.Program) := by
+  cases hSingle <;> cases hDone <;> rfl
+
 inductive MultiStep (step : α → α → Prop) : α → α → Prop where
   | refl {cfg} : MultiStep step cfg cfg
   | tail {cfg₁ cfg₂ cfg₃} : MultiStep step cfg₁ cfg₂ → step cfg₂ cfg₃ → MultiStep step cfg₁ cfg₃
@@ -174,10 +234,9 @@ def LocalValid (R : LocalRely) (txnId : TxnId)
 
 /-- Semantic guarantee judgment: every transaction commit performed by `program` satisfies `G`. -/
 def txnGuaranteed (R : Rely) (G : Guarantee) (program : Semantics.Program) (db : Database) : Prop :=
-  ∀ midCfg nextProgram nextDb,
+  ∀ txnId midCfg nextProgram nextDb,
     GlobalMultiStep R ⟨program, db⟩ midCfg →
-    Semantics.Step midCfg.program midCfg.globalDb nextProgram nextDb →
-    nextProgram = (Command.skip : Semantics.Program) →
+    TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb →
     G midCfg.globalDb nextDb
 
 /-- Semantic validity for top-level programs: the program preserves the global assertion and its
@@ -188,7 +247,7 @@ def GlobalValid (Ipre : Assertion) (R : Rely)
     Ipre db →
       (∀ finalCfg,
         GlobalMultiStep R ⟨program, db⟩ finalCfg →
-        finalCfg.program = (Command.skip : Semantics.Program) →
+        ProgramDone finalCfg.program →
         Ipost finalCfg.globalDb) ∧
       txnGuaranteed R G program db
 
@@ -197,8 +256,8 @@ theorem txnGuaranteed_mono {R : Rely} {G G' : Guarantee}
     (hTxn : txnGuaranteed R G program db)
     (hImp : ∀ db db', G db db' → G' db db') :
     txnGuaranteed R G' program db := by
-  intro midCfg nextProgram nextDb hMulti hStep hSkip
-  exact hImp _ _ (hTxn midCfg nextProgram nextDb hMulti hStep hSkip)
+  intro txnId midCfg nextProgram nextDb hMulti hStep
+  exact hImp _ _ (hTxn txnId midCfg nextProgram nextDb hMulti hStep)
 
 theorem globalValid_conseq {Ipre Imid Ipost : Assertion} {R : Rely}
     {program : Semantics.Program} {G G' : Guarantee}
@@ -224,8 +283,8 @@ theorem txnGuaranteed_of_relySubset {R R' : Rely} {G : Guarantee}
     (hTxn : txnGuaranteed R G program db)
     (hSub : ∀ db db', R' db db' → R db db') :
     txnGuaranteed R' G program db := by
-  intro midCfg nextProgram nextDb hMulti hStep hSkip
-  exact hTxn _ _ _ (globalMultiStep_mono hSub hMulti) hStep hSkip
+  intro txnId midCfg nextProgram nextDb hMulti hStep
+  exact hTxn _ _ _ _ (globalMultiStep_mono hSub hMulti) hStep
 
 theorem globalValid_of_relySubset {Ipre Ipost : Assertion} {R R' : Rely}
     {program : Semantics.Program} {G : Guarantee}
@@ -251,6 +310,192 @@ theorem globalInterleavedStep_of_step (R : Rely)
     (h : Semantics.Step program db program' db') :
     globalInterleavedStep R ⟨program, db⟩ ⟨program', db'⟩ := by
   exact Or.inl h
+
+theorem step_sameDb_or_commit
+    {program program' : Semantics.Program} {db db' : Database}
+    (hStep : Semantics.Step program db program' db') :
+    db' = db ∨ ∃ txnId, TxnCommitStep txnId program db program' db' := by
+  induction hStep with
+  | txnStart =>
+      exact Or.inl rfl
+  | txnExec =>
+      exact Or.inl rfl
+  | txnCommit hCommit =>
+      exact Or.inr ⟨_, TxnCommitStep.root hCommit⟩
+  | parLeft hInner ih =>
+      rcases ih with hSame | ⟨txnId, hCommit⟩
+      · exact Or.inl hSame
+      · exact Or.inr ⟨txnId, TxnCommitStep.parLeft hCommit⟩
+  | parRight hInner ih =>
+      rcases ih with hSame | ⟨txnId, hCommit⟩
+      · exact Or.inl hSame
+      · exact Or.inr ⟨txnId, TxnCommitStep.parRight hCommit⟩
+
+theorem step_par_inv
+    {left right program' : Semantics.Program} {db db' : Database}
+    (hStep : Semantics.Step (.par left right) db program' db') :
+    (∃ left', program' = (.par left' right : Semantics.Program) ∧
+        Semantics.Step left db left' db') ∨
+      (∃ right', program' = (.par left right' : Semantics.Program) ∧
+        Semantics.Step right db right' db') := by
+  cases hStep with
+  | parLeft hLeft =>
+      exact Or.inl ⟨_, rfl, hLeft⟩
+  | parRight hRight =>
+      exact Or.inr ⟨_, rfl, hRight⟩
+
+theorem step_preserves_singleTxn {txnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hSingle : SingleTxnProgram txnId program)
+    (hStep : Semantics.Step program db program' db') :
+    SingleTxnProgram txnId program' := by
+  cases hSingle with
+  | txn =>
+      cases hStep with
+      | txnStart =>
+          exact SingleTxnProgram.runtime
+  | runtime =>
+      cases hStep with
+      | txnExec hExec hLocal =>
+          exact SingleTxnProgram.runtime
+      | txnCommit hCommit =>
+          exact SingleTxnProgram.skip
+  | skip =>
+      cases hStep
+
+theorem globalInterleavedStep_preserves_singleTxn {txnId : TxnId} {R : Rely}
+    {cfg cfg' : GlobalConfig}
+    (hStep : globalInterleavedStep R cfg cfg')
+    (hSingle : SingleTxnProgram txnId cfg.program) :
+    SingleTxnProgram txnId cfg'.program := by
+  cases hStep with
+  | inl hActual =>
+      exact step_preserves_singleTxn hSingle hActual
+  | inr hRely =>
+      rcases hRely with ⟨hProgram, _⟩
+      simpa [hProgram] using hSingle
+
+theorem globalMultiStep_preserves_singleTxn {txnId : TxnId} {R : Rely}
+    {cfg₁ cfg₂ : GlobalConfig}
+    (hRun : GlobalMultiStep R cfg₁ cfg₂)
+    (hSingle : SingleTxnProgram txnId cfg₁.program) :
+    SingleTxnProgram txnId cfg₂.program := by
+  induction hRun generalizing txnId with
+  | refl =>
+      exact hSingle
+  | tail hPrev hLast ih =>
+      exact globalInterleavedStep_preserves_singleTxn hLast (ih hSingle)
+
+theorem txnCommitStep_of_singleTxn {txnId actualTxnId : TxnId}
+    {program program' : Semantics.Program} {db db' : Database}
+    (hSingle : SingleTxnProgram txnId program)
+    (hCommit : TxnCommitStep actualTxnId program db program' db') :
+    actualTxnId = txnId ∧ Semantics.Step program db program' db' ∧
+      program' = (Command.skip : Semantics.Program) := by
+  cases hSingle with
+  | txn =>
+      cases hCommit
+  | runtime =>
+      cases hCommit with
+      | root hCommitGuard =>
+          exact ⟨rfl, Semantics.Step.txnCommit hCommitGuard, rfl⟩
+  | skip =>
+      cases hCommit
+
+theorem globalValid_par {I : Assertion} {R : Rely}
+    {left right : Semantics.Program} {Gleft Gright : Guarantee}
+    (hLeft : GlobalValid I (fun db db' => R db db' ∨ Gright db db') left Gleft I)
+    (hRight : GlobalValid I (fun db db' => R db db' ∨ Gleft db db') right Gright I) :
+    GlobalValid I R (.par left right : Semantics.Program) (fun db db' => Gleft db db' ∨ Gright db db') I := by
+  intro db hDb
+  have hLeftPost := (hLeft db hDb).1
+  have hLeftTxn := (hLeft db hDb).2
+  have hRightPost := (hRight db hDb).1
+  have hRightTxn := (hRight db hDb).2
+  have hProject :
+      ∀ {finalCfg : GlobalConfig},
+        GlobalMultiStep R ⟨(.par left right : Semantics.Program), db⟩ finalCfg →
+        ∃ left' right',
+          finalCfg.program = (.par left' right' : Semantics.Program) ∧
+          GlobalMultiStep
+            (fun db db' => R db db' ∨ Gright db db')
+            ⟨left, db⟩
+            ⟨left', finalCfg.globalDb⟩ ∧
+          GlobalMultiStep
+            (fun db db' => R db db' ∨ Gleft db db')
+            ⟨right, db⟩
+            ⟨right', finalCfg.globalDb⟩ := by
+    intro finalCfg hRun
+    induction hRun with
+    | refl =>
+        exact ⟨left, right, rfl, MultiStep.refl, MultiStep.refl⟩
+    | @tail cfg₂ cfg₃ hPrev hLast ih =>
+        rcases ih with ⟨left₂, right₂, hProgram₂, hLeftRun₂, hRightRun₂⟩
+        cases hCfg₂ : cfg₂ with
+        | mk program₂ db₂ =>
+            subst cfg₂
+            have hProgram₂' : program₂ = (.par left₂ right₂ : Semantics.Program) := by
+              simpa using hProgram₂
+            subst program₂
+            cases hCfg₃ : cfg₃ with
+            | mk program₃ db₃ =>
+                subst cfg₃
+                cases hLast with
+                | inl hActual =>
+                    have hActual' :
+                        Semantics.Step
+                          (.par left₂ right₂ : Semantics.Program)
+                          db₂
+                          program₃
+                          db₃ := by
+                      simpa using hActual
+                    rcases step_par_inv hActual' with
+                      ⟨left₃, rfl, hLeftStep⟩ | ⟨right₃, rfl, hRightStep⟩
+                    · rcases step_sameDb_or_commit hLeftStep with hSameDb | ⟨txnId, hCommit⟩
+                      · exact ⟨left₃, right₂, rfl,
+                          MultiStep.tail hLeftRun₂ (globalInterleavedStep_of_step _ hLeftStep),
+                          by simpa [hSameDb] using hRightRun₂⟩
+                      · have hGleft : Gleft db₂ db₃ := by
+                          exact hLeftTxn txnId _ _ _ hLeftRun₂ hCommit
+                        exact ⟨left₃, right₂, rfl,
+                          MultiStep.tail hLeftRun₂ (globalInterleavedStep_of_step _ hLeftStep),
+                          MultiStep.tail hRightRun₂ (Or.inr ⟨rfl, Or.inr hGleft⟩)⟩
+                    · rcases step_sameDb_or_commit hRightStep with hSameDb | ⟨txnId, hCommit⟩
+                      · exact ⟨left₂, right₃, rfl,
+                          by simpa [hSameDb] using hLeftRun₂,
+                          MultiStep.tail hRightRun₂ (globalInterleavedStep_of_step _ hRightStep)⟩
+                      · have hGright : Gright db₂ db₃ := by
+                          exact hRightTxn txnId _ _ _ hRightRun₂ hCommit
+                        exact ⟨left₂, right₃, rfl,
+                          MultiStep.tail hLeftRun₂ (Or.inr ⟨rfl, Or.inr hGright⟩),
+                          MultiStep.tail hRightRun₂ (globalInterleavedStep_of_step _ hRightStep)⟩
+                | inr hRely =>
+                    rcases hRely with ⟨hProgram, hRely⟩
+                    have hProgram₃ : program₃ = (.par left₂ right₂ : Semantics.Program) := by
+                      simpa using hProgram
+                    subst program₃
+                    exact ⟨left₂, right₂, rfl,
+                      MultiStep.tail hLeftRun₂ (Or.inr ⟨rfl, Or.inl hRely⟩),
+                      MultiStep.tail hRightRun₂ (Or.inr ⟨rfl, Or.inl hRely⟩)⟩
+  refine ⟨?_, ?_⟩
+  · intro finalCfg hRun hDone
+    rcases hProject hRun with ⟨left', right', hProgram, hLeftRun, hRightRun⟩
+    have hDone' : ProgramDone (.par left' right' : Semantics.Program) := by
+      simpa [hProgram] using hDone
+    cases hDone' with
+    | par hDoneLeft hDoneRight =>
+        exact hLeftPost ⟨left', finalCfg.globalDb⟩ hLeftRun hDoneLeft
+  · intro txnId midCfg nextProgram nextDb hRun hCommit
+    rcases hProject hRun with ⟨left', right', hProgram, hLeftRun, hRightRun⟩
+    have hCommit' :
+        TxnCommitStep txnId (.par left' right' : Semantics.Program)
+          midCfg.globalDb nextProgram nextDb := by
+      simpa [hProgram] using hCommit
+    cases hCommit' with
+    | parLeft hCommitLeft =>
+        exact Or.inl (hLeftTxn _ ⟨left', midCfg.globalDb⟩ _ _ hLeftRun hCommitLeft)
+    | parRight hCommitRight =>
+        exact Or.inr (hRightTxn _ ⟨right', midCfg.globalDb⟩ _ _ hRightRun hCommitRight)
 
 theorem no_step_from_program_skip
     {db db' : Database} {program' : Semantics.Program} :
@@ -1658,10 +1903,10 @@ inductive LocalRG (R : LocalRely) (txnId : TxnId) :
       (∀ localDb visibleDb, Q' localDb visibleDb → Q localDb visibleDb) →
       LocalRG R txnId P c Q
 
-/-- Inductive top-level proof system. In the current development this handles transactions and
-consequence; server-level parallel reasoning is factored into `Server.lean`. -/
-inductive GlobalRG (R : Rely) :
-    Assertion → Semantics.Program → Guarantee → Assertion → Prop where
+/-- Inductive top-level proof system. The `par` rule is the paper-style RG composition rule over
+the canonical interleaving semantics. -/
+inductive GlobalRG :
+    Rely → Assertion → Semantics.Program → Guarantee → Assertion → Prop where
   | txn {I isolation txnId body P Q G} :
       stableAssertion R I →
       stableIsolation R isolation.exec →
@@ -1672,6 +1917,10 @@ inductive GlobalRG (R : Rely) :
       (∀ localDb visibleDb, Q localDb visibleDb → G visibleDb (Database.flush localDb visibleDb)) →
       (∀ db db', I db → G db db' → I db') →
       GlobalRG R I (.txn txnId isolation body) G I
+  | par {I left right Gleft Gright} :
+      GlobalRG (fun db db' => R db db' ∨ Gright db db') I left Gleft I →
+      GlobalRG (fun db db' => R db db' ∨ Gleft db db') I right Gright I →
+      GlobalRG R I (.par left right) (fun db db' => Gleft db db' ∨ Gright db db') I
   | conseq {I I' program G G'} :
       GlobalRG R I program G I →
       (∀ db, I' db → I db) →
@@ -2127,12 +2376,21 @@ theorem txnGlobalValid_of_localValid {R : Rely} {I : Assertion} {txnId : TxnId}
   intro hStableI hExecStable hCommitIsoStable hPre hLocal hQstable hGuarantee hPreserve
   intro db hI
   refine ⟨?_, ?_⟩
-  · intro finalCfg hMulti hSkip
+  · intro finalCfg hMulti hDone
+    have hSingleFinal :
+        SingleTxnProgram txnId finalCfg.program := by
+      exact globalMultiStep_preserves_singleTxn hMulti SingleTxnProgram.txn
+    have hSkip : finalCfg.program = (Command.skip : Semantics.Program) := by
+      exact singleTxn_done_eq_skip hSingleFinal hDone
     have hReach :=
       txnProgramFwd_sound hStableI hExecStable hCommitIsoStable hPre hLocal hQstable
         hGuarantee hPreserve (MultiStep.toFwd hMulti) db rfl (Or.inl hSkip) hI
     simpa [hSkip] using hReach
-  · intro midCfg nextProgram nextDb hMulti hStep hNextSkip
+  · intro actualTxnId midCfg nextProgram nextDb hMulti hCommit
+    have hSingleMid :
+        SingleTxnProgram txnId midCfg.program := by
+      exact globalMultiStep_preserves_singleTxn hMulti SingleTxnProgram.txn
+    rcases txnCommitStep_of_singleTxn hSingleMid hCommit with ⟨rfl, hStep, hNextSkip⟩
     have hReadyMid : ReadyToFinish midCfg := by
       cases hMidProgram : midCfg.program with
       | txn txnId' isolation' body' =>
@@ -2302,6 +2560,8 @@ theorem globalRG_sound {R : Rely} {I : Assertion} {program : Semantics.Program}
   | txn hStableI hExecStable hCommitStable hPre hLocal hQstable hGuarantee hPreserve =>
       exact txnGlobalValid_of_localValid hStableI hExecStable hCommitStable hPre
         (localRG_sound hLocal) hQstable hGuarantee hPreserve
+  | par hLeft hRight ihLeft ihRight =>
+      exact globalValid_par ihLeft ihRight
   | conseq hRG ih hPre hStableI' hG hPreserve =>
       exact globalValid_conseq hPreserve ih hStableI'
 

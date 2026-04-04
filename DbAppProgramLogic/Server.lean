@@ -52,121 +52,31 @@ namespace Server
 
 open Logic
 
-/-- Quiescent programs: all branches have terminated. -/
-inductive ProgramDone : Semantics.Program → Prop where
-  | skip :
-      ProgramDone (Command.skip : Semantics.Program)
-  | par {left right : Semantics.Program} :
-      ProgramDone left →
-      ProgramDone right →
-      ProgramDone (.par left right : Semantics.Program)
-
-/-- Commit events lifted through nested `par` structure. -/
-inductive TxnCommitStep :
-    TxnId → Semantics.Program → Database → Semantics.Program → Database → Prop where
-  | root {txnId : TxnId} {isolation : IsolationSpec Database}
-      {localDb snapshot currentDb : Database} :
-      isolation.commit localDb snapshot currentDb →
-      TxnCommitStep
-        txnId
-        (.txnRuntime txnId isolation localDb snapshot (Command.skip : Semantics.Program))
-        currentDb
-        (Command.skip : Semantics.Program)
-        (Database.flush localDb currentDb)
-  | parLeft {txnId : TxnId} {left left' right : Semantics.Program}
-      {db db' : Database} :
-      TxnCommitStep txnId left db left' db' →
-      TxnCommitStep txnId (.par left right) db (.par left' right) db'
-  | parRight {txnId : TxnId} {left right right' : Semantics.Program}
-      {db db' : Database} :
-      TxnCommitStep txnId right db right' db' →
-      TxnCommitStep txnId (.par left right) db (.par left right') db'
-
-theorem TxnCommitStep.step {txnId : TxnId}
-    {program program' : Semantics.Program} {db db' : Database}
-    (h : TxnCommitStep txnId program db program' db') :
-    Semantics.Step program db program' db' := by
-  induction h with
-  | root hCommit =>
-      exact Semantics.Step.txnCommit hCommit
-  | parLeft hInner ih =>
-      exact Semantics.Step.parLeft ih
-  | parRight hInner ih =>
-      exact Semantics.Step.parRight ih
-
-/-- Single-transaction programs never contain top-level `par`; they are exactly the shapes reachable
-from one top-level `txn`. -/
-inductive SingleTxnProgram (txnId : TxnId) : Semantics.Program → Prop where
-  | txn {isolation : IsolationSpec Database} {body : Semantics.Program} :
-      SingleTxnProgram txnId (.txn txnId isolation body)
-  | runtime {isolation : IsolationSpec Database}
-      {localDb snapshot : Database} {body : Semantics.Program} :
-      SingleTxnProgram txnId (.txnRuntime txnId isolation localDb snapshot body)
-  | skip :
-      SingleTxnProgram txnId (Command.skip : Semantics.Program)
+/-- Server-level wrappers reuse the canonical quiescence and commit-event notions from `Logic`. -/
+abbrev ProgramDone := Logic.ProgramDone
+abbrev TxnCommitStep := Logic.TxnCommitStep
+abbrev SingleTxnProgram := Logic.SingleTxnProgram
 
 theorem singleTxn_done_eq_skip {txnId : TxnId} {program : Semantics.Program}
     (hSingle : SingleTxnProgram txnId program)
     (hDone : ProgramDone program) :
-    program = (Command.skip : Semantics.Program) := by
-  cases hSingle <;> cases hDone <;> rfl
-
-theorem step_preserves_singleTxn {txnId : TxnId}
-    {program program' : Semantics.Program} {db db' : Database}
-    (hSingle : SingleTxnProgram txnId program)
-    (hStep : Semantics.Step program db program' db') :
-    SingleTxnProgram txnId program' := by
-  cases hSingle with
-  | txn =>
-      cases hStep with
-      | txnStart =>
-          exact SingleTxnProgram.runtime
-  | runtime =>
-      cases hStep with
-      | txnExec hExec hLocal =>
-          exact SingleTxnProgram.runtime
-      | txnCommit hCommit =>
-          exact SingleTxnProgram.skip
-  | skip =>
-      cases hStep
-
-theorem globalInterleavedStep_preserves_singleTxn {txnId : TxnId} {R : Rely}
-    {cfg cfg' : GlobalConfig}
-    (hStep : globalInterleavedStep R cfg cfg')
-    (hSingle : SingleTxnProgram txnId cfg.program) :
-    SingleTxnProgram txnId cfg'.program := by
-  cases hStep with
-  | inl hActual =>
-      exact step_preserves_singleTxn hSingle hActual
-  | inr hRely =>
-      rcases hRely with ⟨hProgram, _hR⟩
-      simpa [hProgram] using hSingle
+    program = (Command.skip : Semantics.Program) :=
+  Logic.singleTxn_done_eq_skip hSingle hDone
 
 theorem globalMultiStep_preserves_singleTxn {txnId : TxnId} {R : Rely}
     {cfg₁ cfg₂ : GlobalConfig}
     (hRun : GlobalMultiStep R cfg₁ cfg₂)
     (hSingle : SingleTxnProgram txnId cfg₁.program) :
-    SingleTxnProgram txnId cfg₂.program := by
-  induction hRun generalizing txnId with
-  | refl =>
-      exact hSingle
-  | tail hPrev hLast ih =>
-      exact globalInterleavedStep_preserves_singleTxn hLast (ih hSingle)
+    SingleTxnProgram txnId cfg₂.program :=
+  Logic.globalMultiStep_preserves_singleTxn hRun hSingle
 
 theorem txnCommitStep_of_singleTxn {txnId actualTxnId : TxnId}
     {program program' : Semantics.Program} {db db' : Database}
     (hSingle : SingleTxnProgram txnId program)
     (hCommit : TxnCommitStep actualTxnId program db program' db') :
-    actualTxnId = txnId ∧ Semantics.Step program db program' db' ∧ program' = (Command.skip : Semantics.Program) := by
-  cases hSingle with
-  | txn =>
-      cases hCommit
-  | runtime =>
-      cases hCommit with
-      | root hCommitGuard =>
-          exact ⟨rfl, Semantics.Step.txnCommit hCommitGuard, rfl⟩
-  | skip =>
-      cases hCommit
+    actualTxnId = txnId ∧ Semantics.Step program db program' db' ∧
+      program' = (Command.skip : Semantics.Program) :=
+  Logic.txnCommitStep_of_singleTxn hSingle hCommit
 
 inductive CommitSequence (specs : TxnId → StateSpec) :
     Database → List TxnId → Database → Prop where
@@ -329,13 +239,13 @@ theorem txnParallelValid_of_handlerRefines_at {Ipre : Assertion} {R : Rely}
     have hSingleFinal :
         SingleTxnProgram txnId finalCfg.program := by
       exact globalMultiStep_preserves_singleTxn hRun SingleTxnProgram.txn
-    exact hPost _ hRun (singleTxn_done_eq_skip hSingleFinal hDone)
+    exact hPost _ hRun hDone
   · intro actualTxnId midCfg nextProgram nextDb hRun hCommit
     have hSingleMid :
         SingleTxnProgram txnId midCfg.program := by
       exact globalMultiStep_preserves_singleTxn hRun SingleTxnProgram.txn
-    rcases txnCommitStep_of_singleTxn hSingleMid hCommit with ⟨rfl, hStep, hSkip⟩
-    exact hSpecAt _ _ (hTxn _ _ _ hRun hStep hSkip)
+    rcases txnCommitStep_of_singleTxn hSingleMid hCommit with ⟨rfl, _hStep, _hSkip⟩
+    exact hSpecAt _ _ (hTxn _ _ _ _ hRun hCommit)
 
 theorem txnParallelValid_of_handlerRefines {Ipre : Assertion} {R : Rely}
     {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
