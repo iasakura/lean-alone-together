@@ -47,6 +47,21 @@ def zeroBalanceApply : StateTransformer :=
 def identityGuarantee : Guarantee :=
   StateSpec.graph id
 
+/-- The concrete VCG record produced for the zero-balance insert transaction.
+
+Reading the fields of this definition is the easiest way to see the proof obligations that the
+current concrete VCG generates:
+
+* `effect` computes the transaction-local write set
+* `guaranteeOk` says flushing that write set satisfies the chosen guarantee
+* `preservesInvariant` says every guaranteed post-state preserves the invariant
+
+The remaining side condition for `vcg_sound_false` is `effectDefinedOn`, proved separately below.
+-/
+def zeroBalanceInfo : Transformer.TransactionVCG :=
+  Transformer.vcg (fun _ _ => False) nonnegativeBalances zeroBalanceGuarantee
+    0 Database.uniqueIds zeroBalanceInsertBody
+
 theorem identityGuarantee_silent :
     ∀ db db' : Database, identityGuarantee db db' → db' = db := by
   intro db db' hId
@@ -85,10 +100,9 @@ theorem zeroBalance_insert_eval :
   native_decide
 
 theorem zeroBalance_effect (visibleDb : Database) :
-    (Transformer.vcg (fun _ _ => False) nonnegativeBalances zeroBalanceGuarantee
-      0 Database.uniqueIds zeroBalanceInsertBody).effect visibleDb = some [zeroBalanceRow] := by
+    zeroBalanceInfo.effect visibleDb = some [zeroBalanceRow] := by
   simp [Transformer.vcg, Transformer.inferEffect, Transformer.evalInEnv,
-    Transformer.instantiateExpr_nil, zeroBalanceInsertBody]
+    Transformer.instantiateExpr_nil, zeroBalanceInsertBody, zeroBalanceInfo]
   rw [zeroBalance_insert_eval]
   rfl
 
@@ -102,29 +116,42 @@ theorem zeroBalance_setEffect (visibleDb : Database) :
 
 theorem zeroBalance_effect_defined :
     Transformer.effectDefinedOn nonnegativeBalances
-      ((Transformer.vcg (fun _ _ => False) nonnegativeBalances zeroBalanceGuarantee
-        0 Database.uniqueIds zeroBalanceInsertBody).effect) := by
+      zeroBalanceInfo.effect := by
   intro visibleDb _hInv
   exact ⟨[zeroBalanceRow], zeroBalance_effect visibleDb⟩
 
 theorem zeroBalance_guarantee_ok :
-    (Transformer.vcg (fun _ _ => False) nonnegativeBalances zeroBalanceGuarantee
-      0 Database.uniqueIds zeroBalanceInsertBody).guaranteeOk := by
+    zeroBalanceInfo.guaranteeOk := by
   intro visibleDb localDb hEffect
   have hConst :
       Transformer.inferEffect 0 [] zeroBalanceInsertBody visibleDb = some [zeroBalanceRow] := by
-    simpa [Transformer.vcg] using zeroBalance_effect visibleDb
+    simpa [zeroBalanceInfo, Transformer.vcg] using zeroBalance_effect visibleDb
   rw [hConst] at hEffect
   injection hEffect with hLocalDb
   subst hLocalDb
   rfl
 
 theorem zeroBalance_preserves_invariant :
-    (Transformer.vcg (fun _ _ => False) nonnegativeBalances zeroBalanceGuarantee
-      0 Database.uniqueIds zeroBalanceInsertBody).preservesInvariant := by
+    zeroBalanceInfo.preservesInvariant := by
   intro db db' hDb hGuarantee
   subst hGuarantee
   exact nonnegativeBalances_flush_zeroBalanceRow hDb
+
+/-- This is the actual VCG-style proof script for the simplest transaction example:
+
+1. define the generated VCG object (`zeroBalanceInfo`)
+2. prove the three obligations that `vcg_sound_false` asks for
+3. discharge soundness in one line
+-/
+theorem zeroBalanceInsert_valid_via_info :
+    Logic.GlobalValid nonnegativeBalances (fun _ _ => False)
+      (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
+      zeroBalanceGuarantee
+      nonnegativeBalances := by
+  exact Transformer.vcg_sound_false 0 Database.uniqueIds zeroBalanceInsertBody
+    zeroBalance_effect_defined
+    zeroBalance_guarantee_ok
+    zeroBalance_preserves_invariant
 
 theorem zeroBalance_effect_any (txnId : TxnId) (visibleDb : Database) :
     (Transformer.vcg (fun _ _ => False) nonnegativeBalances (zeroBalanceGuaranteeOf txnId)
@@ -165,10 +192,7 @@ theorem zeroBalanceInsert_valid :
       (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
       zeroBalanceGuarantee
       nonnegativeBalances := by
-  exact Transformer.vcg_sound_false 0 Database.uniqueIds zeroBalanceInsertBody
-    zeroBalance_effect_defined
-    zeroBalance_guarantee_ok
-    zeroBalance_preserves_invariant
+  exact zeroBalanceInsert_valid_via_info
 
 theorem zeroBalanceInsert_valid_any (txnId : TxnId) :
     Logic.GlobalValid nonnegativeBalances (fun _ _ => False)
