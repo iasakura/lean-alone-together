@@ -182,6 +182,78 @@ theorem txnPair_foldl_of_handlerRefines
     ⟨commits, _hSeq, hFold⟩
   exact ⟨commits, hFold⟩
 
+/-- Request-indexed variant of `txnPair_foldl_of_handlerRefines`. The two verified handlers are
+read back as a fold over committed requests. -/
+theorem txnPair_request_foldl_of_handlerRefines
+    {Req : Type} {I : Assertion} {R : Rely}
+    {leftTxnId rightTxnId : TxnId}
+    {leftIsolation rightIsolation : IsolationSpec Database}
+    {leftBody rightBody : Semantics.Program}
+    {requestOf : TxnId → Req} {fs : RequestTransformer Req}
+    (hLeft :
+      Server.HandlerRefines I
+        (fun db db' => R db db' ∨ StateSpec.graph (fs (requestOf rightTxnId)) db db')
+        (.txn leftTxnId leftIsolation leftBody)
+        (StateSpec.graph (fs (requestOf leftTxnId)))
+        I)
+    (hRight :
+      Server.HandlerRefines I
+        (fun db db' => R db db' ∨ StateSpec.graph (fs (requestOf leftTxnId)) db db')
+        (.txn rightTxnId rightIsolation rightBody)
+        (StateSpec.graph (fs (requestOf rightTxnId)))
+        I)
+    (hSilent : Server.SilentRely R)
+    {db : Database} (hDb : I db)
+    {finalCfg : GlobalConfig}
+    (hRun :
+      Logic.GlobalMultiStep R
+        ⟨(.par
+            (.txn leftTxnId leftIsolation leftBody)
+            (.txn rightTxnId rightIsolation rightBody)
+            : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ events,
+      finalCfg.globalDb =
+        List.foldl
+          (fun current req => fs req current)
+          db
+          (Server.CommitLog.requests requestOf events) := by
+  have hPar :
+      Server.ParallelValid I R
+        (.par
+          (.txn leftTxnId leftIsolation leftBody)
+          (.txn rightTxnId rightIsolation rightBody)
+          : Semantics.Program)
+        (Server.CombinedSpecs
+          (Server.ExactTxnSpec leftTxnId (StateSpec.graph (fs (requestOf leftTxnId))))
+          (Server.ExactTxnSpec rightTxnId (StateSpec.graph (fs (requestOf rightTxnId)))))
+        I := by
+    exact Server.txnPair_parallelValid_of_handlerRefines hLeft hRight
+  have hPar' :
+      Server.ParallelValid I R
+        (.par
+          (.txn leftTxnId leftIsolation leftBody)
+          (.txn rightTxnId rightIsolation rightBody)
+          : Semantics.Program)
+        (RequestSpec.graphAssign requestOf fs)
+        I := by
+    refine Server.parallelValid_of_specSubset hPar ?_
+    intro txnId db db' hSpec
+    rcases hSpec with hLeftSpec | hRightSpec
+    · rcases hLeftSpec with ⟨rfl, hGraph⟩
+      simpa [RequestSpec.graphAssign, RequestSpec.assign, StateSpec.graph]
+        using hGraph
+    · rcases hRightSpec with ⟨rfl, hGraph⟩
+      simpa [RequestSpec.graphAssign, RequestSpec.assign, StateSpec.graph]
+        using hGraph
+  rcases Server.parallelValid_request_foldl_of_graphAssign
+      hPar'
+      hSilent
+      hDb
+      hRun with
+    ⟨events, _hLog, hFold⟩
+  exact ⟨events, hFold⟩
+
 end Refinement
 
 end DbAppProgramLogic
