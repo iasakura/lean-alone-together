@@ -44,8 +44,34 @@ def zeroBalanceGuaranteeOf (txnId : TxnId) : Guarantee :=
 def zeroBalanceApply : StateTransformer :=
   fun db => Database.flush [zeroBalanceRow] db
 
+def zeroBalanceApplyOf (txnId : TxnId) : StateTransformer :=
+  fun db => Database.flush [zeroBalanceRowOf txnId] db
+
 def identityGuarantee : Guarantee :=
   StateSpec.graph id
+
+def zeroBalanceRecordTwo : RecordLit :=
+  ⟨[("id", .int 2), ("bal", .int 0)]⟩
+
+def zeroBalanceRowTwoOf (txnId : TxnId) : Row :=
+  Row.fromInsert txnId zeroBalanceRecordTwo
+
+def zeroBalanceInsertBodyTwo : Semantics.Program :=
+  .insert (.record [("id", Expr.int 2), ("bal", Expr.int 0)])
+
+def zeroBalanceGuaranteeTwoOf (txnId : TxnId) : Guarantee :=
+  fun db db' => db' = Database.flush [zeroBalanceRowTwoOf txnId] db
+
+def zeroBalanceApplyTwoOf (txnId : TxnId) : StateTransformer :=
+  fun db => Database.flush [zeroBalanceRowTwoOf txnId] db
+
+def zeroBalanceParProgram : Semantics.Program :=
+  .par
+    (.txn 10 (IsolationSpec.readCommitted Database) zeroBalanceInsertBody)
+    (.txn 20 (IsolationSpec.readCommitted Database) zeroBalanceInsertBodyTwo)
+
+def zeroBalanceParGuarantee : Guarantee :=
+  fun db db' => zeroBalanceGuaranteeOf 10 db db' ∨ zeroBalanceGuaranteeTwoOf 20 db db'
 
 /-- The concrete VCG record produced for the zero-balance insert transaction.
 
@@ -94,9 +120,25 @@ theorem nonnegativeBalances_flush_zeroBalanceRowOf {txnId : TxnId} {db : Databas
   · subst hInserted
     simp [zeroBalanceRowOf, zeroBalanceRecord, Row.fromInsert, RecordLit.lookup?]
 
+theorem nonnegativeBalances_flush_zeroBalanceRowTwoOf {txnId : TxnId} {db : Database}
+    (hDb : nonnegativeBalances db) :
+    nonnegativeBalances (Database.flush [zeroBalanceRowTwoOf txnId] db) := by
+  intro row hMem
+  unfold Database.flush at hMem
+  simp [zeroBalanceRowTwoOf, zeroBalanceRecordTwo, Row.fromInsert, Database.dom] at hMem
+  rcases hMem with hPreserved | hInserted
+  · exact hDb row hPreserved.1
+  · subst hInserted
+    simp [zeroBalanceRowTwoOf, zeroBalanceRecordTwo, Row.fromInsert, RecordLit.lookup?]
+
 theorem zeroBalance_insert_eval :
     Expr.eval (.record [("id", Expr.int 1), ("bal", Expr.int 0)]) =
       some (.record zeroBalanceRecord) := by
+  native_decide
+
+theorem zeroBalanceTwo_insert_eval :
+    Expr.eval (.record [("id", Expr.int 2), ("bal", Expr.int 0)]) =
+      some (.record zeroBalanceRecordTwo) := by
   native_decide
 
 theorem zeroBalance_effect (visibleDb : Database) :
@@ -187,6 +229,152 @@ theorem zeroBalance_preserves_invariant_any (txnId : TxnId) :
   subst hGuarantee
   exact nonnegativeBalances_flush_zeroBalanceRowOf hDb
 
+theorem nonnegativeBalances_stable_zeroBalanceGuaranteeOf (txnId : TxnId) :
+    Logic.stableAssertion (zeroBalanceGuaranteeOf txnId) nonnegativeBalances := by
+  intro db db' hDb hGuarantee
+  subst hGuarantee
+  exact nonnegativeBalances_flush_zeroBalanceRowOf hDb
+
+theorem nonnegativeBalances_stable_zeroBalanceGuaranteeTwoOf (txnId : TxnId) :
+    Logic.stableAssertion (zeroBalanceGuaranteeTwoOf txnId) nonnegativeBalances := by
+  intro db db' hDb hGuarantee
+  subst hGuarantee
+  exact nonnegativeBalances_flush_zeroBalanceRowTwoOf hDb
+
+theorem nonnegativeBalances_stable_zeroBalanceApplyOf (txnId : TxnId) :
+    Logic.stableAssertion (StateSpec.graph (zeroBalanceApplyOf txnId)) nonnegativeBalances := by
+  intro db db' hDb hGraph
+  subst hGraph
+  exact nonnegativeBalances_flush_zeroBalanceRowOf hDb
+
+theorem nonnegativeBalances_stable_zeroBalanceApplyTwoOf (txnId : TxnId) :
+    Logic.stableAssertion (StateSpec.graph (zeroBalanceApplyTwoOf txnId)) nonnegativeBalances := by
+  intro db db' hDb hGraph
+  subst hGraph
+  exact nonnegativeBalances_flush_zeroBalanceRowTwoOf hDb
+
+theorem zeroBalanceInsert_rg_readCommitted_of_stable {R : Rely} (txnId : TxnId)
+    (hStableI : Logic.stableAssertion R nonnegativeBalances) :
+    Logic.GlobalRG R nonnegativeBalances
+      (.txn txnId (IsolationSpec.readCommitted Database) zeroBalanceInsertBody)
+      (zeroBalanceGuaranteeOf txnId)
+      nonnegativeBalances := by
+  refine Logic.GlobalRG.txn
+    (I := nonnegativeBalances)
+    (isolation := IsolationSpec.readCommitted Database)
+    (txnId := txnId)
+    (body := zeroBalanceInsertBody)
+    (P := fun localDb visible => localDb = [] ∧ nonnegativeBalances visible)
+    (Q := fun localDb visible => localDb = [zeroBalanceRowOf txnId] ∧ nonnegativeBalances visible)
+    (G := zeroBalanceGuaranteeOf txnId)
+    hStableI ?_ ?_ ?_ ?_ ?_ ?_ ?_
+  · intro localDb baseDb midDb finalDb _ _hR
+    constructor <;> simp [IsolationSpec.readCommitted]
+  · intro localDb baseDb midDb finalDb _ _hR
+    constructor <;> simp [IsolationSpec.readCommitted]
+  · intro localDb visibleDb
+    simp
+  · refine Logic.LocalRG.insert ?_ ?_
+    · intro localDb visibleDb visibleDb' hPre hRely
+      rcases hPre with ⟨hLocal, hInv⟩
+      rcases hRely with ⟨_baseDb, hR, _hExecOld, _hExecNew⟩
+      exact ⟨hLocal, hStableI _ _ hInv hR⟩
+    · intro localDb visibleDb record hPre hEval _hFresh
+      rcases hPre with ⟨hLocal, hInv⟩
+      subst hLocal
+      have hValueEq : some (Value.record zeroBalanceRecord) = some (Value.record record) := by
+        rw [← zeroBalance_insert_eval]
+        exact hEval
+      injection hValueEq with hRecordEq
+      cases hRecordEq
+      constructor
+      · simp [zeroBalanceRowOf]
+      · exact hInv
+  · intro localDb visibleDb visibleDb' hPost hRely
+    rcases hPost with ⟨hLocal, hInv⟩
+    rcases hRely with ⟨_baseDb, hR, _hExecOld, _hExecNew⟩
+    exact ⟨hLocal, hStableI _ _ hInv hR⟩
+  · intro localDb visibleDb hPost
+    rcases hPost with ⟨hLocal, _hInv⟩
+    subst hLocal
+    rfl
+  · intro db db' hInv hGuarantee
+    subst hGuarantee
+    exact nonnegativeBalances_flush_zeroBalanceRowOf hInv
+
+theorem zeroBalanceInsertTwo_rg_readCommitted_of_stable {R : Rely} (txnId : TxnId)
+    (hStableI : Logic.stableAssertion R nonnegativeBalances) :
+    Logic.GlobalRG R nonnegativeBalances
+      (.txn txnId (IsolationSpec.readCommitted Database) zeroBalanceInsertBodyTwo)
+      (zeroBalanceGuaranteeTwoOf txnId)
+      nonnegativeBalances := by
+  refine Logic.GlobalRG.txn
+    (I := nonnegativeBalances)
+    (isolation := IsolationSpec.readCommitted Database)
+    (txnId := txnId)
+    (body := zeroBalanceInsertBodyTwo)
+    (P := fun localDb visible => localDb = [] ∧ nonnegativeBalances visible)
+    (Q := fun localDb visible => localDb = [zeroBalanceRowTwoOf txnId] ∧ nonnegativeBalances visible)
+    (G := zeroBalanceGuaranteeTwoOf txnId)
+    hStableI ?_ ?_ ?_ ?_ ?_ ?_ ?_
+  · intro localDb baseDb midDb finalDb _ _hR
+    constructor <;> simp [IsolationSpec.readCommitted]
+  · intro localDb baseDb midDb finalDb _ _hR
+    constructor <;> simp [IsolationSpec.readCommitted]
+  · intro localDb visibleDb
+    simp
+  · refine Logic.LocalRG.insert ?_ ?_
+    · intro localDb visibleDb visibleDb' hPre hRely
+      rcases hPre with ⟨hLocal, hInv⟩
+      rcases hRely with ⟨_baseDb, hR, _hExecOld, _hExecNew⟩
+      exact ⟨hLocal, hStableI _ _ hInv hR⟩
+    · intro localDb visibleDb record hPre hEval _hFresh
+      rcases hPre with ⟨hLocal, hInv⟩
+      subst hLocal
+      have hValueEq : some (Value.record zeroBalanceRecordTwo) = some (Value.record record) := by
+        rw [← zeroBalanceTwo_insert_eval]
+        exact hEval
+      injection hValueEq with hRecordEq
+      cases hRecordEq
+      constructor
+      · simp [zeroBalanceRowTwoOf]
+      · exact hInv
+  · intro localDb visibleDb visibleDb' hPost hRely
+    rcases hPost with ⟨hLocal, hInv⟩
+    rcases hRely with ⟨_baseDb, hR, _hExecOld, _hExecNew⟩
+    exact ⟨hLocal, hStableI _ _ hInv hR⟩
+  · intro localDb visibleDb hPost
+    rcases hPost with ⟨hLocal, _hInv⟩
+    subst hLocal
+    rfl
+  · intro db db' hInv hGuarantee
+    subst hGuarantee
+    exact nonnegativeBalances_flush_zeroBalanceRowTwoOf hInv
+
+theorem zeroBalancePar_rg :
+    Logic.GlobalRG (fun _ _ => False) nonnegativeBalances
+      zeroBalanceParProgram
+      zeroBalanceParGuarantee
+      nonnegativeBalances := by
+  refine Logic.GlobalRG.par ?_ ?_
+  · exact zeroBalanceInsert_rg_readCommitted_of_stable 10 (by
+      intro db db' hInv hR
+      rcases hR with hFalse | hG
+      · exact False.elim hFalse
+      · exact nonnegativeBalances_stable_zeroBalanceGuaranteeTwoOf 20 _ _ hInv hG)
+  · exact zeroBalanceInsertTwo_rg_readCommitted_of_stable 20 (by
+      intro db db' hInv hR
+      rcases hR with hFalse | hG
+      · exact False.elim hFalse
+      · exact nonnegativeBalances_stable_zeroBalanceGuaranteeOf 10 _ _ hInv hG)
+
+theorem zeroBalancePar_valid :
+    Logic.GlobalValid nonnegativeBalances (fun _ _ => False)
+      zeroBalanceParProgram
+      zeroBalanceParGuarantee
+      nonnegativeBalances := by
+  exact Logic.globalRG_sound zeroBalancePar_rg
+
 theorem zeroBalanceInsert_valid :
     Logic.GlobalValid nonnegativeBalances (fun _ _ => False)
       (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
@@ -229,6 +417,184 @@ theorem zeroBalanceTxn_parallelValid_invariant
     (hDone : Server.ProgramDone finalCfg.program) :
     nonnegativeBalances finalCfg.globalDb := by
   exact Server.ParallelValid.invariant zeroBalanceTxn_parallelValid hDb hRun hDone
+
+theorem zeroBalanceHandler_refines_graph_readCommitted_of_stable {R : Rely} (txnId : TxnId)
+    (hStableI : Logic.stableAssertion R nonnegativeBalances) :
+    Server.HandlerRefines nonnegativeBalances R
+      (.txn txnId (IsolationSpec.readCommitted Database) zeroBalanceInsertBody)
+      (StateSpec.graph (zeroBalanceApplyOf txnId))
+      nonnegativeBalances := by
+  simpa [Server.HandlerRefines, StateSpec.graph, zeroBalanceApplyOf, zeroBalanceGuaranteeOf] using
+    (Logic.globalRG_sound
+      (zeroBalanceInsert_rg_readCommitted_of_stable (R := R) txnId hStableI))
+
+theorem zeroBalanceHandlerTwo_refines_graph_readCommitted_of_stable {R : Rely} (txnId : TxnId)
+    (hStableI : Logic.stableAssertion R nonnegativeBalances) :
+    Server.HandlerRefines nonnegativeBalances R
+      (.txn txnId (IsolationSpec.readCommitted Database) zeroBalanceInsertBodyTwo)
+      (StateSpec.graph (zeroBalanceApplyTwoOf txnId))
+      nonnegativeBalances := by
+  simpa [Server.HandlerRefines, StateSpec.graph, zeroBalanceApplyTwoOf,
+      zeroBalanceGuaranteeTwoOf] using
+    (Logic.globalRG_sound
+      (zeroBalanceInsertTwo_rg_readCommitted_of_stable (R := R) txnId hStableI))
+
+theorem zeroBalancePar_parallelValid_exact :
+    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
+      zeroBalanceParProgram
+      (Server.CombinedSpecs
+        (Server.ExactTxnSpec 10 (StateSpec.graph (zeroBalanceApplyOf 10)))
+        (Server.ExactTxnSpec 20 (StateSpec.graph (zeroBalanceApplyTwoOf 20))))
+      nonnegativeBalances := by
+  refine Server.txnPair_parallelValid_of_handlerRefines ?_ ?_
+  · exact zeroBalanceHandler_refines_graph_readCommitted_of_stable
+      (R := fun db db' =>
+        False ∨ StateSpec.graph (zeroBalanceApplyTwoOf 20) db db')
+      10
+      (by
+        intro db db' hInv hR
+        rcases hR with hFalse | hGraph
+        · exact False.elim hFalse
+        · exact nonnegativeBalances_stable_zeroBalanceApplyTwoOf 20 _ _ hInv hGraph)
+  · exact zeroBalanceHandlerTwo_refines_graph_readCommitted_of_stable
+      (R := fun db db' =>
+        False ∨ StateSpec.graph (zeroBalanceApplyOf 10) db db')
+      20
+      (by
+        intro db db' hInv hR
+        rcases hR with hFalse | hGraph
+        · exact False.elim hFalse
+        · exact nonnegativeBalances_stable_zeroBalanceApplyOf 10 _ _ hInv hGraph)
+
+def zeroBalanceParFs (txnId : TxnId) : StateTransformer :=
+  if txnId = 10 then
+    zeroBalanceApplyOf 10
+  else if txnId = 20 then
+    zeroBalanceApplyTwoOf 20
+  else
+    id
+
+theorem zeroBalancePar_exact_specs_subset_graph :
+    ∀ txnId db db',
+      Server.CombinedSpecs
+          (Server.ExactTxnSpec 10 (StateSpec.graph (zeroBalanceApplyOf 10)))
+          (Server.ExactTxnSpec 20 (StateSpec.graph (zeroBalanceApplyTwoOf 20)))
+          txnId db db' →
+        StateSpec.graph (zeroBalanceParFs txnId) db db' := by
+  intro txnId db db' hSpec
+  rcases hSpec with hLeft | hRight
+  · rcases hLeft with ⟨rfl, hGraph⟩
+    simpa [StateSpec.graph, zeroBalanceParFs]
+      using hGraph
+  · rcases hRight with ⟨rfl, hGraph⟩
+    simpa [StateSpec.graph, zeroBalanceParFs]
+      using hGraph
+
+theorem zeroBalancePar_parallelValid_graph :
+    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
+      zeroBalanceParProgram
+      (fun txnId => StateSpec.graph (zeroBalanceParFs txnId))
+      nonnegativeBalances := by
+  exact Server.parallelValid_of_specSubset
+    zeroBalancePar_parallelValid_exact
+    zeroBalancePar_exact_specs_subset_graph
+
+theorem zeroBalancePar_commitSequence
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun :
+      Logic.GlobalMultiStep (fun _ _ => False)
+        ⟨zeroBalanceParProgram, db⟩
+        finalCfg) :
+    ∃ commits,
+      Server.CommitSequence
+        (fun txnId => StateSpec.graph (zeroBalanceParFs txnId))
+        db
+        commits
+        finalCfg.globalDb := by
+  exact Server.parallelValid_commitSequence_of_silentRely
+    zeroBalancePar_parallelValid_graph
+    false_rely_silent
+    hDb
+    hRun
+
+theorem zeroBalancePar_foldl
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun :
+      Logic.GlobalMultiStep (fun _ _ => False)
+        ⟨zeroBalanceParProgram, db⟩
+        finalCfg) :
+    ∃ commits,
+      finalCfg.globalDb =
+        List.foldl (fun current txnId => zeroBalanceParFs txnId current) db commits := by
+  rcases Server.parallelValid_foldl_of_graphSpecs
+      zeroBalancePar_parallelValid_graph
+      false_rely_silent
+      hDb
+      hRun with
+    ⟨commits, _hSeq, hFold⟩
+  exact ⟨commits, hFold⟩
+
+inductive ZeroBalanceRequest where
+  | first
+  | second
+deriving DecidableEq, Repr
+
+def zeroBalanceRequestOf (txnId : TxnId) : ZeroBalanceRequest :=
+  if txnId = 10 then .first else .second
+
+def zeroBalanceRequestApply : RequestTransformer ZeroBalanceRequest
+  | .first => zeroBalanceApplyOf 10
+  | .second => zeroBalanceApplyTwoOf 20
+
+theorem zeroBalancePar_exact_specs_subset_request_graph :
+    ∀ txnId db db',
+      Server.CombinedSpecs
+          (Server.ExactTxnSpec 10 (StateSpec.graph (zeroBalanceApplyOf 10)))
+          (Server.ExactTxnSpec 20 (StateSpec.graph (zeroBalanceApplyTwoOf 20)))
+          txnId db db' →
+        RequestSpec.graphAssign zeroBalanceRequestOf zeroBalanceRequestApply txnId db db' := by
+  intro txnId db db' hSpec
+  rcases hSpec with hLeft | hRight
+  · rcases hLeft with ⟨rfl, hGraph⟩
+    simpa [RequestSpec.graphAssign, RequestSpec.assign, zeroBalanceRequestOf,
+      zeroBalanceRequestApply, StateSpec.graph]
+      using hGraph
+  · rcases hRight with ⟨rfl, hGraph⟩
+    simpa [RequestSpec.graphAssign, RequestSpec.assign, zeroBalanceRequestOf,
+      zeroBalanceRequestApply, StateSpec.graph]
+      using hGraph
+
+theorem zeroBalancePar_parallelValid_requests :
+    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
+      zeroBalanceParProgram
+      (RequestSpec.graphAssign zeroBalanceRequestOf zeroBalanceRequestApply)
+      nonnegativeBalances := by
+  exact Server.parallelValid_of_specSubset
+    zeroBalancePar_parallelValid_exact
+    zeroBalancePar_exact_specs_subset_request_graph
+
+theorem zeroBalancePar_request_foldl
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun :
+      Logic.GlobalMultiStep (fun _ _ => False)
+        ⟨zeroBalanceParProgram, db⟩
+        finalCfg) :
+    ∃ events,
+      finalCfg.globalDb =
+        List.foldl
+          (fun current req => zeroBalanceRequestApply req current)
+          db
+          (Server.CommitLog.requests zeroBalanceRequestOf events) := by
+  rcases Server.parallelValid_request_foldl_of_graphAssign
+      zeroBalancePar_parallelValid_requests
+      false_rely_silent
+      hDb
+      hRun with
+    ⟨events, _hLog, hFold⟩
+  exact ⟨events, hFold⟩
 
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =
@@ -329,6 +695,54 @@ theorem interestBase_nonnegative :
 theorem addInterest_effect :
     Transformer.inferEffect 1 [] addInterestBody [interestBaseRow] = some [interestUpdatedRow] := by
   native_decide
+
+/-- A concrete VCG object for the read/write example. Unlike `zeroBalanceInfo`, we only inspect its
+effect on the intended initial state; proving `vcg_sound_false` for this example requires a more
+careful global invariant than we want in this walkthrough. -/
+def addInterestInfo : Transformer.TransactionVCG :=
+  Transformer.vcg (fun _ _ => False) nonnegativeBalances
+    (fun db db' => db' = Database.flush [interestUpdatedRow] db)
+    1 Database.snapshotIsolation addInterestBody
+
+theorem addInterest_effect_via_info :
+    addInterestInfo.effect [interestBaseRow] = some [interestUpdatedRow] := by
+  simpa [addInterestInfo, Transformer.vcg] using addInterest_effect
+
+theorem interestUpdatedRow_id :
+    interestUpdatedRow.id? = some 1 := by
+  native_decide
+
+theorem interestUpdatedRow_lookup_bal :
+    interestUpdatedRow.visible.lookup? "bal" = some (.int 5) := by
+  native_decide
+
+theorem addInterest_flush_base :
+    Database.flush [interestUpdatedRow] [interestBaseRow] = [interestUpdatedRow] := by
+  native_decide
+
+theorem nonnegativeBalances_flush_interestUpdatedRow :
+    nonnegativeBalances (Database.flush [interestUpdatedRow] [interestBaseRow]) := by
+  rw [addInterest_flush_base]
+  intro row hMem
+  rcases List.mem_singleton.mp hMem with rfl
+  simpa [interestUpdatedRow_lookup_bal] using (show (0 : Int) <= 5 from by decide)
+
+/-- The read/write VCG is defined on the intended singleton account state. -/
+theorem addInterest_effect_defined_on_base :
+    ∃ localDb, addInterestInfo.effect [interestBaseRow] = some localDb := by
+  exact ⟨[interestUpdatedRow], addInterest_effect_via_info⟩
+
+/-- On the intended input, the chosen guarantee is exactly the flush of the inferred delta. -/
+theorem addInterest_guarantee_on_base :
+    (fun db db' => db' = Database.flush [interestUpdatedRow] db)
+      [interestBaseRow]
+      (Database.flush [interestUpdatedRow] [interestBaseRow]) := by
+  rfl
+
+/-- The concrete post-state produced by the VCG still satisfies the running invariant. -/
+theorem addInterest_preserves_invariant_on_base :
+    nonnegativeBalances (Database.flush [interestUpdatedRow] [interestBaseRow]) := by
+  exact nonnegativeBalances_flush_interestUpdatedRow
 
 theorem addInterest_inferable :
     Transformer.SetInferable addInterestBody := by

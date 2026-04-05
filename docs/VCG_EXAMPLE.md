@@ -115,3 +115,23 @@ Transformer.vcg_sound_false ...
 
 `vcg_sound_false` は no-rely case 用の最短 API です。  
 実際の proof authoring を見るには、まず `zeroBalance` を真似して obligation を 3 本立てるのが一番分かりやすいです。
+
+## 8. read/write 例も見る
+
+同じファイルの `addInterest` 節には、`select + foreach + update` を含む read/write transaction の
+VCG object が入っています。
+
+- [addInterestInfo](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Examples.lean)
+- [addInterest_effect_via_info](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Examples.lean)
+- [addInterest_effect_defined_on_base](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Examples.lean)
+- [addInterest_guarantee_on_base](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Examples.lean)
+- [addInterest_preserves_invariant_on_base](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Examples.lean)
+
+こちらは `zeroBalance` のような full `vcg_sound_false` まで一気に進む例ではなく、
+
+- concrete input `[interestBaseRow]` に対する `effect`
+- その flush が chosen guarantee に一致すること
+- concrete post-state が invariant を満たすこと
+
+をそのまま Lean で書いています。`insert` だけでなく read/write の場合に、どこで record
+lookup や `flush` の計算を手で支える必要があるかを見るのに向いています。
