@@ -629,6 +629,48 @@ theorem zeroBalancePar_request_foldl
     ⟨events, _hLog, hFold⟩
   exact ⟨events, hFold⟩
 
+theorem zeroBalancePar_foldl_via_refinement
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun :
+      Logic.GlobalMultiStep (fun _ _ => False)
+        ⟨zeroBalanceParProgram, db⟩
+        finalCfg) :
+    ∃ commits,
+      finalCfg.globalDb =
+        List.foldl
+          (fun current txnId =>
+            _root_.DbAppProgramLogic.Refinement.txnPairFs
+              10
+              (zeroBalanceApplyOf 10)
+              20
+              (zeroBalanceApplyTwoOf 20)
+              txnId
+              current)
+          db
+          commits := by
+  exact _root_.DbAppProgramLogic.Refinement.txnPair_foldl_of_handlerRefines
+    (by decide)
+    (zeroBalanceHandler_refines_graph_readCommitted_of_stable
+      (R := fun db db' => False ∨ StateSpec.graph (zeroBalanceApplyTwoOf 20) db db')
+      10
+      (by
+        intro db db' hInv hR
+        rcases hR with hFalse | hGraph
+        · exact False.elim hFalse
+        · exact nonnegativeBalances_stable_zeroBalanceApplyTwoOf 20 _ _ hInv hGraph))
+    (zeroBalanceHandlerTwo_refines_graph_readCommitted_of_stable
+      (R := fun db db' => False ∨ StateSpec.graph (zeroBalanceApplyOf 10) db db')
+      20
+      (by
+        intro db db' hInv hR
+        rcases hR with hFalse | hGraph
+        · exact False.elim hFalse
+        · exact nonnegativeBalances_stable_zeroBalanceApplyOf 10 _ _ hInv hGraph))
+    false_rely_silent
+    hDb
+    hRun
+
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =
       some

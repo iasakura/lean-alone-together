@@ -79,6 +79,109 @@ theorem txnCommitLog_exact_of_vcg_sound_false
     hDb
     hRun
 
+/-- The abstract transformer family induced by a verified two-transaction parallel program. Only
+the two concrete transaction ids perform state changes; all other ids act as identity. -/
+def txnPairFs
+    (leftTxnId : TxnId) (leftF : StateTransformer)
+    (rightTxnId : TxnId) (rightF : StateTransformer) :
+    TxnId → StateTransformer :=
+  fun txnId =>
+    if txnId = leftTxnId then
+      leftF
+    else if txnId = rightTxnId then
+      rightF
+    else
+      id
+
+/-- Two handler refinements with graph specs package into a graph-valued `ParallelValid` judgment
+for the pair. -/
+theorem txnPair_parallelValid_graph_of_handlerRefines
+    {I : Assertion} {R : Rely}
+    {leftTxnId rightTxnId : TxnId}
+    (hDistinct : leftTxnId ≠ rightTxnId)
+    {leftIsolation rightIsolation : IsolationSpec Database}
+    {leftBody rightBody : Semantics.Program}
+    {leftF rightF : StateTransformer}
+    (hLeft :
+      Server.HandlerRefines I
+        (fun db db' => R db db' ∨ StateSpec.graph rightF db db')
+        (.txn leftTxnId leftIsolation leftBody)
+        (StateSpec.graph leftF)
+        I)
+    (hRight :
+      Server.HandlerRefines I
+        (fun db db' => R db db' ∨ StateSpec.graph leftF db db')
+        (.txn rightTxnId rightIsolation rightBody)
+        (StateSpec.graph rightF)
+        I) :
+    Server.ParallelValid I R
+      (.par
+        (.txn leftTxnId leftIsolation leftBody)
+        (.txn rightTxnId rightIsolation rightBody)
+        : Semantics.Program)
+      (fun txnId => StateSpec.graph (txnPairFs leftTxnId leftF rightTxnId rightF txnId))
+      I := by
+  refine Server.parallelValid_of_specSubset
+    (Server.txnPair_parallelValid_of_handlerRefines hLeft hRight)
+    ?_
+  intro txnId db db' hSpec
+  rcases hSpec with hLeftSpec | hRightSpec
+  · rcases hLeftSpec with ⟨rfl, hGraph⟩
+    simpa [StateSpec.graph, txnPairFs]
+      using hGraph
+  · rcases hRightSpec with ⟨rfl, hGraph⟩
+    have hNe : txnId ≠ leftTxnId := by
+      intro hEq
+      exact hDistinct hEq.symm
+    simpa [StateSpec.graph, txnPairFs, if_neg hNe]
+      using hGraph
+
+/-- Closed-system two-transaction executions can be read back as a fold over the two abstract
+state transformers in commit order. -/
+theorem txnPair_foldl_of_handlerRefines
+    {I : Assertion} {R : Rely}
+    {leftTxnId rightTxnId : TxnId}
+    (hDistinct : leftTxnId ≠ rightTxnId)
+    {leftIsolation rightIsolation : IsolationSpec Database}
+    {leftBody rightBody : Semantics.Program}
+    {leftF rightF : StateTransformer}
+    (hLeft :
+      Server.HandlerRefines I
+        (fun db db' => R db db' ∨ StateSpec.graph rightF db db')
+        (.txn leftTxnId leftIsolation leftBody)
+        (StateSpec.graph leftF)
+        I)
+    (hRight :
+      Server.HandlerRefines I
+        (fun db db' => R db db' ∨ StateSpec.graph leftF db db')
+        (.txn rightTxnId rightIsolation rightBody)
+        (StateSpec.graph rightF)
+        I)
+    (hSilent : Server.SilentRely R)
+    {db : Database} (hDb : I db)
+    {finalCfg : GlobalConfig}
+    (hRun :
+      Logic.GlobalMultiStep R
+        ⟨(.par
+            (.txn leftTxnId leftIsolation leftBody)
+            (.txn rightTxnId rightIsolation rightBody)
+            : Semantics.Program), db⟩
+        finalCfg) :
+    ∃ commits,
+      finalCfg.globalDb =
+        List.foldl
+          (fun current txnId =>
+            txnPairFs leftTxnId leftF rightTxnId rightF txnId current)
+          db
+          commits := by
+  rcases Server.parallelValid_foldl_of_graphSpecs
+      (txnPair_parallelValid_graph_of_handlerRefines hDistinct hLeft hRight)
+      hSilent
+      hDb
+      hRun with
+    ⟨commits, _hSeq, hFold⟩
+  exact ⟨commits, hFold⟩
+
 end Refinement
 
 end DbAppProgramLogic
