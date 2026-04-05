@@ -4,6 +4,7 @@ import DbAppProgramLogic.SetLanguage
 import DbAppProgramLogic.Logic
 import DbAppProgramLogic.Server
 import DbAppProgramLogic.Transformer
+import DbAppProgramLogic.Refinement
 import DbAppProgramLogic.FirstOrder
 import DbAppProgramLogic.Examples
 

@@ -1,4 +1,5 @@
 import DbAppProgramLogic.FirstOrder
+import DbAppProgramLogic.Refinement
 import DbAppProgramLogic.Server
 
 namespace DbAppProgramLogic
@@ -406,6 +407,38 @@ theorem zeroBalanceTxn_parallelValid :
       (fun _ => StateSpec.graph zeroBalanceApply)
       nonnegativeBalances := by
   exact Server.txnParallelValid_of_handlerRefines zeroBalanceHandler_refines_graph
+
+theorem zeroBalanceTxn_parallelValid_exact_via_vcg :
+    Server.ParallelValid nonnegativeBalances (fun _ _ => False)
+      (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
+      (Server.ExactTxnSpec 0 (StateSpec.graph zeroBalanceApply))
+      nonnegativeBalances := by
+  exact Refinement.txnParallelValid_exact_of_vcg_sound_false
+    0 Database.uniqueIds zeroBalanceInsertBody
+    zeroBalance_effect_defined
+    zeroBalance_guarantee_ok
+    zeroBalance_preserves_invariant
+
+theorem zeroBalanceTxn_commitLog_via_vcg
+    {db : Database} {finalCfg : GlobalConfig}
+    (hDb : nonnegativeBalances db)
+    (hRun :
+      Logic.GlobalMultiStep (fun _ _ => False)
+        ⟨(.txn 0 Database.uniqueIds zeroBalanceInsertBody), db⟩
+        finalCfg) :
+    ∃ events,
+      Server.CommitLog
+        (Server.ExactTxnSpec 0 (StateSpec.graph zeroBalanceApply))
+        db
+        events
+        finalCfg.globalDb := by
+  exact Refinement.txnCommitLog_exact_of_vcg_sound_false
+    0 Database.uniqueIds zeroBalanceInsertBody
+    zeroBalance_effect_defined
+    zeroBalance_guarantee_ok
+    zeroBalance_preserves_invariant
+    hDb
+    hRun
 
 theorem zeroBalanceTxn_parallelValid_invariant
     {db : Database} {finalCfg : GlobalConfig}

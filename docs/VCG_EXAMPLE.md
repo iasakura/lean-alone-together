@@ -116,6 +116,29 @@ Transformer.vcg_sound_false ...
 `vcg_sound_false` は no-rely case 用の最短 API です。  
 実際の proof authoring を見るには、まず `zeroBalance` を真似して obligation を 3 本立てるのが一番分かりやすいです。
 
+## 7.5. server/refinement 層へ持ち上げる
+
+single transaction については、no-rely VCG 証明をそのまま server-facing な仕様へ持ち上げる薄い橋を
+[Refinement.lean](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Refinement.lean) に入れています。
+
+- [handlerRefines_of_vcg_sound_false](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Refinement.lean)
+- [txnParallelValid_exact_of_vcg_sound_false](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Refinement.lean)
+- [txnCommitLog_exact_of_vcg_sound_false](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Refinement.lean)
+
+`zeroBalance` ではこの橋をそのまま使っています。
+
+- [zeroBalanceTxn_parallelValid_exact_via_vcg](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Examples.lean#L411)
+- [zeroBalanceTxn_commitLog_via_vcg](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/Examples.lean#L422)
+
+つまり、最小の流れは
+
+1. `vcg_sound_false` 用の 3 obligation を証明する
+2. `Refinement.txnParallelValid_exact_of_vcg_sound_false` で exact commit spec つきの `ParallelValid` を得る
+3. `Refinement.txnCommitLog_exact_of_vcg_sound_false` で実行 prefix を commit log として読む
+
+です。`par` 合成では追加の rely 仮定が要るので、`vcg_sound_false` だけでは足りませんが、single
+transaction を spec / commit-log に接続する最短ルートとしてはこれが今の標準形です。
+
 ## 8. read/write 例も見る
 
 同じファイルの `addInterest` 節には、`select + foreach + update` を含む read/write transaction の
