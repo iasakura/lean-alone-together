@@ -147,6 +147,66 @@ mutual
 
 end
 
+theorem evalFieldValues_singleton {field : FieldName} {expr : Expr} {value : ScalarLit}
+    (hEval : eval expr = some (.scalar value)) :
+    evalFieldValues [(field, expr)] = some [(field, value)] := by
+  simp [evalFieldValues, hEval]
+
+theorem eval_lit_record_withUpdates {record : RecordLit} {updates : List (FieldName × Expr)}
+    {fields : List (FieldName × ScalarLit)}
+    (hFields : evalFieldValues updates = some fields) :
+    eval (.withUpdates (.lit (.record record)) updates) =
+      some (.record (fields.foldl (fun acc (field, value) => acc.setField field value) record)) := by
+  simp [eval, hFields, Literal.toValue]
+
+theorem eval_lit_record_single_update {record : RecordLit} {field : FieldName}
+    {expr : Expr} {value : ScalarLit}
+    (hEval : eval expr = some (.scalar value)) :
+    eval (.withUpdates (.lit (.record record)) [(field, expr)]) =
+      some (.record (record.setField field value)) := by
+  have hFields : evalFieldValues [(field, expr)] = some [(field, value)] := by
+    simp [evalFieldValues, hEval]
+  simpa [RecordLit.setField] using
+    (eval_lit_record_withUpdates (record := record) (updates := [(field, expr)]) hFields)
+
+mutual
+
+  private theorem evalFieldValues_subst_of_eval
+      (x : VarName) (replacement : Expr) (value : Value)
+      (hEval : eval replacement = some value) :
+      ∀ fields,
+        evalFieldValues (substFieldExprs x replacement fields) =
+          evalFieldValues (substFieldExprs x value.toExpr fields)
+    | [] => by
+        simp [evalFieldValues, substFieldExprs]
+    | (_, expr) :: rest => by
+        simp [evalFieldValues, substFieldExprs, eval_subst_of_eval x replacement value hEval,
+          evalFieldValues_subst_of_eval x replacement value hEval rest]
+
+  theorem eval_subst_of_eval
+      (x : VarName) (replacement : Expr) (value : Value)
+      (hEval : eval replacement = some value) :
+      ∀ expr, eval (subst x replacement expr) = eval (subst x value.toExpr expr)
+    | .lit litVal => by
+        simp [subst, eval]
+    | .var y => by
+        by_cases hxy : x = y
+        · subst hxy
+          cases value <;> simpa [subst, eval, Value.toExpr] using hEval
+        · simp [subst, eval, hxy]
+    | .proj expr field => by
+        simp [subst, eval, eval_subst_of_eval x replacement value hEval expr]
+    | .record fields => by
+        simp [subst, eval, evalFieldValues_subst_of_eval x replacement value hEval fields]
+    | .withUpdates base updates => by
+        simp [subst, eval, eval_subst_of_eval x replacement value hEval base,
+          evalFieldValues_subst_of_eval x replacement value hEval updates]
+    | .binop op lhs rhs => by
+        simp [subst, eval, eval_subst_of_eval x replacement value hEval lhs,
+          eval_subst_of_eval x replacement value hEval rhs]
+
+end
+
 end Expr
 
 namespace Command
@@ -404,6 +464,24 @@ def collectUpdated (db : Database) (txnId : TxnId) (x : VarName)
         else
           pure rest
   go db
+
+theorem collectSelected_singleton_true {row : Row} {x : VarName} {predicate : Expr}
+    (hPred : satisfiesPredicate x predicate row.visible = some true) :
+    collectSelected [row] x predicate = some [row.visible] := by
+  simp [collectSelected, collectSelected.go, hPred]
+
+theorem collectUpdated_singleton_true {row : Row} {txnId : TxnId} {x : VarName}
+    {updateExpr predicate : Expr} {updated : RecordLit}
+    (hPred : satisfiesPredicate x predicate row.visible = some true)
+    (hUpdate : Expr.eval (instantiateRecord x row.visible updateExpr) = some (.record updated)) :
+    collectUpdated [row] txnId x updateExpr predicate = some [row.overwrite txnId updated] := by
+  simp [collectUpdated, collectUpdated.go, hPred, hUpdate]
+
+theorem collectUpdated_singleton_false {row : Row} {txnId : TxnId} {x : VarName}
+    {updateExpr predicate : Expr}
+    (hPred : satisfiesPredicate x predicate row.visible = some false) :
+    collectUpdated [row] txnId x updateExpr predicate = some [] := by
+  simp [collectUpdated, collectUpdated.go, hPred]
 
 theorem mem_collectDeleted_go_iff {db : Database} {txnId : TxnId} {x : VarName} {predicate : Expr}
     {rows : Database} {row : Row}

@@ -13,9 +13,28 @@ The `zeroBalance` fragment is the recommended first example: it shows a simple V
 symbolic postcondition, and the minimal paper-faithful server wrapper for a single transaction. The
 `addInterest` fragment exercises the symbolic set-language and first-order layers on a transaction
 that both reads and writes.
+
+Reading map for this file:
+
+* `zeroBalanceInsert_valid_via_info`
+  Smallest no-rely VCG proof. Read this first.
+* `zeroBalance_localValid_effectPost_readCommitted_of_stable`
+  First rely-aware helper. Read this second if you want to understand `vcg_sound`.
+* `zeroBalancePar_rg` and `zeroBalancePar_valid`
+  Direct use of `GlobalRG.par`.
+* `zeroBalancePar_request_foldl_via_vcg`
+  End-to-end example: VCG -> handler refinement -> parallel composition -> request-level fold.
+* `addInterestInfo`
+  Read/write example used mainly to inspect symbolic output, not as the first proof to imitate.
 -/
 
 /-! ## Zero-balance insert example -/
+
+/-!
+This first example intentionally appears at several layers. The declarations below are not all of
+equal importance. If you are reading for the first time, skip freely and come back only when a
+later theorem references an earlier helper.
+-/
 
 def nonnegativeBalances : Assertion :=
   fun db =>
@@ -180,6 +199,8 @@ theorem zeroBalance_preserves_invariant :
   subst hGuarantee
   exact nonnegativeBalances_flush_zeroBalanceRow hDb
 
+/-! ### Landmark 1: minimal VCG proof -/
+
 /-- This is the actual VCG-style proof script for the simplest transaction example:
 
 1. define the generated VCG object (`zeroBalanceInfo`)
@@ -283,6 +304,13 @@ theorem zeroBalance_commitStable_any
       (zeroBalance_vcg_effect_insert (R := R) (I := I) (G := G) txnId isolation visibleDb')
   rw [hLeft, hRight]
 
+/-!
+### Landmark 2: rely-aware helper for `vcg_sound`
+
+This theorem is the first place where the example is doing real logic work rather than just
+computing the inferred effect. If you want to understand why the general `vcg_sound` is harder than
+`vcg_sound_false`, read this theorem next.
+-/
 theorem zeroBalance_localValid_effectPost_readCommitted_of_stable {R : Rely} (txnId : TxnId)
     (hStableI : Logic.stableAssertion R nonnegativeBalances) :
     Logic.LocalValid (Logic.relyMod R (IsolationSpec.readCommitted Database).exec) txnId
@@ -446,6 +474,8 @@ theorem zeroBalanceInsertTwo_rg_readCommitted_of_stable {R : Rely} (txnId : TxnI
     subst hGuarantee
     exact nonnegativeBalances_flush_zeroBalanceRowTwoOf hInv
 
+/-! ### Landmark 3: direct use of the parallel proof rule -/
+
 theorem zeroBalancePar_rg :
     Logic.GlobalRG (fun _ _ => False) nonnegativeBalances
       zeroBalanceParProgram
@@ -502,6 +532,13 @@ theorem zeroBalanceTxn_parallelValid :
       nonnegativeBalances := by
   exact Server.txnParallelValid_of_handlerRefines zeroBalanceHandler_refines_graph
 
+/-!
+### Landmark 4: server/refinement view
+
+The next group repackages the same transaction and transaction pair as handler/server refinement
+statements. These are the declarations to read if the end goal is "what request trace does this
+program implement?" rather than "can I derive a `GlobalRG` proof?".
+-/
 theorem zeroBalanceTxn_parallelValid_exact_via_vcg :
     Server.ParallelValid nonnegativeBalances (fun _ _ => False)
       (.txn 0 Database.uniqueIds zeroBalanceInsertBody)
@@ -865,6 +902,8 @@ theorem zeroBalancePar_request_foldl_via_vcg
     hDb
     hRun
 
+/-! ### Symbolic and first-order views of the same simple transaction -/
+
 theorem zeroBalance_symbolicVcg_shape (visibleDb : Database) :
     Transformer.symbolicVcg nonnegativeBalances "__inv" 0 zeroBalanceInsertBody visibleDb =
       some
@@ -927,6 +966,18 @@ theorem zeroBalance_inferWriteMembership_contains_row (visibleDb : Database) :
   exact hSound.2 (by simp)
 
 /-! ## Read/write symbolic example (`addInterest`) -/
+
+/-!
+This second block is intentionally not the recommended entry point for the file.
+
+Use it when you specifically want to inspect:
+
+* what `Transformer.vcg` computes for a body with `select` and `foreach`
+* the symbolic set-language postcondition
+* the first-order membership encoding
+
+The first declaration worth reading here is `addInterestInfo`.
+-/
 
 def interestBaseRecord : RecordLit :=
   ⟨[("id", .int 1), ("bal", .int 4)]⟩
@@ -1164,26 +1215,11 @@ theorem addInterest_updateMembershipFO_holds :
     SetLanguage.denote, SetLanguage.empty, addInterestUpdateEnv, addInterestUpdateExpr,
     addInterestUpdatePredicate, interestBaseRow, interestBaseRecord, interestUpdatedRow,
     interestUpdatedRecord, Row.fromInsert, Row.overwrite, RecordLit.lookup?]
-  refine ⟨interestBaseRow, ?_, ?_, ?_⟩
+  refine ⟨interestBaseRow, ?_, interestUpdatedRecord, ?_, ?_⟩
   · simp [SetLanguage.Env.ofDatabases]
     rfl
   · native_decide
-  · have hLookup :
-        (((SetLanguage.Env.ofDatabases [] [interestBaseRow]).bindElem "r" interestBaseRow).bindElem
-          (Transformer.defaultOutVar "r") interestUpdatedRow).lookupElem? "r" = some interestBaseRow := by
-      simp [Transformer.defaultOutVar, SetLanguage.Env.lookupElem?, SetLanguage.Env.lookupElemList?,
-        SetLanguage.Env.bindElem]
-    have hExists :
-        ∃ updated,
-          Expr.eval
-              (Semantics.instantiateRecord "r" interestBaseRow.visible
-                (Transformer.instantiateExpr addInterestUpdateEnv ["r"] addInterestUpdateExpr)) =
-            some (.record updated) ∧
-          interestUpdatedRow = interestBaseRow.overwrite 1 updated := by
-      refine ⟨interestUpdatedRecord, ?_, ?_⟩
-      · native_decide
-      · simp [interestUpdatedRow, interestUpdatedRecord, interestBaseRow, Row.overwrite]
-    simpa [hLookup] using hExists
+  · native_decide
 
 def addInterestFullMembership : FirstOrder.MembershipFormula :=
   Option.get! (FirstOrder.inferMembershipFull 1 [] "x" addInterestBody [interestBaseRow])

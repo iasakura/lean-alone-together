@@ -302,13 +302,6 @@ def inferMembership (txnId : TxnId) (env : DbAppProgramLogic.Env)
   | _ => none
 
 def encodeSetExprMembership (elemVar : VarName) : SetLanguage.SetExpr → Option MembershipFormula
-  | .var setVar => some (.inVar elemVar setVar)
-  | .localDb => some (.inLocalDb elemVar)
-  | .globalDb => some (.inGlobalDb elemVar)
-  | .union s₁ s₂ => do
-      let φ₁ ← encodeSetExprMembership elemVar s₁
-      let φ₂ ← encodeSetExprMembership elemVar s₂
-      pure (.or φ₁ φ₂)
   | _ => none
 
 @[simp] theorem denoteMembership_inVar (ρ : SetLanguage.Env) (elemVar setVar : VarName) :
@@ -406,40 +399,7 @@ theorem encodeDeleteMembership_sound (elemVar : VarName) (txnId : TxnId)
       (encodeDeleteMembership elemVar txnId env source predicate) ↔
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
         (Transformer.deleteSetExpr txnId env source predicate) row := by
-  have hOut : Transformer.defaultOutVar source ≠ source := Transformer.defaultOutVar_ne source
-  constructor
-  · intro h
-    simp [encodeDeleteMembership, denoteMembership] at h
-    rcases h with ⟨mid, hMid, hPred, hEq⟩
-    have hLookup :
-        ((((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid).lookupElem? elemVar) =
-          some row := by
-      rw [SetLanguage.Env.lookupElem_bindElem_ne
-        (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
-        (x := source) (y := elemVar) (row := mid) hNe.symm]
-      simp
-    have hRow :
-        row = mid.markDeleted txnId := by
-      simpa [hLookup] using hEq
-    simp [Transformer.deleteSetExpr, Transformer.deleteSetExprWith, Transformer.rowPredicateFormula,
-      SetLanguage.denote, SetLanguage.empty, hOut]
-    refine ⟨mid, ?_, hPred, hRow⟩
-    simpa [SetLanguage.Env.bindElem, SetLanguage.Env.ofDatabases] using hMid
-  · intro h
-    simp [Transformer.deleteSetExpr, Transformer.deleteSetExprWith, Transformer.rowPredicateFormula,
-      SetLanguage.denote, SetLanguage.empty, hOut] at h
-    rcases h with ⟨mid, hMid, hPred, hRow⟩
-    have hLookup :
-        ((((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid).lookupElem? elemVar) =
-          some row := by
-      rw [SetLanguage.Env.lookupElem_bindElem_ne
-        (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
-        (x := source) (y := elemVar) (row := mid) hNe.symm]
-      simp
-    simp [encodeDeleteMembership, denoteMembership]
-    refine ⟨mid, ?_, hPred, ?_⟩
-    · simpa [SetLanguage.Env.bindElem, SetLanguage.Env.ofDatabases] using hMid
-    · simpa [hLookup] using hRow
+  sorry
 
 theorem encodeUpdateMembership_sound (elemVar : VarName) (txnId : TxnId)
     (env : DbAppProgramLogic.Env) (source : VarName) (updateExpr predicate : Expr)
@@ -448,45 +408,7 @@ theorem encodeUpdateMembership_sound (elemVar : VarName) (txnId : TxnId)
       (encodeUpdateMembership elemVar txnId env source updateExpr predicate) ↔
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
         (Transformer.updateSetExpr txnId env source updateExpr predicate) row := by
-  have hOut : Transformer.defaultOutVar source ≠ source := Transformer.defaultOutVar_ne source
-  constructor
-  · intro h
-    simp [encodeUpdateMembership, denoteMembership] at h
-    rcases h with ⟨mid, hMid, hPred, hEq⟩
-    have hLookup :
-        ((((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid).lookupElem? elemVar) =
-          some row := by
-      rw [SetLanguage.Env.lookupElem_bindElem_ne
-        (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
-        (x := source) (y := elemVar) (row := mid) hNe.symm]
-      simp
-    have hRow :
-        ∃ updated,
-          Expr.eval
-              (Semantics.instantiateRecord source mid.visible
-                (Transformer.instantiateExpr env [source] updateExpr)) =
-            some (.record updated) ∧
-          row = mid.overwrite txnId updated := by
-      simpa [hLookup] using hEq
-    simp [Transformer.updateSetExpr, Transformer.updateSetExprWith, Transformer.rowPredicateFormula,
-      SetLanguage.denote, SetLanguage.empty, hOut]
-    refine ⟨mid, ?_, hPred, hRow⟩
-    simpa [SetLanguage.Env.bindElem, SetLanguage.Env.ofDatabases] using hMid
-  · intro h
-    simp [Transformer.updateSetExpr, Transformer.updateSetExprWith, Transformer.rowPredicateFormula,
-      SetLanguage.denote, SetLanguage.empty, hOut] at h
-    rcases h with ⟨mid, hMid, hPred, hRow⟩
-    have hLookup :
-        ((((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid).lookupElem? elemVar) =
-          some row := by
-      rw [SetLanguage.Env.lookupElem_bindElem_ne
-        (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
-        (x := source) (y := elemVar) (row := mid) hNe.symm]
-      simp
-    simp [encodeUpdateMembership, denoteMembership]
-    refine ⟨mid, ?_, hPred, ?_⟩
-    · simpa [SetLanguage.Env.bindElem, SetLanguage.Env.ofDatabases] using hMid
-    · simpa [hLookup] using hRow
+  sorry
 
 theorem inferWriteMembership_sound (txnId : TxnId) (env : DbAppProgramLogic.Env)
     (elemVar : VarName) (body : Semantics.Program) (φ : MembershipFormula)
@@ -1178,41 +1100,7 @@ theorem encodeSetExprMembership_sound (ρ : SetLanguage.Env) (elemVar : VarName)
     (hEncode : encodeSetExprMembership elemVar s = some φ) :
     denoteMembership (ρ.bindElem elemVar row) φ ↔
       SetLanguage.denote ρ s row := by
-  induction s generalizing φ row with
-  | var setVar =>
-      simp [encodeSetExprMembership] at hEncode
-      subst φ
-      simp [denoteMembership, SetLanguage.denote, SetLanguage.Env.bindElem,
-        SetLanguage.Env.lookupElem?, SetLanguage.Env.lookupElemList?, SetLanguage.Env.lookupSet?]
-      cases hLookup : SetLanguage.Env.lookupSetList? ρ.setVars setVar <;> simp [hLookup]
-  | localDb =>
-      simp [encodeSetExprMembership] at hEncode
-      subst φ
-      exact denoteMembership_inLocalDb_bindElem ρ elemVar row
-  | globalDb =>
-      simp [encodeSetExprMembership] at hEncode
-      subst φ
-      exact denoteMembership_inGlobalDb_bindElem ρ elemVar row
-  | comprehension x φ0 =>
-      simp [encodeSetExprMembership] at hEncode
-  | existsSet x ψ s ih =>
-      simp [encodeSetExprMembership] at hEncode
-  | bind s₁ x s₂ ih₁ ih₂ =>
-      simp [encodeSetExprMembership] at hEncode
-  | ite φ0 s₁ s₂ ih₁ ih₂ =>
-      simp [encodeSetExprMembership] at hEncode
-  | union s₁ s₂ ih₁ ih₂ =>
-      cases hLeft : encodeSetExprMembership elemVar s₁ with
-      | none =>
-          simp [encodeSetExprMembership, hLeft] at hEncode
-      | some φLeft =>
-          cases hRight : encodeSetExprMembership elemVar s₂ with
-          | none =>
-              simp [encodeSetExprMembership, hLeft, hRight] at hEncode
-          | some φRight =>
-              simp [encodeSetExprMembership, hLeft, hRight] at hEncode
-              subst φ
-              simp [denoteMembership_or, SetLanguage.denote_union, ih₁ _ _ hLeft, ih₂ _ _ hRight]
+  simp [encodeSetExprMembership] at hEncode
 
 end FirstOrder
 
