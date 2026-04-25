@@ -1,5 +1,5 @@
 import DbAppProgramLogic.Transformer.Paper
-import DbAppProgramLogic.Transformer.Concrete
+import DbAppProgramLogic.Legacy.Transformer.Concrete
 
 namespace DbAppProgramLogic
 

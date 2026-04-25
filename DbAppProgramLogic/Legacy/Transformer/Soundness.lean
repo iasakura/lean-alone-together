@@ -1,4 +1,5 @@
-import DbAppProgramLogic.Transformer.SetEffect
+import DbAppProgramLogic.Legacy.Transformer.SetEffect
+import DbAppProgramLogic.Legacy.Transformer.PaperEffect
 
 namespace DbAppProgramLogic
 
@@ -51,10 +52,26 @@ theorem paperInferenceSound_all (R : LocalRely) (txnId : TxnId) (I : Assertion)
       sorry
   | insert expr =>
       intro F hInfer
-      sorry
+      rw [inferPaperEffect_insert_empty] at hInfer
+      injection hInfer with hInfer
+      subst hInfer
+      refine Logic.localValid_insert R txnId _ _ expr (hStablePre Fctxt) ?_
+      intro localDb visibleDb record hPre hEval _hFresh
+      intro row
+      have hCtx := hPre.1 row
+      have hInserted :
+          SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
+            (insertedRowSet txnId { scalarVars := [], setVars := [] } expr) row ↔
+          row = Row.fromInsert txnId record := by
+        simp [SetLanguage.denote, insertedRowSet, instantiateSymExpr, hEval]
+      simp [transformerPost, SetLanguage.denote_union, hCtx, hInserted]
   | delete source predicate =>
       intro F hInfer
-      sorry
+      rw [inferPaperEffect_delete_empty] at hInfer
+      injection hInfer with hInfer
+      subst hInfer
+      simpa [instantiateExpr, instantiateSymExpr] using
+        paperInferenceSound_delete R txnId I Fctxt ([] : Env) source predicate (hStablePre Fctxt)
   | select binder source predicate body ih =>
       intro F hInfer
       sorry
@@ -63,10 +80,12 @@ theorem paperInferenceSound_all (R : LocalRely) (txnId : TxnId) (I : Assertion)
       sorry
   | foreach source doneVar elemVar body ih =>
       intro F hInfer
-      sorry
+      rw [inferPaperEffect_foreach_none] at hInfer
+      cases hInfer
   | foreachRuntime done remaining doneVar elemVar body ih =>
       intro F hInfer
-      sorry
+      rw [inferPaperEffect_foreachRuntime_none] at hInfer
+      cases hInfer
   | txn innerTxnId isolation body ih =>
       intro F hInfer
       simp [inferPaperEffect] at hInfer

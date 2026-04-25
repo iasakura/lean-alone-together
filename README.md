@@ -10,6 +10,11 @@
 
 最初のキャッチアップには [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) を先に読むのがおすすめです。README は対応表中心、`WALKTHROUGH.md` は「どこからどう追うか」中心に書いてあります。重要な定義と定理だけを追いたい場合は [docs/LANDMARKS.md](docs/LANDMARKS.md) を見てください。
 VCG が実際にどんな side condition を出し、Lean でどう埋めるかだけを見たい場合は [docs/VCG_EXAMPLE.md](docs/VCG_EXAMPLE.md) を見てください。
+`Examples.lean` のどこを読めばよいかだけ知りたい場合は [docs/EXAMPLES_GUIDE.md](docs/EXAMPLES_GUIDE.md) を見てください。
+自分のアプリをどんな手順で証明すればよいか見たい場合は [docs/APP_PROOF_TEMPLATE.md](docs/APP_PROOF_TEMPLATE.md) を見てください。
+`select/update` 型のもう少し意味のある handler body で VCG の出力を見たい場合は
+[DbAppProgramLogic/ReadWriteWorkflowExample.lean](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/ReadWriteWorkflowExample.lean)
+を見てください。
 
 現状の実装はすでに有用ですが、論文の全内容をそのまま end-to-end で mechanize したものではありません。Fig. 7 に対応する集合言語 `S` と weakening の層はすでに入り、Sec. 5.2 に向けた first-order membership encoding も `FirstOrder.lean` として部分的にあります。ただし formula 部分はまだ shallow encoding が中心で、Fig. 10 全体の syntax-directed 変換や SMT 向け自動化は未完成です。
 
@@ -48,6 +53,11 @@ VCG が実際にどんな side condition を出し、Lean でどう埋めるか�
   - `GlobalRG.par` / `GlobalValid` を request/server 仕様へ読む補題
 - `DbAppProgramLogic/Examples.lean`
   - 現状の基盤を使った小さな検証例
+- `DbAppProgramLogic/AppWorkflowExample.lean`
+  - 自分のアプリを証明するときの流れに沿って並べた tutorial-style example
+- `DbAppProgramLogic/ReadWriteWorkflowExample.lean`
+  - `select/update` を使う read/modify/write handler に対して、VCG が出す具体的な obligation を
+    base state 上で読むための tutorial-style example
 
 ## 論文中の何が Lean のどれに対応するか
 

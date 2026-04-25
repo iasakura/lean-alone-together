@@ -189,7 +189,7 @@ def formulaOfExpr (env : SymEnv) (expr : Expr) : SetLanguage.Formula0 :=
   fun (_localDb _globalDb : SetLanguage.SetDenotation) =>
     Expr.eval (instantiateSymExpr env [] expr) = some (.scalar (.bool true))
 
-private def evalSymExprAtRow (env : SymEnv) (x : VarName) (row : Row) (expr : Expr) : Option Value :=
+def evalSymExprAtRow (env : SymEnv) (x : VarName) (row : Row) (expr : Expr) : Option Value :=
   Expr.eval (Semantics.instantiateRecord x row.visible (instantiateSymExpr env [x] expr))
 
 def insertedRowSet (txnId : TxnId) (env : SymEnv) (expr : Expr) : SetLanguage.SetExpr :=
@@ -198,10 +198,10 @@ def insertedRowSet (txnId : TxnId) (env : SymEnv) (expr : Expr) : SetLanguage.Se
     | some (.record record) => row = Row.fromInsert txnId record
     | _ => False
 
-private def deletedRowSet (txnId : TxnId) (src : Row) : SetLanguage.SetExpr :=
+def deletedRowSet (txnId : TxnId) (src : Row) : SetLanguage.SetExpr :=
   SetLanguage.singleton (src.markDeleted txnId)
 
-private def updatedRowSet (txnId : TxnId) (env : SymEnv) (x : VarName) (src : Row) (updateExpr : Expr) :
+def updatedRowSet (txnId : TxnId) (env : SymEnv) (x : VarName) (src : Row) (updateExpr : Expr) :
     SetLanguage.SetExpr :=
   fun (_localDb _globalDb : SetLanguage.SetDenotation) (row : Row) =>
     match evalSymExprAtRow env x src updateExpr with
@@ -216,7 +216,7 @@ def globalSelectionSet (env : SymEnv) (x : VarName) (predicate : Expr) :
     else
       SetLanguage.empty)
 
-private def sourceSetExpr (env : SymEnv) (source : Expr) : Option SetLanguage.SetExpr :=
+def sourceSetExpr (env : SymEnv) (source : Expr) : Option SetLanguage.SetExpr :=
   match instantiateSymExpr env [] source with
   | .var x => env.lookupSet? x
   | .lit (.set rows) =>
@@ -279,6 +279,18 @@ theorem evalExprInSetEnv_closed_bindElem_eq_instantiateRecord
       Expr.eval (Semantics.instantiateRecord source row.visible expr) := by
   simp [evalExprInSetEnv, instantiateElemVars, SetLanguage.Env.ofDatabases,
     SetLanguage.Env.bindElem, instantiateSymExpr, Semantics.instantiateRecord]
+
+theorem satisfiesPredicate_eq_some_true_iff_eval_true
+    (source : VarName) (predicate : Expr) (record : RecordLit) :
+    Semantics.satisfiesPredicate source predicate record = some true ↔
+      Expr.eval (Semantics.instantiateRecord source record predicate) =
+        some (.scalar (.bool true)) := by
+  unfold Semantics.satisfiesPredicate
+  cases hEval : Expr.eval (Semantics.instantiateRecord source record predicate) <;> simp [hEval]
+  case some value =>
+    cases value <;> simp [hEval]
+    case scalar lit =>
+      cases lit <;> simp [hEval]
 
 theorem globalSelectionSet_closed_denote_iff (source : VarName) (predicate : Expr)
     (db : Database) (row : Row) (hSource : source ≠ "_row") :
@@ -513,60 +525,13 @@ theorem instantiateSymCommand_insertScalar (env : SymEnv) (visibleDb : Database)
         (instantiateScalarCommand (env.eraseScalar x) (Command.subst x expr body)) := by
   simp [instantiateSymCommand, instantiateScalarCommand_insertScalar]
 
-mutual
-
-  private def inferPaperForeach (txnId : TxnId) (env : SymEnv)
-      (elemVar : VarName) (body : Semantics.Program) (sourceSet : SetLanguage.SetExpr) :
-      Option SetLanguage.SetExpr := none
-
-  /--
-  Paper-style symbolic effect inference, following Fig. 8 more closely than `inferEffect`.
-
-  In particular, `let` and `if` stay symbolic, and `SELECT` binds a symbolic set expression instead
-  of concretely materializing rows from a specific database.
-  -/
-  def inferPaperEffect (txnId : TxnId) (env : SymEnv) : Semantics.Program → Option SetLanguage.SetExpr
-    | .skip => some SetLanguage.empty
-    | .letE x expr body =>
-        inferPaperEffect txnId (env.insertScalar x (instantiateSymExpr env [] expr)) body
-    | .ite cond thenBranch elseBranch => do
-        let sThen ← inferPaperEffect txnId env thenBranch
-        let sElse ← inferPaperEffect txnId env elseBranch
-        let cond' := instantiateSymExpr env [] cond
-        pure (SetLanguage.SetExpr.ite (formulaOfExpr { env with scalarVars := [] } cond') sThen sElse)
-    | .seq left right => do
-        let sLeft ← inferPaperEffect txnId env left
-        let sRight ← inferPaperEffect txnId env right
-        pure (SetLanguage.SetExpr.union sLeft sRight)
-    | .insert expr =>
-        some (insertedRowSet txnId env (instantiateSymExpr env [] expr))
-    | .delete source predicate =>
-        some (SetLanguage.SetExpr.bind SetLanguage.SetExpr.globalDb (fun row =>
-          if evalSymExprAtRow env source row (instantiateSymExpr env [source] predicate) =
-              some (.scalar (.bool true)) then
-            deletedRowSet txnId row
-          else
-            SetLanguage.empty))
-    | .select binder source predicate body => do
-        let selected := globalSelectionSet env source (instantiateSymExpr env [source] predicate)
-        inferPaperEffect txnId (env.insertSet binder selected) body
-    | .update source updateExpr predicate =>
-        some (SetLanguage.SetExpr.bind SetLanguage.SetExpr.globalDb (fun row =>
-          if evalSymExprAtRow env source row (instantiateSymExpr env [source] predicate) =
-              some (.scalar (.bool true)) then
-            updatedRowSet txnId env source row (instantiateSymExpr env [source] updateExpr)
-          else
-            SetLanguage.empty))
-    | .foreach source doneVar elemVar body => do
-        inferPaperForeach txnId ((env.eraseSet doneVar).eraseScalar doneVar) elemVar body
-          (← sourceSetExpr env source)
-    | .foreachRuntime done remaining doneVar elemVar body =>
-        none
-    | .txn .. => none
-    | .txnRuntime .. => none
-    | .par .. => none
-
-end
+/-!
+`inferPaperEffect`/`inferPaperForeach` and their closed-form lemmas have moved to
+`DbAppProgramLogic/Legacy/Transformer/PaperEffect.lean`. They were the wrong direction for the
+inference judgment: a total recursive function on closed programs, instead of the relational
+judgment of Fig. 13. The paper-aligned formalization in `Transformer/Inference.lean` and
+`InferenceSoundness.lean` supersedes them.
+-/
 
 /-- Paper-style precondition from Theorem 5.1: the current local database is exactly the context
 effect `Fctxt`, interpreted against the current visible database, and the visible database satisfies
@@ -932,7 +897,34 @@ theorem deleteSetExprWith_sound (outVar : VarName) (txnId : TxnId) (env : Env)
     SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
       (deleteSetExprWith outVar txnId env source predicate) row ↔
       row ∈ rows := by
-  sorry
+  classical
+  rw [Semantics.mem_collectDeleted_iff hCollect]
+  constructor
+  · intro h
+    simp [deleteSetExprWith, SetLanguage.denote, rowPredicateFormula, SetLanguage.SetExpr.bind,
+      SetLanguage.SetExpr.globalDb] at h
+    rcases h with ⟨mid, hMid, hBody⟩
+    by_cases hPred : rowPredicateFormula env source predicate mid
+    · have hEq : row = mid.markDeleted txnId := by
+        have hPred' :
+            Semantics.satisfiesPredicate source (instantiateExpr env [source] predicate)
+              mid.visible = some true := by
+          simpa [rowPredicateFormula] using hPred
+        simp [rowPredicateFormula, hPred', SetLanguage.singleton, SetLanguage.empty] at hBody
+        exact hBody
+      exact ⟨mid, by simpa [SetLanguage.Env.ofDatabases] using hMid, hPred, hEq⟩
+    · have : False := by
+        have hPred' :
+            ¬ Semantics.satisfiesPredicate source (instantiateExpr env [source] predicate)
+              mid.visible = some true := by
+          simpa [rowPredicateFormula] using hPred
+        simp [rowPredicateFormula, hPred', SetLanguage.singleton, SetLanguage.empty] at hBody
+      exact False.elim this
+  · rintro ⟨mid, hMid, hPred, hEq⟩
+    refine ⟨mid, ?_, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMid
+    · simpa [deleteSetExprWith, SetLanguage.denote, rowPredicateFormula, SetLanguage.SetExpr.bind,
+        SetLanguage.SetExpr.globalDb, hPred, SetLanguage.singleton, SetLanguage.empty] using hEq
 
 theorem deleteSetExpr_sound (txnId : TxnId) (env : Env)
     (source : VarName) (predicate : Expr)
@@ -956,7 +948,39 @@ theorem updateSetExprWith_sound (outVar : VarName) (txnId : TxnId) (env : Env)
     SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
       (updateSetExprWith outVar txnId env source updateExpr predicate) row ↔
       row ∈ rows := by
-  sorry
+  classical
+  rw [Semantics.mem_collectUpdated_iff hCollect]
+  constructor
+  · intro h
+    simp [updateSetExprWith, SetLanguage.denote, rowPredicateFormula, SetLanguage.SetExpr.bind,
+      SetLanguage.SetExpr.globalDb] at h
+    rcases h with ⟨mid, hMid, hBody⟩
+    by_cases hPred : rowPredicateFormula env source predicate mid
+    · have hUpdated :
+        ∃ updated,
+          Expr.eval (Semantics.instantiateRecord source mid.visible
+            (instantiateExpr env [source] updateExpr)) = some (.record updated) ∧
+          row = mid.overwrite txnId updated := by
+          have hPred' :
+              Semantics.satisfiesPredicate source (instantiateExpr env [source] predicate)
+                mid.visible = some true := by
+            simpa [rowPredicateFormula] using hPred
+          simp [rowPredicateFormula, hPred', SetLanguage.empty] at hBody
+          exact hBody
+      rcases hUpdated with ⟨updated, hEval, hEq⟩
+      exact ⟨mid, by simpa [SetLanguage.Env.ofDatabases] using hMid, hPred, updated, hEval, hEq⟩
+    · have : False := by
+        have hPred' :
+            ¬ Semantics.satisfiesPredicate source (instantiateExpr env [source] predicate)
+              mid.visible = some true := by
+          simpa [rowPredicateFormula] using hPred
+        simp [rowPredicateFormula, hPred', SetLanguage.empty] at hBody
+      exact False.elim this
+  · rintro ⟨mid, hMid, hPred, updated, hEval, hEq⟩
+    refine ⟨mid, ?_, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMid
+    · simpa [updateSetExprWith, SetLanguage.denote, rowPredicateFormula, SetLanguage.SetExpr.bind,
+        SetLanguage.SetExpr.globalDb, hPred, SetLanguage.empty] using ⟨updated, hEval, hEq⟩
 
 theorem updateSetExpr_sound (txnId : TxnId) (env : Env)
     (source : VarName) (updateExpr predicate : Expr)
@@ -1008,7 +1032,8 @@ theorem deleteSetExpr_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (e
     SetLanguage.denote (setEnvOfDatabase absVar db)
       (SetLanguage.abstractGlobal absVar (deleteSetExpr txnId env source predicate)) row ↔
       row ∈ rows := by
-  sorry
+  simpa [setEnvOfDatabase, SetLanguage.abstractGlobal] using
+    deleteSetExpr_sound txnId env source predicate db rows row hCollect
 
 theorem updateSetExpr_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (env : Env)
     (source : VarName) (updateExpr predicate : Expr)
@@ -1020,7 +1045,8 @@ theorem updateSetExpr_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (e
     SetLanguage.denote (setEnvOfDatabase absVar db)
       (SetLanguage.abstractGlobal absVar (updateSetExpr txnId env source updateExpr predicate)) row ↔
       row ∈ rows := by
-  sorry
+  simpa [setEnvOfDatabase, SetLanguage.abstractGlobal] using
+    updateSetExpr_sound txnId env source updateExpr predicate db rows row hCollect
 
 
 def effectPost (I : Assertion) (F : TxnEffect) : BiAssertion :=

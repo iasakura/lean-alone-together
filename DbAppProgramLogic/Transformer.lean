@@ -1,7 +1,10 @@
 import DbAppProgramLogic.Transformer.Basic
 import DbAppProgramLogic.Transformer.Paper
-import DbAppProgramLogic.Transformer.Concrete
 import DbAppProgramLogic.Transformer.Select
 import DbAppProgramLogic.Transformer.Foreach
-import DbAppProgramLogic.Transformer.SetEffect
-import DbAppProgramLogic.Transformer.Soundness
+import DbAppProgramLogic.Transformer.Stabilize
+import DbAppProgramLogic.Transformer.Inference
+import DbAppProgramLogic.Transformer.InferenceSoundness
+import DbAppProgramLogic.Transformer.InferenceCapstone
+import DbAppProgramLogic.Transformer.InferenceExample
+import DbAppProgramLogic.Transformer.InferenceCapstoneExample

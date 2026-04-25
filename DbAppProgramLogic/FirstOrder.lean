@@ -1,4 +1,4 @@
-import DbAppProgramLogic.Transformer
+import DbAppProgramLogic.Legacy
 
 namespace DbAppProgramLogic
 
@@ -399,7 +399,71 @@ theorem encodeDeleteMembership_sound (elemVar : VarName) (txnId : TxnId)
       (encodeDeleteMembership elemVar txnId env source predicate) ↔
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
         (Transformer.deleteSetExpr txnId env source predicate) row := by
-  sorry
+  classical
+  constructor
+  · intro h
+    simp [encodeDeleteMembership] at h
+    rcases h with ⟨mid, hMid, hPred, hEqDeleted⟩
+    have hMid' : mid ∈ db := by
+      simpa [SetLanguage.Env.ofDatabases] using
+        (denoteMembership_inGlobalDb_bindElem
+          (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
+          (x := source) (row := mid)).1 hMid
+    have hPred' : Transformer.rowPredicateFormula env source predicate mid := by
+      simpa [Transformer.rowPredicateFormula] using
+        (denoteMembership_satisfiesPredicate_bindElem
+          (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
+          (source := source) (predicate := Transformer.instantiateExpr env [source] predicate)
+          (row := mid)).1 hPred
+    have hEq : row = mid.markDeleted txnId := by
+      exact (denoteMembership_eqDeleted_bindElem₂
+        (ρ := SetLanguage.Env.ofDatabases [] db) (outVar := elemVar) (source := source)
+        (txnId := txnId) (out := row) (src := mid) hNe).1 hEqDeleted
+    have hPredEq :
+        Semantics.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate)
+          mid.visible = some true := by
+      simpa [Transformer.rowPredicateFormula] using hPred'
+    refine ⟨mid, ?_, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMid'
+    · simp [hPred', SetLanguage.singleton, SetLanguage.empty, hEq]
+  · intro h
+    simp [Transformer.deleteSetExpr, Transformer.deleteSetExprWith, Transformer.rowPredicateFormula,
+      SetLanguage.denote, SetLanguage.SetExpr.bind, SetLanguage.SetExpr.globalDb] at h
+    rcases h with ⟨mid, hMid, hBody⟩
+    by_cases hPred : Transformer.rowPredicateFormula env source predicate mid
+    · have hPred' :
+          Semantics.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate)
+            mid.visible = some true := by
+        simpa [Transformer.rowPredicateFormula] using hPred
+      have hEq : row = mid.markDeleted txnId := by
+        simp [Transformer.rowPredicateFormula, hPred', SetLanguage.singleton, SetLanguage.empty] at hBody
+        exact hBody
+      have hInGlobal :
+          denoteMembership (((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid)
+            (.inGlobalDb source) := by
+        exact (denoteMembership_inGlobalDb_bindElem
+          (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
+          (x := source) (row := mid)).2 (by simpa [SetLanguage.Env.ofDatabases] using hMid)
+      have hSat :
+          denoteMembership (((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid)
+            (.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate)) := by
+        exact (denoteMembership_satisfiesPredicate_bindElem
+          (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
+          (source := source) (predicate := Transformer.instantiateExpr env [source] predicate)
+          (row := mid)).2 hPred'
+      have hEqDeleted :
+          denoteMembership (((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid)
+            (.eqDeleted elemVar source txnId) := by
+        exact (denoteMembership_eqDeleted_bindElem₂
+          (ρ := SetLanguage.Env.ofDatabases [] db) (outVar := elemVar) (source := source)
+          (txnId := txnId) (out := row) (src := mid) hNe).2 hEq
+      simp [encodeDeleteMembership]
+      exact ⟨mid, hInGlobal, hSat, hEqDeleted⟩
+    · have hPred' :
+          ¬ Semantics.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate)
+            mid.visible = some true := by
+        simpa [Transformer.rowPredicateFormula] using hPred
+      simp [Transformer.rowPredicateFormula, hPred', SetLanguage.singleton, SetLanguage.empty] at hBody
 
 theorem encodeUpdateMembership_sound (elemVar : VarName) (txnId : TxnId)
     (env : DbAppProgramLogic.Env) (source : VarName) (updateExpr predicate : Expr)
@@ -408,7 +472,83 @@ theorem encodeUpdateMembership_sound (elemVar : VarName) (txnId : TxnId)
       (encodeUpdateMembership elemVar txnId env source updateExpr predicate) ↔
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
         (Transformer.updateSetExpr txnId env source updateExpr predicate) row := by
-  sorry
+  classical
+  constructor
+  · intro h
+    simp [encodeUpdateMembership] at h
+    rcases h with ⟨mid, hMid, hPred, hEqUpdated⟩
+    have hMid' : mid ∈ db := by
+      simpa [SetLanguage.Env.ofDatabases] using
+        (denoteMembership_inGlobalDb_bindElem
+          (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
+          (x := source) (row := mid)).1 hMid
+    have hPred' : Transformer.rowPredicateFormula env source predicate mid := by
+      simpa [Transformer.rowPredicateFormula] using
+        (denoteMembership_satisfiesPredicate_bindElem
+          (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
+          (source := source) (predicate := Transformer.instantiateExpr env [source] predicate)
+          (row := mid)).1 hPred
+    have hUpdated :
+        ∃ updated,
+          Expr.eval (Semantics.instantiateRecord source mid.visible
+            (Transformer.instantiateExpr env [source] updateExpr)) = some (.record updated) ∧
+          row = mid.overwrite txnId updated := by
+      exact (denoteMembership_eqUpdated_bindElem₂
+        (ρ := SetLanguage.Env.ofDatabases [] db) (outVar := elemVar) (source := source)
+        (txnId := txnId) (updateExpr := Transformer.instantiateExpr env [source] updateExpr)
+        (out := row) (src := mid) hNe).1 hEqUpdated
+    have hPredEq :
+        Semantics.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate)
+          mid.visible = some true := by
+      simpa [Transformer.rowPredicateFormula] using hPred'
+    refine ⟨mid, ?_, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMid'
+    · rcases hUpdated with ⟨updated, hEval, hEq⟩
+      simp [hPred', SetLanguage.empty, hEval, hEq]
+  · intro h
+    simp [Transformer.updateSetExpr, Transformer.updateSetExprWith, Transformer.rowPredicateFormula,
+      SetLanguage.denote, SetLanguage.SetExpr.bind, SetLanguage.SetExpr.globalDb] at h
+    rcases h with ⟨mid, hMid, hBody⟩
+    by_cases hPred : Transformer.rowPredicateFormula env source predicate mid
+    · have hPred' :
+          Semantics.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate)
+            mid.visible = some true := by
+        simpa [Transformer.rowPredicateFormula] using hPred
+      have hUpdated :
+          ∃ updated,
+            Expr.eval (Semantics.instantiateRecord source mid.visible
+              (Transformer.instantiateExpr env [source] updateExpr)) = some (.record updated) ∧
+            row = mid.overwrite txnId updated := by
+        simp [Transformer.rowPredicateFormula, hPred', SetLanguage.empty] at hBody
+        exact hBody
+      rcases hUpdated with ⟨updated, hEval, hEq⟩
+      have hInGlobal :
+          denoteMembership (((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid)
+            (.inGlobalDb source) := by
+        exact (denoteMembership_inGlobalDb_bindElem
+          (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
+          (x := source) (row := mid)).2 (by simpa [SetLanguage.Env.ofDatabases] using hMid)
+      have hSat :
+          denoteMembership (((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid)
+            (.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate)) := by
+        exact (denoteMembership_satisfiesPredicate_bindElem
+          (ρ := (SetLanguage.Env.ofDatabases [] db).bindElem elemVar row)
+          (source := source) (predicate := Transformer.instantiateExpr env [source] predicate)
+          (row := mid)).2 hPred'
+      have hEqUpdated :
+          denoteMembership (((SetLanguage.Env.ofDatabases [] db).bindElem elemVar row).bindElem source mid)
+            (.eqUpdated elemVar source txnId (Transformer.instantiateExpr env [source] updateExpr)) := by
+        exact (denoteMembership_eqUpdated_bindElem₂
+          (ρ := SetLanguage.Env.ofDatabases [] db) (outVar := elemVar) (source := source)
+          (txnId := txnId) (updateExpr := Transformer.instantiateExpr env [source] updateExpr)
+          (out := row) (src := mid) hNe).2 ⟨updated, hEval, hEq⟩
+      simp [encodeUpdateMembership]
+      exact ⟨mid, hInGlobal, hSat, hEqUpdated⟩
+    · have hPred' :
+          ¬ Semantics.satisfiesPredicate source (Transformer.instantiateExpr env [source] predicate)
+            mid.visible = some true := by
+        simpa [Transformer.rowPredicateFormula] using hPred
+      simp [Transformer.rowPredicateFormula, hPred', SetLanguage.empty] at hBody
 
 theorem inferWriteMembership_sound (txnId : TxnId) (env : DbAppProgramLogic.Env)
     (elemVar : VarName) (body : Semantics.Program) (φ : MembershipFormula)

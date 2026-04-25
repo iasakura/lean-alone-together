@@ -4,6 +4,11 @@
 全部を順番に読む必要はありません。目的ごとにランドマークだけ追う方が速いです。
 
 重要な定義・定理の解説だけを見たい場合は [LANDMARKS.md](LANDMARKS.md) を見てください。
+`Examples.lean` の読む順番だけ知りたい場合は [EXAMPLES_GUIDE.md](EXAMPLES_GUIDE.md) を見てください。
+自分のアプリをどういう順番で証明していくかの template は [APP_PROOF_TEMPLATE.md](APP_PROOF_TEMPLATE.md) にあります。
+`select/update` を使う read/modify/write handler の VCG だけを見たい場合は
+[DbAppProgramLogic/ReadWriteWorkflowExample.lean](/home/ia/ghq/github.com/iasakura/db-app-program-logic/DbAppProgramLogic/ReadWriteWorkflowExample.lean)
+を見るのがいちばん早いです。
 
 ## 全体像
 

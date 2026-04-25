@@ -1,4 +1,5 @@
 import DbAppProgramLogic.Syntax
+import DbAppProgramLogic.ReadableSyntax
 import DbAppProgramLogic.Semantics
 import DbAppProgramLogic.SetLanguage
 import DbAppProgramLogic.Logic
@@ -7,6 +8,8 @@ import DbAppProgramLogic.Transformer
 import DbAppProgramLogic.Refinement
 import DbAppProgramLogic.FirstOrder
 import DbAppProgramLogic.Examples
+import DbAppProgramLogic.AppWorkflowExample
+import DbAppProgramLogic.ReadWriteWorkflowExample
 
 /-!
 Umbrella import for the whole development.
