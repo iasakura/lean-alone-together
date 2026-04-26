@@ -148,6 +148,18 @@ def txnIds (events : List CommitEvent) : List TxnId :=
 def requests {Req : Type} (requestOf : TxnId → Req) (events : List CommitEvent) : List Req :=
   events.map (fun event => requestOf event.txnId)
 
+theorem snoc {specs : TxnId → StateSpec}
+    {db db' db'' : Database} {events : List CommitEvent} {txnId : TxnId}
+    (hLog : CommitLog specs db events db')
+    (hSpec : specs txnId db' db'') :
+    CommitLog specs db (events ++ [{ txnId := txnId, before := db', after := db'' }]) db'' := by
+  induction hLog with
+  | nil =>
+      simpa using CommitLog.cons hSpec CommitLog.nil
+  | @cons db0 db1 db2 txnId' rest hHead hTail ih =>
+      simp
+      exact CommitLog.cons hHead (ih hSpec)
+
 theorem ofCommitSequence {specs : TxnId → StateSpec}
     {db db' : Database} {commits : List TxnId}
     (hSeq : CommitSequence specs db commits db') :
@@ -186,10 +198,26 @@ theorem events_match_specs {specs : TxnId → StateSpec}
         exact hHead
       · exact ih _ hIn
 
+theorem graphAssign_iff_foldl_requests {Req : Type}
+    {requestOf : TxnId → Req} {fs : RequestTransformer Req}
+    {db db' : Database} {events : List CommitEvent}
+    (hLog : CommitLog (RequestSpec.graphAssign requestOf fs) db events db') :
+    db' = List.foldl (fun current req => fs req current) db (requests requestOf events) := by
+  induction hLog with
+  | nil =>
+      simp [requests]
+  | @cons db0 db1 db2 txnId rest hHead hTail ih =>
+      rcases hHead with rfl
+      simp [requests, RequestSpec.graphAssign, RequestSpec.assign, StateSpec.graph, ih]
+
 end CommitLog
 
 /-- Handler-level correctness is just the canonical global validity judgment. -/
 abbrev HandlerRefines := Logic.GlobalValid
+
+/-- Closed-system assumption used when reconstructing a commit log from an execution. -/
+def SilentRely (R : Rely) : Prop :=
+  ∀ db db', R db db' → db' = db
 
 /-- Parallel/server validity: quiescent endpoints satisfy the postcondition, and every commit event
 matches the per-transaction specification family. -/
@@ -225,6 +253,17 @@ theorem ParallelValid.commitSpec {Ipre : Assertion} {R : Rely}
     (hCommit : TxnCommitStep txnId midCfg.program midCfg.globalDb nextProgram nextDb) :
     specs txnId midCfg.globalDb nextDb :=
   (h db hDb).2 _ _ _ _ hRun hCommit
+
+theorem parallelValid_of_specSubset {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs specs' : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program specs Ipost)
+    (hSub : ∀ txnId db db', specs txnId db db' → specs' txnId db db') :
+    ParallelValid Ipre R program specs' Ipost := by
+  intro db hDb
+  rcases h db hDb with ⟨hPost, hTxn⟩
+  refine ⟨hPost, ?_⟩
+  intro txnId midCfg nextProgram nextDb hRun hCommit
+  exact hSub _ _ _ (hTxn _ _ _ _ hRun hCommit)
 
 theorem txnParallelValid_of_handlerRefines_at {Ipre : Assertion} {R : Rely}
     {txnId : TxnId} {isolation : IsolationSpec Database} {body : Semantics.Program}
@@ -495,6 +534,90 @@ theorem txnPair_parallelValid_of_handlerRefines
     (txnParallelValid_of_handlerRefines_at
       (fun _ _ hSpec => ⟨rfl, hSpec⟩)
       hRight')
+
+/-- In a closed system, every reachable database state is explained by the commit events seen so
+far. Non-commit program steps and silent rely steps do not contribute new log entries. -/
+theorem parallelValid_commitLog_of_silentRely
+    {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program specs Ipost)
+    (hSilent : SilentRely R)
+    {db : Database} (hDb : Ipre db)
+    {finalCfg : GlobalConfig}
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ events, CommitLog specs db events finalCfg.globalDb := by
+  induction hRun with
+  | refl =>
+      exact ⟨[], CommitLog.nil⟩
+  | @tail cfg₂ cfg₃ hPrev hLast ih =>
+      rcases ih with ⟨events, hLog⟩
+      cases hCfg₂ : cfg₂ with
+      | mk program₂ db₂ =>
+          subst cfg₂
+          cases hCfg₃ : cfg₃ with
+          | mk program₃ db₃ =>
+              subst cfg₃
+              cases hLast with
+              | inl hActual =>
+                  rcases step_sameDb_or_commit hActual with hSameDb | ⟨txnId, hCommit⟩
+                  · cases hSameDb
+                    exact ⟨events, hLog⟩
+                  · exact
+                      ⟨events ++ [{ txnId := txnId, before := db₂, after := db₃ }],
+                        CommitLog.snoc hLog (ParallelValid.commitSpec h hDb hPrev hCommit)⟩
+              | inr hRely =>
+                  rcases hRely with ⟨_hProgram, hRely⟩
+                  have hEq : db₃ = db₂ := hSilent _ _ hRely
+                  cases hEq
+                  exact ⟨events, hLog⟩
+
+theorem parallelValid_commitSequence_of_silentRely
+    {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {specs : TxnId → StateSpec} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program specs Ipost)
+    (hSilent : SilentRely R)
+    {db : Database} (hDb : Ipre db)
+    {finalCfg : GlobalConfig}
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ commits, CommitSequence specs db commits finalCfg.globalDb := by
+  rcases parallelValid_commitLog_of_silentRely h hSilent hDb hRun with ⟨events, hLog⟩
+  rcases CommitLog.toCommitSequence hLog with ⟨commits, hSeq⟩
+  exact ⟨commits, hSeq⟩
+
+/-- Graph specs turn the extracted commit sequence into an explicit fold of abstract state
+transformers. This is the generic refinement corollary for functional models. -/
+theorem parallelValid_foldl_of_graphSpecs
+    {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {fs : TxnId → StateTransformer} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program (fun txnId => StateSpec.graph (fs txnId)) Ipost)
+    (hSilent : SilentRely R)
+    {db : Database} (hDb : Ipre db)
+    {finalCfg : GlobalConfig}
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ commits,
+      CommitSequence (fun txnId => StateSpec.graph (fs txnId)) db commits finalCfg.globalDb ∧
+      finalCfg.globalDb = List.foldl (fun current txnId => fs txnId current) db commits := by
+  rcases parallelValid_commitSequence_of_silentRely h hSilent hDb hRun with ⟨commits, hSeq⟩
+  refine ⟨commits, hSeq, ?_⟩
+  exact (CommitSequence.graph_iff_foldl).1 hSeq
+
+/-- Request-indexed graph specs can be read back directly as a fold over the committed request log,
+without extending the operational semantics with an explicit ghost trace. -/
+theorem parallelValid_request_foldl_of_graphAssign
+    {Req : Type} {Ipre : Assertion} {R : Rely}
+    {program : Semantics.Program} {requestOf : TxnId → Req}
+    {fs : RequestTransformer Req} {Ipost : Assertion}
+    (h : ParallelValid Ipre R program (RequestSpec.graphAssign requestOf fs) Ipost)
+    (hSilent : SilentRely R)
+    {db : Database} (hDb : Ipre db)
+    {finalCfg : GlobalConfig}
+    (hRun : GlobalMultiStep R ⟨program, db⟩ finalCfg) :
+    ∃ events,
+      CommitLog (RequestSpec.graphAssign requestOf fs) db events finalCfg.globalDb ∧
+      finalCfg.globalDb =
+        List.foldl (fun current req => fs req current) db (CommitLog.requests requestOf events) := by
+  rcases parallelValid_commitLog_of_silentRely h hSilent hDb hRun with ⟨events, hLog⟩
+  exact ⟨events, hLog, CommitLog.graphAssign_iff_foldl_requests hLog⟩
 
 end Server
 

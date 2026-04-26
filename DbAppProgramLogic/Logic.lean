@@ -278,6 +278,45 @@ theorem localValid_of_relySubset {R R' : LocalRely} {txnId : TxnId}
   intro localDb visibleDb finalCfg hP hRun hSkip
   exact hValid _ _ _ hP (localMultiStep_mono hSub hRun) hSkip
 
+theorem localValid_of_stutterRely {R : LocalRely} {txnId : TxnId}
+    {P : BiAssertion} {c : Command ι Database} {Q : BiAssertion}
+    (hValid : LocalValid (fun _ _ _ => False) txnId P c Q)
+    (hSilent : ∀ localDb visibleDb visibleDb',
+      R localDb visibleDb visibleDb' → visibleDb' = visibleDb) :
+    LocalValid R txnId P c Q := by
+  have stripStep :
+      ∀ {cfg cfg' : LocalConfig ι},
+        localInterleavedStep (ι := ι) R txnId cfg cfg' →
+        cfg' = cfg ∨
+          localInterleavedStep (ι := ι) (fun _ _ _ => False) txnId cfg cfg' := by
+    intro cfg cfg' hStep
+    cases hStep with
+    | inl hActual =>
+        exact Or.inr (Or.inl hActual)
+    | inr hRely =>
+        rcases cfg with ⟨cmd, localDb, visibleDb⟩
+        rcases cfg' with ⟨cmd', localDb', visibleDb'⟩
+        rcases hRely with ⟨hCmd, hLocal, _hNotSkip, hR⟩
+        subst hCmd
+        subst hLocal
+        have hVis : visibleDb' = visibleDb := hSilent _ _ _ hR
+        subst hVis
+        exact Or.inl rfl
+  have strip :
+      ∀ {cfg₁ cfg₂ : LocalConfig ι},
+        LocalMultiStep R txnId ι cfg₁ cfg₂ →
+        LocalMultiStep (fun _ _ _ => False) txnId ι cfg₁ cfg₂ := by
+    intro cfg₁ cfg₂ hRun
+    induction hRun with
+    | refl =>
+        exact MultiStep.refl
+    | tail hPrev hLast ih =>
+        rcases stripStep hLast with rfl | hLast'
+        · exact ih
+        · exact MultiStep.tail ih hLast'
+  intro localDb visibleDb finalCfg hP hRun hSkip
+  exact hValid _ _ _ hP (strip hRun) hSkip
+
 theorem txnGuaranteed_of_relySubset {R R' : Rely} {G : Guarantee}
     {program : Semantics.Program} {db : Database}
     (hTxn : txnGuaranteed R G program db)
