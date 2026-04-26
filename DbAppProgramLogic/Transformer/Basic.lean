@@ -262,14 +262,32 @@ noncomputable def instantiateSymCommand (env : SymEnv) (visibleDb : Database)
     (cmd : Semantics.Program) : Semantics.Program :=
   instantiateSetCommand env visibleDb (instantiateScalarCommand env cmd)
 
+/-- Denotation of `globalSelectionSet env source predicate` over an empty local context.
+A row `r` lies in the symbolic selection iff it lies in the global database and the predicate,
+evaluated under `env` with `source` bound to `r`, holds.
+
+The bridge to surface forms based on `evalExprInSetEnv` / `Semantics.satisfiesPredicate` is
+left to dedicated wrappers below; expressing the right-hand side via `evalSymExprAtRow` keeps
+this lemma a pure unfolding of `globalSelectionSet`. -/
 theorem globalSelectionSet_denote (env : SymEnv) (source : VarName) (predicate : Expr)
-    (db : Database) (row : Row) (hSource : source ≠ "_row") :
+    (db : Database) (row : Row) :
     SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
       (globalSelectionSet env source predicate) row ↔
       row ∈ db ∧
-        evalExprInSetEnv env ((SetLanguage.Env.ofDatabases [] db).bindElem source row) predicate =
-          some (.scalar (.bool true)) := by
-  sorry
+        evalSymExprAtRow env source row predicate = some (.scalar (.bool true)) := by
+  simp only [globalSelectionSet, SetLanguage.denote_bind,
+    SetLanguage.denote_globalDb_ofDatabases]
+  constructor
+  · rintro ⟨mid, hMid, hBody⟩
+    by_cases hPred :
+        evalSymExprAtRow env source mid predicate = some (.scalar (.bool true))
+    · simp [hPred, SetLanguage.denote, SetLanguage.singleton] at hBody
+      subst hBody
+      exact ⟨hMid, hPred⟩
+    · simp [hPred, SetLanguage.denote, SetLanguage.empty] at hBody
+  · rintro ⟨hMem, hPred⟩
+    refine ⟨row, hMem, ?_⟩
+    simp [hPred, SetLanguage.denote, SetLanguage.singleton]
 
 theorem evalExprInSetEnv_closed_bindElem_eq_instantiateRecord
     (setVars : List (VarName × SetLanguage.SetExpr)) (source : VarName)
@@ -292,63 +310,37 @@ theorem satisfiesPredicate_eq_some_true_iff_eval_true
     case scalar lit =>
       cases lit <;> simp [hEval]
 
+/-- Closed-environment specialization of `globalSelectionSet_denote`. With no scalar/set
+substitutions, `evalSymExprAtRow` reduces to evaluating the predicate against the row, which
+matches `Semantics.satisfiesPredicate`. -/
 theorem globalSelectionSet_closed_denote_iff (source : VarName) (predicate : Expr)
-    (db : Database) (row : Row) (hSource : source ≠ "_row") :
+    (db : Database) (row : Row) :
     SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
       (globalSelectionSet { scalarVars := [], setVars := [] } source predicate) row ↔
       row ∈ db ∧ Semantics.satisfiesPredicate source predicate row.visible = some true := by
-  rw [globalSelectionSet_denote { scalarVars := [], setVars := [] } source predicate db row hSource]
-  rw [evalExprInSetEnv_closed_bindElem_eq_instantiateRecord]
-  constructor
-  · intro h
-    refine ⟨h.1, ?_⟩
-    simp [Semantics.satisfiesPredicate, h.2]
-  · intro h
-    refine ⟨h.1, ?_⟩
-    unfold Semantics.satisfiesPredicate at h
-    cases hEval : Expr.eval (Semantics.instantiateRecord source row.visible predicate) with
-    | none =>
-        simp [hEval] at h
-    | some value =>
-        cases value <;> simp [hEval] at h
-        case scalar lit =>
-          cases lit <;> simp at h
-          case bool b =>
-            cases b <;> simp at h
-            case true =>
-              simpa [hEval]
+  rw [globalSelectionSet_denote]
+  refine and_congr_right (fun _ => ?_)
+  have hEvalSym :
+      evalSymExprAtRow ({ scalarVars := [], setVars := [] } : SymEnv) source row predicate =
+        Expr.eval (Semantics.instantiateRecord source row.visible predicate) := by
+    simp [evalSymExprAtRow, instantiateSymExpr_noScalars]
+  rw [hEvalSym, satisfiesPredicate_eq_some_true_iff_eval_true]
 
+/-- Variant of `globalSelectionSet_closed_denote_iff` for non-empty `env`. The bridging
+hypothesis `hEval` discharges the gap between the symbolic per-row evaluation
+`evalSymExprAtRow env source row predicate` and the closed-form predicate evaluation. -/
 theorem globalSelectionSet_denote_iff_of_eval
     (env : SymEnv) (source : VarName) (predicate : Expr)
-    (db : Database) (row : Row) (hSource : source ≠ "_row")
+    (db : Database) (row : Row)
     (hEval :
-      evalExprInSetEnv env ((SetLanguage.Env.ofDatabases [] db).bindElem source row) predicate =
+      evalSymExprAtRow env source row predicate =
         Expr.eval (Semantics.instantiateRecord source row.visible predicate)) :
     SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
       (globalSelectionSet env source predicate) row ↔
       row ∈ db ∧ Semantics.satisfiesPredicate source predicate row.visible = some true := by
-  rw [globalSelectionSet_denote env source predicate db row hSource]
-  constructor
-  · intro h
-    rcases h with ⟨hMem, hPred⟩
-    refine ⟨hMem, ?_⟩
-    unfold Semantics.satisfiesPredicate
-    rw [← hEval]
-    simp [hPred]
-  · intro h
-    refine ⟨h.1, ?_⟩
-    unfold Semantics.satisfiesPredicate at h
-    cases hEval' : Expr.eval (Semantics.instantiateRecord source row.visible predicate) with
-    | none =>
-        simp [hEval'] at h
-    | some value =>
-        cases value <;> simp [hEval'] at h
-        case scalar lit =>
-          cases lit <;> simp at h
-          case bool b =>
-            cases b <;> simp at h
-            case true =>
-              simpa [hEval, hEval']
+  rw [globalSelectionSet_denote]
+  refine and_congr_right (fun _ => ?_)
+  rw [hEval, satisfiesPredicate_eq_some_true_iff_eval_true]
 
 theorem materializeRows_globalSelectionSet_eq_collectSelected
     (source : VarName) (predicate : Expr) (snapshot rows : Database) (selected : SetLit)
@@ -384,7 +376,7 @@ theorem materializeRows_globalSelectionSet_eq_collectSelected
                     ¬ SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshot)
                         (globalSelectionSet { scalarVars := [], setVars := [] } source predicate) head := by
                   intro hDenote
-                  have := (globalSelectionSet_closed_denote_iff source predicate snapshot head hSource).1 hDenote
+                  have := (globalSelectionSet_closed_denote_iff source predicate snapshot head).1 hDenote
                   have : some false = some true := hKeep.symm.trans this.2
                   cases this
                 simp [materializeRows, hHead]
@@ -397,7 +389,7 @@ theorem materializeRows_globalSelectionSet_eq_collectSelected
                 have hHead :
                     SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshot)
                       (globalSelectionSet { scalarVars := [], setVars := [] } source predicate) head := by
-                  exact (globalSelectionSet_closed_denote_iff source predicate snapshot head hSource).2
+                  exact (globalSelectionSet_closed_denote_iff source predicate snapshot head).2
                     ⟨hSubset head (by simp), by simpa [Semantics.satisfiesPredicate, hKeep]⟩
                 simp [materializeRows, hHead]
                 refine ih rest ?_ hGo
@@ -416,11 +408,10 @@ theorem materializeSet_globalSelectionSet_eq_collectSelected
 theorem materializeRows_globalSelectionSet_eq_collectSelected_of_eval
     (env : SymEnv) (source : VarName) (predicate : Expr)
     (snapshot rows : Database) (selected : SetLit)
-    (hSource : source ≠ "_row")
     (hSubset : ∀ row, row ∈ rows → row ∈ snapshot)
     (hEval :
       ∀ row, row ∈ rows →
-        evalExprInSetEnv env ((SetLanguage.Env.ofDatabases [] snapshot).bindElem source row) predicate =
+        evalSymExprAtRow env source row predicate =
           Expr.eval (Semantics.instantiateRecord source row.visible predicate))
     (hSelect : Semantics.collectSelected rows source predicate = some selected) :
     materializeRows snapshot rows (globalSelectionSet env source predicate) = selected := by
@@ -452,7 +443,7 @@ theorem materializeRows_globalSelectionSet_eq_collectSelected_of_eval
                         (globalSelectionSet env source predicate) head := by
                   intro hDenote
                   have :=
-                    (globalSelectionSet_denote_iff_of_eval env source predicate snapshot head hSource
+                    (globalSelectionSet_denote_iff_of_eval env source predicate snapshot head
                       (hEval head (by simp))).1 hDenote
                   have : some false = some true := hKeep.symm.trans this.2
                   cases this
@@ -468,7 +459,7 @@ theorem materializeRows_globalSelectionSet_eq_collectSelected_of_eval
                 have hHead :
                     SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshot)
                       (globalSelectionSet env source predicate) head := by
-                  exact (globalSelectionSet_denote_iff_of_eval env source predicate snapshot head hSource
+                  exact (globalSelectionSet_denote_iff_of_eval env source predicate snapshot head
                     (hEval head (by simp))).2
                     ⟨hSubset head (by simp), by simpa [Semantics.satisfiesPredicate, hKeep]⟩
                 simp [materializeRows, hHead]
@@ -481,15 +472,14 @@ theorem materializeRows_globalSelectionSet_eq_collectSelected_of_eval
 theorem materializeSet_globalSelectionSet_eq_collectSelected_of_eval
     (env : SymEnv) (source : VarName) (predicate : Expr)
     (db : Database) (selected : SetLit)
-    (hSource : source ≠ "_row")
     (hEval :
       ∀ row, row ∈ db →
-        evalExprInSetEnv env ((SetLanguage.Env.ofDatabases [] db).bindElem source row) predicate =
+        evalSymExprAtRow env source row predicate =
           Expr.eval (Semantics.instantiateRecord source row.visible predicate))
     (hSelect : Semantics.collectSelected db source predicate = some selected) :
     materializeSet db (globalSelectionSet env source predicate) = selected := by
   exact materializeRows_globalSelectionSet_eq_collectSelected_of_eval env source predicate db db selected
-    hSource (fun _ => id) hEval hSelect
+    (fun _ => id) hEval hSelect
 
 theorem instantiateSetCommand_insertSet (env : SymEnv) (visibleDb : Database)
     (binder : VarName) (s : SetLanguage.SetExpr) (body : Semantics.Program) :

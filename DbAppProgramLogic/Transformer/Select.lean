@@ -56,11 +56,9 @@ theorem paperInferenceSound_select_of_evalEq (R : LocalRely) (txnId : TxnId)
     (I : Assertion) (Fctxt : SetLanguage.SetExpr) (env : SymEnv)
     (binder source : VarName) (predicate : Expr) (body : Semantics.Program) (F : SetLanguage.SetExpr)
     (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
-    (hSource : source ≠ "_row")
     (hEval :
-      ∀ visibleDb row, row ∈ visibleDb →
-        evalExprInSetEnv env ((SetLanguage.Env.ofDatabases [] visibleDb).bindElem source row)
-            (instantiateSymExpr env [source] predicate) =
+      ∀ (visibleDb : Database) row, row ∈ visibleDb →
+        evalSymExprAtRow env source row (instantiateSymExpr env [source] predicate) =
           Expr.eval
             (Semantics.instantiateRecord source row.visible (instantiateSymExpr env [source] predicate)))
     (hBodyCmd :
@@ -82,13 +80,12 @@ theorem paperInferenceSound_select_of_evalEq (R : LocalRely) (txnId : TxnId)
   intro visibleDb selected hSelect
   exact materializeSet_globalSelectionSet_eq_collectSelected_of_eval env source
     (instantiateSymExpr env [source] predicate) visibleDb selected
-    hSource (hEval visibleDb) hSelect
+    (hEval visibleDb) hSelect
 
 theorem paperInferenceSound_select_emptyEnv (R : LocalRely) (txnId : TxnId)
     (I : Assertion) (Fctxt : SetLanguage.SetExpr)
     (binder source : VarName) (predicate : Expr) (body : Semantics.Program) (F : SetLanguage.SetExpr)
     (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
-    (hSource : source ≠ "_row")
     (hBody :
       paperInferenceSoundEnv R txnId I Fctxt
         (({ scalarVars := [], setVars := [] } : SymEnv).insertSet binder
@@ -97,9 +94,9 @@ theorem paperInferenceSound_select_emptyEnv (R : LocalRely) (txnId : TxnId)
     paperInferenceSound R txnId I Fctxt
       (.select binder source predicate body) F := by
   refine paperInferenceSound_select_of_evalEq R txnId I Fctxt
-    { scalarVars := [], setVars := [] } binder source predicate body F hStable hSource ?_ ?_ hBody
-  · intro visibleDb row hMem
-    exact evalExprInSetEnv_closed_bindElem_eq_instantiateRecord [] source visibleDb row predicate
+    { scalarVars := [], setVars := [] } binder source predicate body F hStable ?_ ?_ hBody
+  · intro visibleDb row _hMem
+    simp [evalSymExprAtRow, instantiateSymExpr_noScalars]
   · intro visibleDb selected
     simp [instantiateScalarCommand, instantiateSetCommand, SymEnv.eraseSet]
 
