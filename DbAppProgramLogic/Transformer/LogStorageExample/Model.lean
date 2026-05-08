@@ -198,6 +198,26 @@ theorem rowFieldInt?_archiveRow_lo (txnId : TxnId) (i : Nat) (lo hi : Int) :
   simp [rowFieldInt?, archiveRow, archiveRecord, Row.fromInsert,
     RecordLit.lookup?, tableField, idField, loField, hiField]
 
+theorem rowFieldInt?_counterRow_table (txnId : TxnId) (next : Int) :
+    rowFieldInt? (counterRow txnId next) tableField = some counterTable := by
+  simp [rowFieldInt?, counterRow, counterRecord, Row.fromInsert,
+    RecordLit.lookup?, tableField, idField, nextField]
+
+theorem rowFieldInt?_logRow_table (txnId : TxnId) (n : Int) :
+    rowFieldInt? (logRow txnId n) tableField = some logTable := by
+  simp [rowFieldInt?, logRow, logRecord, Row.fromInsert,
+    RecordLit.lookup?, tableField, idField]
+
+theorem rowFieldInt?_archiveRow_table (txnId : TxnId) (i : Nat) (lo hi : Int) :
+    rowFieldInt? (archiveRow txnId i lo hi) tableField = some archiveTable := by
+  simp [rowFieldInt?, archiveRow, archiveRecord, Row.fromInsert,
+    RecordLit.lookup?, tableField, idField, loField, hiField]
+
+theorem rowFieldInt?_resultRowLit_table (txnId : TxnId) (q : Nat) (n : Int) :
+    rowFieldInt? (resultRowLit txnId q n) tableField = some (resultTable q) := by
+  simp [rowFieldInt?, resultRowLit, resultRecord, Row.fromInsert,
+    RecordLit.lookup?, tableField, idField]
+
 theorem rowFieldInt?_archiveRow_hi (txnId : TxnId) (i : Nat) (lo hi : Int) :
     rowFieldInt? (archiveRow txnId i lo hi) hiField = some hi := by
   simp [rowFieldInt?, archiveRow, archiveRecord, Row.fromInsert,
@@ -462,10 +482,7 @@ def liveCountersHaveNext (db : Database) (next : Int) : Prop :=
   ∀ row, row ∈ db → liveRow row → rowInTable row counterTable →
     rowFieldInt? row nextField = some next
 
-/-- Every counter-table row uses key `(counterTable, 0)`. Together with key
-uniqueness this gives counter-row uniqueness. Without this, the `update` body
-of `insertLog` could produce multiple update rows from snapshot counter rows
-with different ids, breaking the post-flush shape. -/
+/-- Every counter-table row uses key `(counterTable, 0)`. -/
 def counterRowsAtZero (db : Database) : Prop :=
   ∀ row, row ∈ db → rowInTable row counterTable → row.key? = some (counterTable, 0)
 
@@ -590,24 +607,47 @@ def storageRowsLive (db : Database) : Prop :=
     (rowInTable row counterTable ∨ rowInTable row logTable ∨ rowInTable row archiveTable) →
       liveRow row
 
-/-- Every row in the database has its `tableField` set explicitly to its key
-table. This rules out the legacy `kindField` fallback path of `RecordLit.table?`
-for our model and lets us bridge between `row.key?` and `rowFieldInt? row
-tableField`. Reachable databases satisfy this because every operation either
-preserves a row from the initial DB (which sets `tableField`) or inserts/updates
-via records that include `tableField`. -/
+/-- Every row in the database has both a complete `key?` and a `tableField`
+that agrees with the key's table. This rules out (a) rows with `kindField`-only
+fallback and (b) rows with `tableField` set but missing `idField`, both of
+which would break the bridge between SELECT-predicate evaluation (field-based)
+and key-based reasoning. Reachable databases satisfy this because every
+operation either preserves a row from the initial DB (which sets both fields)
+or inserts/updates via records that include both fields. -/
 def wellFormedTableFields (db : Database) : Prop :=
-  ∀ row, row ∈ db → ∀ table : TableName, ∀ id : Int,
-    row.key? = some (table, id) →
-      rowFieldInt? row tableField = some table
+  ∀ row, row ∈ db →
+    ∃ table id,
+      row.key? = some (table, id) ∧ rowFieldInt? row tableField = some table
 
 theorem rowFieldInt?_tableField_of_key_wellFormed
     {db : Database} {row : Row} {table : TableName} {id : Int}
     (hWF : wellFormedTableFields db)
     (hMem : row ∈ db)
     (hKey : row.key? = some (table, id)) :
-    rowFieldInt? row tableField = some table :=
-  hWF row hMem table id hKey
+    rowFieldInt? row tableField = some table := by
+  rcases hWF row hMem with ⟨table', id', hKey', hTab'⟩
+  rw [hKey] at hKey'
+  have hPair : (table, id) = (table', id') := Option.some.inj hKey'
+  rw [(Prod.mk.inj hPair).1]
+  exact hTab'
+
+theorem key?_isSome_of_wellFormedTableFields
+    {db : Database} {row : Row}
+    (hWF : wellFormedTableFields db) (hMem : row ∈ db) :
+    row.key?.isSome := by
+  rcases hWF row hMem with ⟨_, _, hKey, _⟩
+  rw [hKey]; rfl
+
+theorem rowKey?_of_tableField_wellFormed
+    {db : Database} {row : Row} {table : TableName}
+    (hWF : wellFormedTableFields db) (hMem : row ∈ db)
+    (hTab : rowFieldInt? row tableField = some table) :
+    ∃ id, row.key? = some (table, id) := by
+  rcases hWF row hMem with ⟨table', id', hKey, hTab'⟩
+  rw [hTab] at hTab'
+  have h : table = table' := Option.some.inj hTab'
+  subst h
+  exact ⟨id', hKey⟩
 
 /-- Storage shape: cut ≤ next, exactly one live counter row at `(counterTable, 0)`
 holding `next`, live logs are precisely `[cut, next)`, archives cover `[0, cut)`,
@@ -739,14 +779,10 @@ theorem counterRowsAtZero_initialDb : counterRowsAtZero initialDb := by
   exact counterRow_key? 0 0
 
 theorem wellFormedTableFields_initialDb : wellFormedTableFields initialDb := by
-  intro row hMem table id hKey
+  intro row hMem
   rw [mem_initialDb_iff] at hMem
   subst row
-  rw [counterRow_key?] at hKey
-  have hTab : counterTable = table := (Prod.mk.inj (Option.some.inj hKey)).1
-  subst hTab
-  simp [rowFieldInt?, counterRow, counterRecord, Row.fromInsert,
-    RecordLit.lookup?, tableField, idField, nextField]
+  exact ⟨counterTable, 0, counterRow_key? 0 0, rowFieldInt?_counterRow_table 0 0⟩
 
 theorem storageShape_initialDb : storageShape initialDb 0 0 := by
   refine ⟨Nat.le_refl _, liveCounterAt_initialDb, counterRowsAtZero_initialDb,

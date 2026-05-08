@@ -456,7 +456,7 @@ theorem selectAllLogEffect_resultRowLit_iff_expanded
     rcases hExpanded with hLog | hArchiveCase
     · rcases hLog with ⟨entry, hMem, _hLive, hEntryKey⟩
       have hTableF : rowFieldInt? entry tableField = some logTable :=
-        hWFTable entry hMem logTable n hEntryKey
+        rowFieldInt?_tableField_of_key_wellFormed hWFTable hMem hEntryKey
       refine ⟨entry, ?_, ?_⟩
       · rw [selectedStorageEntriesSet_denote_iff]
         exact ⟨hMem, Or.inl hTableF⟩
@@ -467,7 +467,7 @@ theorem selectAllLogEffect_resultRowLit_iff_expanded
         refine ⟨n, ⟨n, hEntryKey⟩, rowFieldInt?_idField_of_key hEntryKey, rfl⟩
     · rcases hArchiveCase with ⟨entry, id, lo, hi, hMem, _hLive, hEntryKey, hLo, hHi, hLe, hLt⟩
       have hTableF : rowFieldInt? entry tableField = some archiveTable :=
-        hWFTable entry hMem archiveTable id hEntryKey
+        rowFieldInt?_tableField_of_key_wellFormed hWFTable hMem hEntryKey
       refine ⟨entry, ?_, ?_⟩
       · rw [selectedStorageEntriesSet_denote_iff]
         exact ⟨hMem, Or.inr hTableF⟩
@@ -956,19 +956,15 @@ theorem selectAllLogSnapshotPost_preservesWellFormedTableFields
       txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
         localDb visibleDb) :
     preservesWellFormedTableFields visibleDb (Database.flush localDb visibleDb) := by
-  intro hWFOld row hMem table id hKey
+  intro hWFOld row hMem
   rw [mem_flush_iff] at hMem
   rcases hMem with hG | hL
-  · exact hWFOld row hG.1 table id hKey
+  · exact hWFOld row hG.1
   · rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPost row
       hL.1 with ⟨m, hEq⟩
     subst hEq
-    rw [resultRowLit_key?] at hKey
-    have hPair : (resultTable q, m) = (table, id) := Option.some.inj hKey
-    have hTab : resultTable q = table := (Prod.mk.inj hPair).1
-    subst hTab
-    simp [rowFieldInt?, resultRowLit, resultRecord, Row.fromInsert,
-      RecordLit.lookup?, tableField, idField]
+    refine ⟨resultTable q, m, resultRowLit_key? _ _ _, ?_⟩
+    exact rowFieldInt?_resultRowLit_table _ _ _
 
 theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
     ∀ localDb visibleDb,
