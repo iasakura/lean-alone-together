@@ -9,6 +9,9 @@ This file introduces the hidden metadata carried by runtime rows, the isolation 
 by transactions, and the local/top-level small-step relations that the later logic reasons about.
 -/
 
+abbrev TableName := Int
+abbrev RowKey := TableName × Int
+
 inductive Value where
   | scalar : ScalarLit → Value
   | record : RecordLit → Value
@@ -53,6 +56,19 @@ def id? (record : RecordLit) : Option Int :=
   | some (.int value) => some value
   | _ => none
 
+def table? (record : RecordLit) : Option TableName :=
+  match record.lookup? "table" with
+  | some (.int value) => some value
+  | _ =>
+      match record.lookup? "kind" with
+      | some (.int value) => some value
+      | _ => some 0
+
+def key? (record : RecordLit) : Option RowKey :=
+  match record.table?, record.id? with
+  | some table, some id => some (table, id)
+  | _, _ => none
+
 end RecordLit
 
 namespace Expr
@@ -73,6 +89,11 @@ mutual
     | Expr.withUpdates base updates =>
         Expr.withUpdates (subst x replacement base) (substFieldExprs x replacement updates)
     | Expr.binop op lhs rhs => Expr.binop op (subst x replacement lhs) (subst x replacement rhs)
+    | Expr.natPair lhs rhs => Expr.natPair (subst x replacement lhs) (subst x replacement rhs)
+    | Expr.setNonempty source => Expr.setNonempty (subst x replacement source)
+    | Expr.setMinField source field => Expr.setMinField (subst x replacement source) field
+    | Expr.setMaxField source field => Expr.setMaxField (subst x replacement source) field
+    | Expr.rangeRows field lo hi => Expr.rangeRows field (subst x replacement lo) (subst x replacement hi)
 
 end
 
@@ -102,8 +123,51 @@ mutual
         simp [subst, subst_shadow_lit, substFieldExprs_shadow_lit]
     | .binop op lhs rhs => by
         simp [subst, subst_shadow_lit]
+    | .natPair lhs rhs => by
+        simp [subst, subst_shadow_lit]
+    | .setNonempty source => by
+        simp [subst, subst_shadow_lit]
+    | .setMinField source field => by
+        simp [subst, subst_shadow_lit]
+    | .setMaxField source field => by
+        simp [subst, subst_shadow_lit]
+    | .rangeRows field lo hi => by
+        simp [subst, subst_shadow_lit]
 
 end
+
+private def intField? (record : RecordLit) (field : FieldName) : Option Int :=
+  match record.lookup? field with
+  | some (.int value) => some value
+  | _ => none
+
+private def collectIntFieldValues (field : FieldName) : SetLit → Option (List Int)
+  | [] => some []
+  | rec :: records => do
+      let value ← intField? rec field
+      let rest ← collectIntFieldValues field records
+      pure (value :: rest)
+
+private def minInt? : List Int → Option Int
+  | [] => none
+  | value :: values => some (values.foldl min value)
+
+private def maxInt? : List Int → Option Int
+  | [] => none
+  | value :: values => some (values.foldl max value)
+
+private def intRangeRecords (field : FieldName) (lo hi : Int) : SetLit :=
+  (List.range (Int.toNat (hi - lo))).map fun (offset : Nat) =>
+    ⟨[(field, .int (lo + (offset : Int)))]⟩
+
+def natPairCode (a b : Nat) : Nat :=
+  ((a + b) * (a + b + 1)) / 2 + b
+
+def intNatPair? (a b : Int) : Option Int :=
+  if a < 0 ∨ b < 0 then
+    none
+  else
+    some (natPairCode a.toNat b.toNat)
 
 mutual
 
@@ -134,6 +198,22 @@ mutual
             let updates ← evalFieldValues updates
             pure <| .record <| updates.foldl (fun acc (field, value) => acc.setField field value) recVal
         | _ => none
+    | Expr.binop BinOp.and lhs rhs => do
+        let lhs ← eval lhs
+        match lhs with
+        | .scalar (.bool false) => pure <| .scalar (.bool false)
+        | .scalar (.bool true) => do
+            let .scalar (.bool rhs) ← eval rhs | none
+            pure <| .scalar (.bool rhs)
+        | _ => none
+    | Expr.binop BinOp.or lhs rhs => do
+        let lhs ← eval lhs
+        match lhs with
+        | .scalar (.bool true) => pure <| .scalar (.bool true)
+        | .scalar (.bool false) => do
+            let .scalar (.bool rhs) ← eval rhs | none
+            pure <| .scalar (.bool rhs)
+        | _ => none
     | Expr.binop op lhs rhs => do
         let lhs ← eval lhs
         let rhs ← eval rhs
@@ -144,6 +224,31 @@ mutual
         | .ge, .scalar (.int x), .scalar (.int y) => pure <| .scalar (.bool (x >= y))
         | .eq, .scalar x, .scalar y => pure <| .scalar (.bool (x = y))
         | _, _, _ => none
+    | Expr.natPair lhs rhs => do
+        let .scalar (.int lhs) ← eval lhs | none
+        let .scalar (.int rhs) ← eval rhs | none
+        let value ← intNatPair? lhs rhs
+        pure <| .scalar (.int value)
+    | Expr.setNonempty source => do
+        let .set records ← eval source | none
+        pure <| .scalar (.bool (!records.isEmpty))
+    | Expr.setMinField source field => do
+        let .set records ← eval source | none
+        let values ← collectIntFieldValues field records
+        let value ← minInt? values
+        pure <| .scalar (.int value)
+    | Expr.setMaxField source field => do
+        let .set records ← eval source | none
+        let values ← collectIntFieldValues field records
+        let value ← maxInt? values
+        pure <| .scalar (.int value)
+    | Expr.rangeRows field lo hi => do
+        let .scalar (.int loValue) ← eval lo | none
+        let .scalar (.int hiValue) ← eval hi | none
+        if loValue <= hiValue then
+          pure <| .set (intRangeRecords field loValue hiValue)
+        else
+          none
 
 end
 
@@ -202,8 +307,21 @@ mutual
         simp [subst, eval, eval_subst_of_eval x replacement value hEval base,
           evalFieldValues_subst_of_eval x replacement value hEval updates]
     | .binop op lhs rhs => by
+        cases op <;>
+          simp [subst, eval, eval_subst_of_eval x replacement value hEval lhs,
+            eval_subst_of_eval x replacement value hEval rhs]
+    | .natPair lhs rhs => by
         simp [subst, eval, eval_subst_of_eval x replacement value hEval lhs,
           eval_subst_of_eval x replacement value hEval rhs]
+    | .setNonempty source => by
+        simp [subst, eval, eval_subst_of_eval x replacement value hEval source]
+    | .setMinField source field => by
+        simp [subst, eval, eval_subst_of_eval x replacement value hEval source]
+    | .setMaxField source field => by
+        simp [subst, eval, eval_subst_of_eval x replacement value hEval source]
+    | .rangeRows field lo hi => by
+        simp [subst, eval, eval_subst_of_eval x replacement value hEval lo,
+          eval_subst_of_eval x replacement value hEval hi]
 
 end
 
@@ -306,18 +424,105 @@ namespace Row
 def id? (row : Row) : Option Int :=
   row.visible.id?
 
+def key? (row : Row) : Option RowKey :=
+  row.visible.key?
+
 def markDeleted (row : Row) (txnId : TxnId) : Row :=
   { row with txn := txnId, del := true }
 
-def overwrite (row : Row) (txnId : TxnId) (updated : RecordLit) : Row :=
-  let visible :=
-    match row.id? with
+private def preserveKeyFields (original updated : RecordLit) : RecordLit :=
+  let updated :=
+    match original.id? with
     | some id => updated.setField "id" (.int id)
     | none => updated
-  { visible := visible, txn := txnId, del := row.del }
+  match original.lookup? "table" with
+  | some (.int table) => updated.setField "table" (.int table)
+  | _ =>
+      match original.lookup? "kind" with
+      | some (.int kind) => updated.setField "kind" (.int kind)
+      | _ => updated
+
+def overwrite (row : Row) (txnId : TxnId) (updated : RecordLit) : Row :=
+  { visible := preserveKeyFields row.visible updated, txn := txnId, del := row.del }
 
 def fromInsert (txnId : TxnId) (record : RecordLit) : Row :=
   { visible := record, txn := txnId, del := false }
+
+/-- `Row.overwrite` preserves `del`. -/
+@[simp] theorem overwrite_del (row : Row) (txnId : TxnId) (updated : RecordLit) :
+    (row.overwrite txnId updated).del = row.del := rfl
+
+end Row
+
+namespace RecordLit
+
+private theorem find?_setField_go_of_ne {field other : FieldName}
+    {value : ScalarLit} (hNe : other ≠ field) (fields : List (FieldName × ScalarLit)) :
+    (setField.go field value fields).find? (fun e => e.fst = other) =
+      fields.find? (fun e => e.fst = other) := by
+  induction fields with
+  | nil =>
+      simp [setField.go, decide_eq_true_eq, hNe.symm]
+  | cons head tail ih =>
+      rcases head with ⟨name, val⟩
+      simp only [setField.go]
+      by_cases hName : name = field
+      · subst hName
+        simp [List.find?, decide_eq_true_eq, hNe.symm]
+      · simp [List.find?, decide_eq_true_eq, hName, ih]
+
+private theorem find?_setField_go_eq {field : FieldName} {value : ScalarLit}
+    (fields : List (FieldName × ScalarLit)) :
+    (setField.go field value fields).find? (fun e => e.fst = field) = some (field, value) := by
+  induction fields with
+  | nil => simp [setField.go]
+  | cons head tail ih =>
+      rcases head with ⟨name, val⟩
+      simp only [setField.go]
+      by_cases hName : name = field
+      · subst hName; simp [List.find?]
+      · simp [List.find?, decide_eq_true_eq, hName, ih]
+
+/-- `setField` of a different field commutes with `lookup?`. -/
+theorem lookup?_setField_of_ne {rec : RecordLit} {field other : FieldName}
+    {value : ScalarLit} (hNe : other ≠ field) :
+    (rec.setField field value).lookup? other = rec.lookup? other := by
+  unfold setField lookup?
+  simp [find?_setField_go_of_ne hNe rec.fields]
+
+/-- `setField field value` makes `lookup? field` return `value`. -/
+theorem lookup?_setField {rec : RecordLit} {field : FieldName} {value : ScalarLit} :
+    (rec.setField field value).lookup? field = some value := by
+  unfold setField lookup?
+  simp [find?_setField_go_eq]
+
+end RecordLit
+
+namespace Row
+
+/-- `Row.overwrite` preserves the key when both the original `id` and explicit
+`table` fields are set as integer scalars. -/
+theorem overwrite_key?_of_explicit
+    (row : Row) (txnId : TxnId) (updated : RecordLit) {id : Int} {table : Int}
+    (hId : row.visible.lookup? "id" = some (.int id))
+    (hTable : row.visible.lookup? "table" = some (.int table)) :
+    (row.overwrite txnId updated).key? = some (table, id) := by
+  unfold Row.key? Row.overwrite preserveKeyFields
+  have hOrigId? : row.visible.id? = some id := by
+    unfold RecordLit.id?; rw [hId]
+  rw [show row.visible.id? = some id from hOrigId?]
+  rw [show row.visible.lookup? "table" = some (.int table) from hTable]
+  unfold RecordLit.key? RecordLit.table? RecordLit.id?
+  have hFinalTable :
+      ((updated.setField "id" (.int id)).setField "table" (.int table)).lookup? "table" =
+        some (.int table) := RecordLit.lookup?_setField
+  have hFinalId :
+      ((updated.setField "id" (.int id)).setField "table" (.int table)).lookup? "id" =
+        some (.int id) := by
+    have hNe : ("id" : FieldName) ≠ "table" := by decide
+    rw [RecordLit.lookup?_setField_of_ne hNe]
+    exact RecordLit.lookup?_setField
+  rw [hFinalTable, hFinalId]
 
 end Row
 
@@ -326,11 +531,17 @@ namespace Database
 def dom (db : Database) : List Int :=
   db.filterMap Row.id?
 
+def keyDom (db : Database) : List RowKey :=
+  db.filterMap Row.key?
+
 def hasId (db : Database) (id : Int) : Prop :=
   id ∈ db.dom
 
+def hasKey (db : Database) (key : RowKey) : Prop :=
+  key ∈ db.keyDom
+
 def disjointIds (left right : Database) : Prop :=
-  ∀ id, id ∈ left.dom → id ∈ right.dom → False
+  ∀ key, key ∈ left.keyDom → key ∈ right.keyDom → False
 
 theorem hasId_append_left (left right : Database) (id : Int) :
     hasId left id → hasId (left ++ right) id := by
@@ -355,21 +566,44 @@ theorem hasId_append_middle (left mid right : Database) (id : Int) :
   | inr hRight =>
       exact Or.inr (Or.inr hRight)
 
+theorem hasKey_append_left (left right : Database) (key : RowKey) :
+    hasKey left key → hasKey (left ++ right) key := by
+  intro h
+  unfold hasKey keyDom at h ⊢
+  simpa [List.mem_filterMap, List.filterMap_append] using (Or.inl h)
+
+theorem hasKey_append_right (left right : Database) (key : RowKey) :
+    hasKey right key → hasKey (left ++ right) key := by
+  intro h
+  unfold hasKey keyDom at h ⊢
+  simpa [List.mem_filterMap, List.filterMap_append] using (Or.inr h)
+
+theorem hasKey_append_middle (left mid right : Database) (key : RowKey) :
+    hasKey (left ++ right) key → hasKey (left ++ mid ++ right) key := by
+  intro h
+  unfold hasKey keyDom at h ⊢
+  simp [List.mem_filterMap, List.filterMap_append, List.append_assoc] at h ⊢
+  cases h with
+  | inl hLeft =>
+      exact Or.inl hLeft
+  | inr hRight =>
+      exact Or.inr (Or.inr hRight)
+
 theorem disjointIds_append_left (prefixDb localDb right : Database)
     (h : disjointIds (prefixDb ++ localDb) right) :
     disjointIds localDb right := by
-  intro id hLocal hRight
-  apply h id
-  · unfold dom at hLocal ⊢
+  intro key hLocal hRight
+  apply h key
+  · unfold keyDom at hLocal ⊢
     simp [List.mem_filterMap, List.filterMap_append] at hLocal ⊢
     exact Or.inr hLocal
   · exact hRight
 
 def flush (localDb globalDb : Database) : Database :=
-  let localIds := localDb.dom
+  let localKeys := localDb.keyDom
   let preserved := globalDb.filter fun row =>
-    match row.id? with
-    | some id => !(localIds.contains id)
+    match row.key? with
+    | some key => !(localKeys.contains key)
     | none => true
   let committed := localDb.filter fun row => !row.del
   preserved ++ committed
@@ -399,13 +633,13 @@ namespace Database
 def uniqueIds : IsolationSpec Database :=
   { exec := fun localDb previous current =>
       ∀ row, row ∈ localDb →
-        match row.id? with
-        | some id => hasId previous id → hasId current id
+        match row.key? with
+        | some key => hasKey previous key → hasKey current key
         | none => True
     commit := fun localDb previous current =>
       ∀ row, row ∈ localDb →
-        match row.id? with
-        | some id => hasId previous id → hasId current id
+        match row.key? with
+        | some key => hasKey previous key → hasKey current key
         | none => True }
 
 def writeWriteConflictFree : IsolationSpec Database :=
@@ -414,7 +648,7 @@ def writeWriteConflictFree : IsolationSpec Database :=
       ∀ written original,
         written ∈ localDb →
         original ∈ previous →
-        written.id? = original.id? →
+        written.key? = original.key? →
         original ∈ current }
 
 def snapshotIsolation : IsolationSpec Database :=
@@ -597,23 +831,23 @@ theorem mem_collectUpdated_iff {db : Database} {txnId : TxnId} {x : VarName}
       (rows := rows) (row := row) hCollect)
 
 def insertFresh (snapshot localDb : Database) (record : RecordLit) : Prop :=
-  match record.id? with
-  | some id => ¬ Database.hasId (snapshot ++ localDb) id
+  match record.key? with
+  | some key => ¬ Database.hasKey (snapshot ++ localDb) key
   | none => False
 
 theorem insertFresh_append_left (snapshot prefixDb localDb : Database) (record : RecordLit)
     (h : insertFresh snapshot (prefixDb ++ localDb) record) :
     insertFresh snapshot localDb record := by
   unfold insertFresh at h ⊢
-  cases hId : record.id? with
+  cases hKey : record.key? with
   | none =>
-      simp [hId] at h ⊢
-  | some id =>
-      simp [hId] at h ⊢
+      simp [hKey] at h
+  | some key =>
+      simp [hKey] at h ⊢
       intro hHas
       apply h
       simpa [List.append_assoc] using
-        (Database.hasId_append_middle snapshot prefixDb localDb id hHas)
+        (Database.hasKey_append_middle snapshot prefixDb localDb key hHas)
 
 inductive LocalStep (snapshot : Database) (txnId : TxnId) :
     Command ι Database → Database → Command ι Database → Database → Prop where
@@ -706,6 +940,11 @@ inductive Step : Program → Database → Program → Database → Prop where
         currentDb
         .skip
         (Database.flush localDb currentDb)
+  | seqLeft {left left' right globalDb globalDb'} :
+      Step left globalDb left' globalDb' →
+      Step (.seq left right) globalDb (.seq left' right) globalDb'
+  | seqSkip {right globalDb} :
+      Step (.seq .skip right) globalDb right globalDb
   | parLeft {left left' right globalDb globalDb'} :
       Step left globalDb left' globalDb' →
       Step (.par left right) globalDb (.par left' right) globalDb'

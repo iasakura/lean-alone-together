@@ -677,10 +677,10 @@ mutual
           let .set records ← evalInEnv env source | none
           inferForeach txnId env doneVar elemVar body [] records db
     | .foreachRuntime done remaining doneVar elemVar body =>
-        fun db => do
-          let .set doneRecords ← evalInEnv env done | none
-          let .set remainingRecords ← evalInEnv env remaining | none
-          inferForeach txnId env doneVar elemVar body doneRecords remainingRecords db
+        match done, remaining with
+        | Expr.lit (.set doneRecords), Expr.lit (.set remainingRecords) =>
+            inferForeach txnId env doneVar elemVar body doneRecords remainingRecords
+        | _, _ => fun _ => none
     | .txn .. => fun _ => none
     | .txnRuntime .. => fun _ => none
     | .par .. => fun _ => none

@@ -328,6 +328,12 @@ theorem step_sameDb_or_commit
       exact Or.inl rfl
   | txnCommit hCommit =>
       exact Or.inr ⟨_, TxnCommitStep.root hCommit⟩
+  | seqLeft hInner ih =>
+      rcases ih with hSame | ⟨txnId, hCommit⟩
+      · exact Or.inl hSame
+      · exact Or.inr ⟨txnId, TxnCommitStep.seqLeft hCommit⟩
+  | seqSkip =>
+      exact Or.inl rfl
   | parLeft hInner ih =>
       rcases ih with hSame | ⟨txnId, hCommit⟩
       · exact Or.inl hSame

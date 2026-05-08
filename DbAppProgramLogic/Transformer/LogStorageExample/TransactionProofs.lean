@@ -671,6 +671,20 @@ theorem selectAllLogEffect_qstable_final (q : Nat) :
   txnSnapshotPost_stable_readCommitted logSystemInv (R_select q)
     (selectAllLogEffect (selectTxnId q) q)
 
+/-! ## Insert: local-row key characterization
+
+The remaining sorries below all need either
+  - operational reasoning about `Database.flush` of the insert/archive local
+    delta (which requires the local-row characterization including
+    `nextField` content for counter overwrites and `loField`/`hiField` for
+    archive intervals), or
+  - a `Logic.LocalValid` proof of the body for the two `paperInfer_*`
+    leaves.
+
+A first step toward both would be a re-export of `Row.preserveKeyFields_*`
+properties from `Semantics.lean` so we can manipulate the overwrite key
+without unfolding the `private` helper. -/
+
 /-- Indexed insert guarantee bridge. -/
 theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
     ∀ localDb visibleDb,
