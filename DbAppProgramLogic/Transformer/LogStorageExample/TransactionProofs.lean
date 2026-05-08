@@ -671,19 +671,94 @@ theorem selectAllLogEffect_qstable_final (q : Nat) :
   txnSnapshotPost_stable_readCommitted logSystemInv (R_select q)
     (selectAllLogEffect (selectTxnId q) q)
 
-/-! ## Insert: local-row key characterization
+/-! ## Insert: local-row key characterization -/
 
-The remaining sorries below all need either
-  - operational reasoning about `Database.flush` of the insert/archive local
-    delta (which requires the local-row characterization including
-    `nextField` content for counter overwrites and `loField`/`hiField` for
-    archive intervals), or
-  - a `Logic.LocalValid` proof of the body for the two `paperInfer_*`
-    leaves.
+/-- Direct iff for `updateSetExpr`'s denotation, mirroring the closure inside
+`updateSetExprWith_sound` without the `Semantics.collectUpdated` detour. -/
+theorem updateSetExpr_denote_iff
+    (txnId : TxnId) (env : Env) (source : VarName) (updateExpr predicate : Expr)
+    (db : Database) (row : Row) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] db)
+      (updateSetExpr txnId env source updateExpr predicate) row ↔
+      ∃ mid : Row, mid ∈ db ∧
+        Semantics.satisfiesPredicate source
+          (instantiateExpr env [source] predicate) mid.visible = some true ∧
+        ∃ updated : RecordLit,
+          Expr.eval (Semantics.instantiateRecord source mid.visible
+            (instantiateExpr env [source] updateExpr)) = some (.record updated) ∧
+          row = mid.overwrite txnId updated := by
+  classical
+  unfold updateSetExpr updateSetExprWith
+  simp [SetLanguage.denote, rowPredicateFormula, SetLanguage.SetExpr.bind,
+    SetLanguage.SetExpr.globalDb, defaultOutVar]
+  constructor
+  · rintro ⟨mid, hMidMem, hBody⟩
+    refine ⟨mid, ?_, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMidMem
+    · by_cases hPred :
+        Semantics.satisfiesPredicate source (instantiateExpr env [source] predicate)
+          mid.visible = some true
+      · simp [hPred, SetLanguage.empty] at hBody
+        exact ⟨hPred, hBody⟩
+      · simp [hPred, SetLanguage.empty] at hBody
+  · rintro ⟨mid, hMidMem, hPred, hBody⟩
+    refine ⟨mid, ?_, ?_⟩
+    · simpa [SetLanguage.Env.ofDatabases] using hMidMem
+    · simp [hPred, SetLanguage.empty]
+      exact hBody
 
-A first step toward both would be a re-export of `Row.preserveKeyFields_*`
-properties from `Semantics.lean` so we can manipulate the overwrite key
-without unfolding the `private` helper. -/
+/-- The local delta of `insertLogBody i` against a snapshot satisfying
+`logSystemInvAtNext i` consists of either the inserted log row (with key
+`(logTable, i)`) or a counter overwrite row (with key `(counterTable, 0)`). -/
+theorem insertLogEffect_local_row_key
+    (txnId : TxnId) (i : Nat) (snapshotDb : Database)
+    (hSnap : logSystemInvAtNext i snapshotDb)
+    (row : Row)
+    (hDenote :
+      SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+        (insertLogEffect txnId i) row) :
+    row.key? = some (logTable, (i : Int)) ∨ row.key? = some (counterTable, 0) := by
+  rcases hSnap with ⟨_cut, hShape, _hResults, hWF⟩
+  rcases hShape with ⟨_hCut, _hCounter, hCounterAtZero, _hHaveNext, _hStorageLive,
+    _hLiveLog, _hArchive, _hIntervals⟩
+  unfold insertLogEffect at hDenote
+  rw [SetLanguage.denote_union] at hDenote
+  rcases hDenote with hInserted | hUpdated
+  · -- Inserted log row branch
+    left
+    have hEval : Expr.eval (instantiateSymExpr emptySymEnv [] (logRecordExpr (.int i))) =
+        some (.record (logRecord (i : Int))) := by
+      rfl
+    have hClosed :
+        evalExprInSetEnv emptySymEnv
+            ((SetLanguage.Env.ofDatabases [] snapshotDb).bindElem "_row" row)
+            (logRecordExpr (.int i)) =
+          Expr.eval (instantiateSymExpr emptySymEnv [] (logRecordExpr (.int i))) := by
+      rfl
+    have hRowEq :=
+      (denote_insertedRowSet txnId emptySymEnv (logRecordExpr (.int i)) snapshotDb row
+        (logRecord i) hClosed hEval).1 hInserted
+    rw [hRowEq]
+    show (Row.fromInsert txnId (logRecord i)).key? = some (logTable, (i : Int))
+    exact logRow_key? txnId (i : Int)
+  · -- Counter overwrite branch
+    right
+    rw [updateSetExpr_denote_iff] at hUpdated
+    rcases hUpdated with ⟨mid, hMidMem, hPred, _updated, _hEval, hRow⟩
+    have hMidTab : rowFieldInt? mid tableField = some counterTable := by
+      have := (satisfiesPredicate_isTableExpr_iff mid counterTable).mp
+        (by simpa [isCounterExpr, isTableExpr, instantiateExpr, Expr.subst, rowVar]
+            using hPred)
+      exact this
+    rcases rowKey?_of_tableField_wellFormed hWF hMidMem hMidTab with ⟨id, hMidKey⟩
+    have hMidKeyZero : mid.key? = some (counterTable, 0) :=
+      hCounterAtZero mid hMidMem ⟨id, hMidKey⟩
+    have hMidIdField : mid.visible.lookup? "id" = some (.int 0) :=
+      lookup?_id_of_key hMidKeyZero
+    have hMidTableField : mid.visible.lookup? "table" = some (.int counterTable) :=
+      lookup?_table_of_key_wellFormed hWF hMidMem hMidKeyZero
+    subst hRow
+    exact Row.overwrite_key?_of_explicit mid txnId _updated hMidIdField hMidTableField
 
 /-- Indexed insert guarantee bridge. -/
 theorem insertLogIndexedEffect_guarantee_final (i : Nat) :

@@ -649,6 +649,43 @@ theorem rowKey?_of_tableField_wellFormed
   subst h
   exact ⟨id', hKey⟩
 
+/-- `rowFieldInt? row field = some v` is equivalent to
+`row.visible.lookup? field = some (.int v)`. -/
+theorem rowFieldInt?_eq_some_iff_lookup
+    {row : Row} {field : FieldName} {v : Int} :
+    rowFieldInt? row field = some v ↔ row.visible.lookup? field = some (.int v) := by
+  unfold rowFieldInt?
+  constructor
+  · intro h
+    cases hL : row.visible.lookup? field with
+    | none => rw [hL] at h; cases h
+    | some lit =>
+      cases lit with
+      | int w =>
+        rw [hL] at h
+        simp at h
+        subst h
+        rfl
+      | bool _ => rw [hL] at h; cases h
+  · intro h
+    rw [h]
+
+/-- A row whose key is `some (table, id)` (with `wellFormedTableFields`) has
+`lookup? "table"` set explicitly to `(.int table)`. -/
+theorem lookup?_table_of_key_wellFormed
+    {db : Database} {row : Row} {table : TableName} {id : Int}
+    (hWF : wellFormedTableFields db) (hMem : row ∈ db)
+    (hKey : row.key? = some (table, id)) :
+    row.visible.lookup? "table" = some (.int table) :=
+  rowFieldInt?_eq_some_iff_lookup.mp
+    (rowFieldInt?_tableField_of_key_wellFormed hWF hMem hKey)
+
+theorem lookup?_id_of_key
+    {row : Row} {table : TableName} {id : Int}
+    (hKey : row.key? = some (table, id)) :
+    row.visible.lookup? "id" = some (.int id) :=
+  rowFieldInt?_eq_some_iff_lookup.mp (rowFieldInt?_idField_of_key hKey)
+
 /-- Storage shape: cut ≤ next, exactly one live counter row at `(counterTable, 0)`
 holding `next`, live logs are precisely `[cut, next)`, archives cover `[0, cut)`,
 intervals are well-formed, storage rows are live. The `wellFormedTableFields`
