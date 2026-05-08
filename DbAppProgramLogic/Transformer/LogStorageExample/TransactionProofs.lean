@@ -1232,10 +1232,108 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
       (I' := logSystemInv)
       (fun _ h => h.1) hPostStrong
   have hLocalRowKey := archiveLogSnapshotPost_local_row_key i localDb visibleDb hPostWeak
+  -- Useful: visible storage shape components
+  rcases hVisShape with ⟨_hVisCutLe, hVisCounter, hVisCounterAtZero, hVisHaveNext,
+    hVisStorageLive, hVisLiveLog, hVisArchive, hVisIntervals⟩
+  have hVisShapeFull : storageShape visibleDb snapCut visNext :=
+    ⟨_hVisCutLe, hVisCounter, hVisCounterAtZero, hVisHaveNext, hVisStorageLive,
+      hVisLiveLog, hVisArchive, hVisIntervals⟩
+  -- Local has no counter rows: hLocalRowKey gives archiveTable or logTable key.
+  have hLocalNoCounterKey : ∀ id : Int, (counterTable, id) ∉ localDb.keyDom := by
+    intro id hLocal
+    rw [mem_keyDom_iff'] at hLocal
+    rcases hLocal with ⟨row, hMem, hKey⟩
+    rcases hLocalRowKey row hMem with hArch | ⟨_n, hLog⟩
+    · rw [hArch] at hKey
+      have : archiveTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
+      exact counterTable_ne_archiveTable this.symm
+    · rw [hLog] at hKey
+      have : logTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
+      exact counterTable_ne_logTable this.symm
   -- Provide G_archiveCore
-  refine ⟨snapCut, snapNext, visNext, hVisShape, hSnapShape.1, hSnapNextLeVis, ?_, ?_, ?_⟩
+  refine ⟨snapCut, snapNext, visNext, hVisShapeFull, hSnapShape.1, hSnapNextLeVis, ?_, ?_, ?_⟩
   · -- storageShape (flush) snapNext visNext
-    sorry
+    refine ⟨hSnapNextLeVis, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    · -- liveCounterAt (flush) visNext
+      rcases hVisCounter with ⟨row, hMem, hLive, hKey, hNext⟩
+      refine ⟨row, ?_, hLive, hKey, hNext⟩
+      rw [mem_flush_iff]
+      refine Or.inl ⟨hMem, ?_⟩
+      rw [hKey]
+      exact hLocalNoCounterKey 0
+    · -- counterRowsAtZero (flush)
+      intro row hMem hInTable
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hVisCounterAtZero row hG.1 hInTable
+      · exfalso
+        rcases hInTable with ⟨id, hKey⟩
+        rcases hLocalRowKey row hL.1 with hArch | ⟨_n, hLog⟩
+        · rw [hArch] at hKey
+          have : archiveTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_archiveTable this.symm
+        · rw [hLog] at hKey
+          have : logTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_logTable this.symm
+    · -- liveCountersHaveNext (flush) visNext
+      intro row hMem hLive hInTable
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hVisHaveNext row hG.1 hLive hInTable
+      · exfalso
+        rcases hInTable with ⟨id, hKey⟩
+        rcases hLocalRowKey row hL.1 with hArch | ⟨_n, hLog⟩
+        · rw [hArch] at hKey
+          have : archiveTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_archiveTable this.symm
+        · rw [hLog] at hKey
+          have : logTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_logTable this.symm
+    · -- storageRowsLive (flush)
+      intro row hMem hStorage
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hVisStorageLive row hG.1 hStorage
+      · -- local rows: archive insert is alive, delete markers are filtered out by flush.
+        -- Since hL.2 is `row.del = false`, the row is alive.
+        exact hL.2
+    · -- liveLog (flush) n iff snapNext ≤ n ∧ n < visNext
+      sorry
+    · -- archiveCovers (flush) n iff n < snapNext
+      sorry
+    · -- archiveIntervalsWellFormed (flush)
+      intro row idx lo hi hMem hLive hKey hLo hHi
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hVisIntervals row idx lo hi hG.1 hLive hKey hLo hHi
+      · -- Local row with archive key: it's the archive insert row.
+        -- Unfold archiveLogInsertEffect to get lo, hi values.
+        rcases hPostWeak with ⟨snapDb', _hSnapInv', _hReach', hRows'⟩
+        have hDenote := (hRows' row).2 hL.1
+        unfold archiveLogEffect at hDenote
+        rw [SetLanguage.denote_union] at hDenote
+        rcases hDenote with hInsert | hDelete
+        · -- Archive insert: row = archiveRow txnId i lo' (hi0+1) with lo' ≤ hi0.
+          rcases hInsert with ⟨lo', hi0', hMin', hMax', hRow⟩
+          subst hRow
+          rcases hMin' with ⟨⟨witMin, hWitMin⟩, _hMinAll⟩
+          rcases hMax' with ⟨_hWitMax, hMaxAll⟩
+          rcases hWitMin with ⟨_hMinMem, hMinKey⟩
+          have hMinLeMax : lo' ≤ hi0' := hMaxAll witMin lo' ⟨_hMinMem, hMinKey⟩
+          -- hLo: rowFieldInt? row loField = some lo. row = archiveRow ... lo' (hi0'+1).
+          rw [rowFieldInt?_archiveRow_lo] at hLo
+          rw [rowFieldInt?_archiveRow_hi] at hHi
+          have : lo = lo' := (Option.some.inj hLo).symm
+          have : hi = hi0' + 1 := (Option.some.inj hHi).symm
+          omega
+        · -- Delete marker: hLive = false (markDeleted has del = true)
+          exfalso
+          rcases hDelete with ⟨src, _n', _lo, _hi0, _, _, _hSel, _, _, hRow⟩
+          subst hRow
+          unfold liveRow at hLive
+          have : (src.markDeleted (archiveTxnId i)).del = true := rfl
+          rw [this] at hLive
+          exact Bool.noConfusion hLive
   · -- sameResultRows: local has only archive/log keys, never resultTable
     intro q n
     constructor
