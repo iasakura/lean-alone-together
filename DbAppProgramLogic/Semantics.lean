@@ -524,6 +524,49 @@ theorem overwrite_key?_of_explicit
     exact RecordLit.lookup?_setField
   rw [hFinalTable, hFinalId]
 
+/-- `Row.overwrite` keeps the original row's explicit `lookup? "table"` if
+present. -/
+theorem overwrite_lookup?_table_of_explicit
+    (row : Row) (txnId : TxnId) (updated : RecordLit) {table : Int}
+    (hTable : row.visible.lookup? "table" = some (.int table)) :
+    (row.overwrite txnId updated).visible.lookup? "table" = some (.int table) := by
+  unfold Row.overwrite preserveKeyFields
+  show (let updated' := match row.visible.id? with
+                        | some id => updated.setField "id" (.int id)
+                        | none => updated;
+        match row.visible.lookup? "table" with
+        | some (.int t) => updated'.setField "table" (.int t)
+        | _ =>
+            match row.visible.lookup? "kind" with
+            | some (.int kind) => updated'.setField "kind" (.int kind)
+            | _ => updated').lookup? "table" = some (.int table)
+  rw [hTable]
+  exact RecordLit.lookup?_setField
+
+/-- `Row.overwrite` keeps the original row's explicit `lookup? "id"` if
+present. -/
+theorem overwrite_lookup?_id_of_explicit
+    (row : Row) (txnId : TxnId) (updated : RecordLit) {id : Int} {table : Int}
+    (hId : row.visible.lookup? "id" = some (.int id))
+    (hTable : row.visible.lookup? "table" = some (.int table)) :
+    (row.overwrite txnId updated).visible.lookup? "id" = some (.int id) := by
+  unfold Row.overwrite preserveKeyFields
+  have hOrigId? : row.visible.id? = some id := by
+    unfold RecordLit.id?; rw [hId]
+  show (let updated' := match row.visible.id? with
+                        | some i => updated.setField "id" (.int i)
+                        | none => updated;
+        match row.visible.lookup? "table" with
+        | some (.int t) => updated'.setField "table" (.int t)
+        | _ =>
+            match row.visible.lookup? "kind" with
+            | some (.int kind) => updated'.setField "kind" (.int kind)
+            | _ => updated').lookup? "id" = some (.int id)
+  rw [hOrigId?, hTable]
+  have hNe : ("id" : FieldName) ≠ "table" := by decide
+  rw [RecordLit.lookup?_setField_of_ne hNe]
+  exact RecordLit.lookup?_setField
+
 /-- For fields other than the key fields (`id`, `table`, `kind`),
 `Row.overwrite` passes the lookup through to `updated`. -/
 theorem overwrite_lookup?_of_ne

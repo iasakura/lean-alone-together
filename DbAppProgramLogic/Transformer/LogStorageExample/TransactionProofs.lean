@@ -671,6 +671,14 @@ theorem selectAllLogEffect_qstable_final (q : Nat) :
   txnSnapshotPost_stable_readCommitted logSystemInv (R_select q)
     (selectAllLogEffect (selectTxnId q) q)
 
+/-! ## Generic helpers -/
+
+/-- A key in `localDb.keyDom` comes from some local row whose `key?` matches. -/
+theorem mem_keyDom_iff' (db : Database) (key : RowKey) :
+    key ∈ db.keyDom ↔ ∃ row, row ∈ db ∧ row.key? = some key := by
+  unfold Database.keyDom
+  simp [List.mem_filterMap]
+
 /-! ## Insert: local-row key characterization -/
 
 /-- Direct iff for `updateSetExpr`'s denotation, mirroring the closure inside
@@ -711,7 +719,7 @@ theorem updateSetExpr_denote_iff
 `logSystemInvAtNext i` consists of either:
 - the inserted log row `logRow txnId i` (with key `(logTable, i)`), or
 - a counter overwrite row whose key is `(counterTable, 0)`, with
-  `nextField` set to `i + 1` and live (`del = false`). -/
+  `nextField` set to `i + 1`, explicit `tableField = counterTable`, and live. -/
 theorem insertLogEffect_local_row
     (txnId : TxnId) (i : Nat) (snapshotDb : Database)
     (hSnap : logSystemInvAtNext i snapshotDb)
@@ -721,6 +729,7 @@ theorem insertLogEffect_local_row
         (insertLogEffect txnId i) row) :
     row = logRow txnId (i : Int) ∨
       (row.key? = some (counterTable, 0) ∧
+        rowFieldInt? row tableField = some counterTable ∧
         rowFieldInt? row nextField = some ((i : Int) + 1) ∧
         liveRow row) := by
   rcases hSnap with ⟨_cut, hShape, _hResults, hWF⟩
@@ -776,11 +785,17 @@ theorem insertLogEffect_local_row
       exact (Value.record.inj (Option.some.inj _hEval)).symm
     subst hRow
     subst hUpdatedEq
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     · -- Key is (counterTable, 0)
       exact Row.overwrite_key?_of_explicit mid txnId
         (mid.visible.setField nextField (.int ((i : Int) + 1)))
         hMidIdField hMidTableField
+    · -- tableField = counterTable
+      rw [rowFieldInt?_eq_some_iff_lookup]
+      unfold tableField
+      exact Row.overwrite_lookup?_table_of_explicit mid txnId
+        (mid.visible.setField nextField (.int ((i : Int) + 1)))
+        hMidTableField
     · -- nextField = i+1
       have hNeId : (nextField : FieldName) ≠ "id" := by unfold nextField; decide
       have hNeTable : (nextField : FieldName) ≠ "table" := by unfold nextField; decide
@@ -799,13 +814,348 @@ theorem insertLogEffect_local_row
       rw [Row.overwrite_del]
       exact hMidLive
 
+/-- The denotation of `insertLogEffect` always contains a counter overwrite row
+when the snapshot has a live counter, which it does under
+`logSystemInvAtNext i`. -/
+theorem insertLogEffect_has_counter_overwrite
+    (txnId : TxnId) (i : Nat) (snapshotDb : Database)
+    (hSnap : logSystemInvAtNext i snapshotDb) :
+    ∃ row : Row,
+      SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+        (insertLogEffect txnId i) row ∧
+      row.key? = some (counterTable, 0) ∧
+      rowFieldInt? row nextField = some ((i : Int) + 1) ∧
+      liveRow row := by
+  rcases hSnap with ⟨_cut, hShape, _hResults, hWF⟩
+  rcases hShape with ⟨_hCut, hCounter, hCounterAtZero, _hHaveNext, hStorageLive,
+    _hLiveLog, _hArchive, _hIntervals⟩
+  rcases hCounter with ⟨mid, hMidMem, hMidLive, hMidKey, _hMidNext⟩
+  -- Construct the overwrite row
+  let updated := mid.visible.setField nextField (.int ((i : Int) + 1))
+  refine ⟨mid.overwrite txnId updated, ?_, ?_, ?_, ?_⟩
+  · -- denote
+    unfold insertLogEffect
+    rw [SetLanguage.denote_union]
+    right
+    rw [updateSetExpr_denote_iff]
+    refine ⟨mid, hMidMem, ?_, updated, ?_, rfl⟩
+    · -- predicate matches: tableField = counterTable
+      have hMidTab : rowFieldInt? mid tableField = some counterTable :=
+        rowFieldInt?_tableField_of_key_wellFormed hWF hMidMem hMidKey
+      simpa [isCounterExpr, isTableExpr, instantiateExpr, Expr.subst, rowVar]
+        using (satisfiesPredicate_isTableExpr_iff mid counterTable).mpr hMidTab
+    · -- update expression evaluates to `updated`
+      have hInnerEval :
+          Expr.eval (.int ((i : Int) + 1)) = some (.scalar (.int ((i : Int) + 1))) := rfl
+      show Expr.eval
+        (.withUpdates (.lit (.record mid.visible)) [(nextField, .int ((i : Int) + 1))]) = _
+      exact Expr.eval_lit_record_single_update (record := mid.visible) (field := nextField)
+        (expr := .int ((i : Int) + 1)) (value := .int ((i : Int) + 1)) hInnerEval
+  · -- key
+    have hMidIdField : mid.visible.lookup? "id" = some (.int 0) :=
+      lookup?_id_of_key hMidKey
+    have hMidTableField : mid.visible.lookup? "table" = some (.int counterTable) :=
+      lookup?_table_of_key_wellFormed hWF hMidMem hMidKey
+    exact Row.overwrite_key?_of_explicit mid txnId updated hMidIdField hMidTableField
+  · -- nextField
+    have hNeId : (nextField : FieldName) ≠ "id" := by unfold nextField; decide
+    have hNeTable : (nextField : FieldName) ≠ "table" := by unfold nextField; decide
+    have hNeKind : (nextField : FieldName) ≠ "kind" := by unfold nextField; decide
+    have hOverwriteLookup :=
+      Row.overwrite_lookup?_of_ne mid txnId updated (field := nextField)
+        hNeId hNeTable hNeKind
+    have hSetFieldNext : updated.lookup? nextField = some (.int ((i : Int) + 1)) :=
+      RecordLit.lookup?_setField
+    rw [rowFieldInt?_eq_some_iff_lookup]
+    rw [hOverwriteLookup, hSetFieldNext]
+  · -- live
+    show (mid.overwrite txnId updated).del = false
+    rw [Row.overwrite_del]
+    exact hMidLive
+
+/-- The denotation of `insertLogEffect` always contains the inserted log row. -/
+theorem insertLogEffect_has_log_row
+    (txnId : TxnId) (i : Nat) (snapshotDb : Database) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+      (insertLogEffect txnId i) (logRow txnId i) := by
+  unfold insertLogEffect
+  rw [SetLanguage.denote_union]
+  left
+  have hEval : Expr.eval (instantiateSymExpr emptySymEnv [] (logRecordExpr (.int i))) =
+      some (.record (logRecord (i : Int))) := rfl
+  have hClosed :
+      evalExprInSetEnv emptySymEnv
+          ((SetLanguage.Env.ofDatabases [] snapshotDb).bindElem "_row" (logRow txnId i))
+          (logRecordExpr (.int i)) =
+        Expr.eval (instantiateSymExpr emptySymEnv [] (logRecordExpr (.int i))) := rfl
+  exact (denote_insertedRowSet txnId emptySymEnv (logRecordExpr (.int i)) snapshotDb
+    (logRow txnId i) (logRecord i) hClosed hEval).2 rfl
+
+/-! ## Insert: storage-table no-clobber lemmas -/
+
+/-- Local rows of insert have keys disjoint from the archive table. -/
+theorem insertLogEffect_local_no_archive_key
+    (txnId : TxnId) (i : Nat) (snapshotDb localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost (logSystemInvAtNext i) R_insert
+        (insertLogEffect txnId i) localDb visibleDb)
+    {row : Row} {id : Int} (hMem : row ∈ localDb)
+    (hKey : row.key? = some (archiveTable, id)) : False := by
+  rcases hPost with ⟨snapshotDb', hSnap, _hReach, hRows⟩
+  have hDenote := (hRows row).2 hMem
+  rcases insertLogEffect_local_row txnId i snapshotDb' hSnap row hDenote with hLog | hCounter
+  · subst hLog
+    rw [logRow_key?] at hKey
+    have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+    exact logTable_ne_archiveTable this
+  · rw [hCounter.1] at hKey
+    have : counterTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+    exact counterTable_ne_archiveTable this
+
+/-- Local rows of insert have keys disjoint from any result table. -/
+theorem insertLogEffect_local_no_result_key
+    (txnId : TxnId) (i : Nat) (snapshotDb localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost (logSystemInvAtNext i) R_insert
+        (insertLogEffect txnId i) localDb visibleDb)
+    {row : Row} {q : Nat} {n : Int} (hMem : row ∈ localDb)
+    (hKey : row.key? = some (resultTable q, n)) : False := by
+  rcases hPost with ⟨snapshotDb', hSnap, _hReach, hRows⟩
+  have hDenote := (hRows row).2 hMem
+  rcases insertLogEffect_local_row txnId i snapshotDb' hSnap row hDenote with hLog | hCounter
+  · subst hLog
+    rw [logRow_key?] at hKey
+    have : logTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+    exact resultTable_ne_logTable q this.symm
+  · rw [hCounter.1] at hKey
+    have : counterTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+    exact resultTable_ne_counterTable q this.symm
+
 /-- Indexed insert guarantee bridge. -/
 theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
     ∀ localDb visibleDb,
       txnSnapshotPost (logSystemInvAtNext i) R_insert
           (insertLogEffect (insertTxnId i) i) localDb visibleDb →
         G_insert visibleDb (Database.flush localDb visibleDb) := by
-  sorry
+  intro localDb visibleDb hPost _hVisInv
+  -- Snapshot info
+  rcases hPost with ⟨snapshotDb, hSnap, hReach, hRows⟩
+  -- Visible satisfies logSystemInvAtNext i by stability under R_insert
+  have hVisAtNext : logSystemInvAtNext i visibleDb :=
+    stableAssertion_multiStep (logSystemInvAtNext_stable_R_insert i) hReach hSnap
+  rcases hVisAtNext with ⟨cut, hVisShape, hVisResults, hVisWF⟩
+  rcases hVisShape with ⟨hCutLe, hVisCounter, hVisCounterAtZero, hVisHaveNext,
+    hVisStorageLive, hVisLiveLog, hVisArchive, hVisIntervals⟩
+  -- Snapshot has logSystemInvAtNext i
+  have hPostBack : txnSnapshotPost (logSystemInvAtNext i) R_insert
+      (insertLogEffect (insertTxnId i) i) localDb visibleDb :=
+    ⟨snapshotDb, hSnap, hReach, hRows⟩
+  -- Local row characterization helper
+  have hLocalRow : ∀ row, row ∈ localDb →
+      row = logRow (insertTxnId i) (i : Int) ∨
+        (row.key? = some (counterTable, 0) ∧
+          rowFieldInt? row tableField = some counterTable ∧
+          rowFieldInt? row nextField = some ((i : Int) + 1) ∧
+          liveRow row) := by
+    intro row hMem
+    exact insertLogEffect_local_row (insertTxnId i) i snapshotDb hSnap row ((hRows row).2 hMem)
+  -- Local has the inserted log row
+  have hLocalHasLog : logRow (insertTxnId i) (i : Int) ∈ localDb :=
+    (hRows (logRow (insertTxnId i) (i : Int))).1
+      (insertLogEffect_has_log_row (insertTxnId i) i snapshotDb)
+  -- Local has at least one counter overwrite
+  have hLocalHasCounter : ∃ row : Row, row ∈ localDb ∧
+      row.key? = some (counterTable, 0) ∧
+      rowFieldInt? row nextField = some ((i : Int) + 1) ∧
+      liveRow row := by
+    rcases insertLogEffect_has_counter_overwrite (insertTxnId i) i snapshotDb hSnap with
+      ⟨row, hRowDenote, hRowKey, hRowNext, hRowLive⟩
+    exact ⟨row, (hRows row).1 hRowDenote, hRowKey, hRowNext, hRowLive⟩
+  -- For convenience, abbreviate the local key set
+  -- The constructor for G_insertCore: cut, next = i.
+  refine ⟨cut, i, ?_, ?_, ?_, ?_, ?_⟩
+  · -- storageShape visibleDb cut i
+    exact ⟨hCutLe, hVisCounter, hVisCounterAtZero, hVisHaveNext, hVisStorageLive,
+      hVisLiveLog, hVisArchive, hVisIntervals⟩
+  · -- storageShape (flush) cut (i+1)
+    refine ⟨by omega, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    · -- liveCounterAt (flush) (i+1)
+      rcases hLocalHasCounter with ⟨counterRow, hCounterMem, hCounterKey, hCounterNext, hCounterLive⟩
+      refine ⟨counterRow, ?_, hCounterLive, hCounterKey, hCounterNext⟩
+      rw [mem_flush_iff]; exact Or.inr ⟨hCounterMem, hCounterLive⟩
+    · -- counterRowsAtZero (flush)
+      intro row hMem hInTable
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hVisCounterAtZero row hG.1 hInTable
+      · rcases hLocalRow row hL.1 with hLogR | hCounterR
+        · exfalso
+          subst hLogR
+          rcases hInTable with ⟨id, hKey⟩
+          rw [logRow_key?] at hKey
+          have : logTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_logTable this.symm
+        · exact hCounterR.1
+    · -- liveCountersHaveNext (flush) (i+1)
+      intro row hMem hLive hInTable
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exfalso
+        have hKey : row.key? = some (counterTable, 0) := hVisCounterAtZero row hG.1 hInTable
+        have hLocalCounterKey : (counterTable, (0 : Int)) ∈ localDb.keyDom := by
+          rw [mem_keyDom_iff']
+          rcases hLocalHasCounter with ⟨cRow, hcM, hcK, _, _⟩
+          exact ⟨cRow, hcM, hcK⟩
+        have hNoClobber := hG.2
+        rw [hKey] at hNoClobber
+        exact hNoClobber hLocalCounterKey
+      · rcases hLocalRow row hL.1 with hLogR | hCounterR
+        · exfalso
+          subst hLogR
+          rcases hInTable with ⟨id, hKey⟩
+          rw [logRow_key?] at hKey
+          have : logTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_logTable this.symm
+        · exact hCounterR.2.2.1
+    · -- storageRowsLive (flush)
+      intro row hMem hStorage
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hVisStorageLive row hG.1 hStorage
+      · rcases hLocalRow row hL.1 with hLogR | hCounterR
+        · subst hLogR
+          show (logRow (insertTxnId i) (i : Int)).del = false
+          simp [logRow, Row.fromInsert]
+        · exact hCounterR.2.2.2
+    · -- liveLog (flush) n iff cut ≤ n < i+1
+      intro n
+      constructor
+      · intro hL
+        rcases liveLog_of_flush hL with hVis | hLoc
+        · -- visible has it: cut ≤ n < i, so cut ≤ n < i+1
+          have := (hVisLiveLog n).1 hVis
+          omega
+        · -- local has it: must be the inserted log row at i
+          rcases hLoc with ⟨row, hMem, _hLive, hKey⟩
+          rcases hLocalRow row hMem with hLogR | hCounterR
+          · subst hLogR
+            rw [logRow_key?] at hKey
+            have hN : (i : Int) = (n : Int) := (Prod.mk.inj (Option.some.inj hKey)).2
+            have : i = n := by exact_mod_cast hN
+            subst this
+            exact ⟨hCutLe, by omega⟩
+          · exfalso
+            rw [hCounterR.1] at hKey
+            have : counterTable = logTable := (Prod.mk.inj (Option.some.inj hKey)).1
+            exact counterTable_ne_logTable this
+      · rintro ⟨hCut, hLt⟩
+        by_cases hN : n = i
+        · -- Use the local log row
+          subst hN
+          refine ⟨logRow (insertTxnId n) (n : Int), ?_, ?_, ?_⟩
+          · rw [mem_flush_iff]
+            refine Or.inr ⟨hLocalHasLog, ?_⟩
+            simp [logRow, Row.fromInsert]
+          · simp [logRow, Row.fromInsert, liveRow]
+          · exact logRow_key? (insertTxnId n) (n : Int)
+        · -- Use a visible log row
+          have hVisLog : liveLog visibleDb n := (hVisLiveLog n).2 ⟨hCut, by omega⟩
+          rcases hVisLog with ⟨row, hMem, hLive, hKey⟩
+          refine ⟨row, ?_, hLive, hKey⟩
+          rw [mem_flush_iff]
+          refine Or.inl ⟨hMem, ?_⟩
+          rw [hKey]
+          intro hLocal
+          rw [mem_keyDom_iff'] at hLocal
+          rcases hLocal with ⟨row', hMem', hKey'⟩
+          rcases hLocalRow row' hMem' with hLogR | hCounterR
+          · subst hLogR
+            rw [logRow_key?] at hKey'
+            have hEq : (i : Int) = (n : Int) := (Prod.mk.inj (Option.some.inj hKey')).2
+            have : i = n := by exact_mod_cast hEq
+            exact hN this.symm
+          · rw [hCounterR.1] at hKey'
+            have : counterTable = logTable := (Prod.mk.inj (Option.some.inj hKey')).1
+            exact counterTable_ne_logTable this
+    · -- archiveCovers (flush) n iff n < cut
+      intro n
+      constructor
+      · intro hC
+        rcases archiveCovers_of_flush hC with hVis | hLoc
+        · exact (hVisArchive n).1 hVis
+        · -- local rows have key (logTable, i) or (counterTable, 0), not archive
+          exfalso
+          rcases hLoc with ⟨row, _id, _lo, _hi, hMem, _hLive, hKey, _, _, _, _⟩
+          rcases hLocalRow row hMem with hLogR | hCounterR
+          · subst hLogR
+            rw [logRow_key?] at hKey
+            have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+            exact logTable_ne_archiveTable this
+          · rw [hCounterR.1] at hKey
+            have : counterTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+            exact counterTable_ne_archiveTable this
+      · intro hN
+        have hVisArch : archiveCovers visibleDb n := (hVisArchive n).2 hN
+        apply archiveCovers_flush_of_global _ hVisArch
+        intro idx hLocal
+        rw [mem_keyDom_iff'] at hLocal
+        rcases hLocal with ⟨row, hMem, hKey⟩
+        rcases hLocalRow row hMem with hLogR | hCounterR
+        · subst hLogR
+          rw [logRow_key?] at hKey
+          have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact logTable_ne_archiveTable this
+        · rw [hCounterR.1] at hKey
+          have : counterTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_archiveTable this
+    · -- archiveIntervalsWellFormed (flush)
+      intro row idx lo hi hMem hLive hKey hLo hHi
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hVisIntervals row idx lo hi hG.1 hLive hKey hLo hHi
+      · exfalso
+        rcases hLocalRow row hL.1 with hLogR | hCounterR
+        · subst hLogR
+          rw [logRow_key?] at hKey
+          have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact logTable_ne_archiveTable this
+        · rw [hCounterR.1] at hKey
+          have : counterTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_archiveTable this
+  · -- sameResultRows
+    intro q n
+    constructor
+    · intro hNew
+      rcases resultRowFor_of_flush hNew with hOld | hLoc
+      · exact hOld
+      · exfalso
+        rcases hLoc with ⟨row, hMem, _hLive, hKey⟩
+        exact insertLogEffect_local_no_result_key (insertTxnId i) i snapshotDb localDb visibleDb
+          ⟨snapshotDb, hSnap, hReach, hRows⟩ hMem hKey
+    · intro hOld
+      apply resultRowFor_flush_of_global _ hOld
+      intro hLocal
+      rw [mem_keyDom_iff'] at hLocal
+      rcases hLocal with ⟨row, hMem, hKey⟩
+      exact insertLogEffect_local_no_result_key (insertTxnId i) i snapshotDb localDb visibleDb
+        ⟨snapshotDb, hSnap, hReach, hRows⟩ hMem hKey
+  · -- preservesArchiveKeyFreshness
+    intro idx hOldFresh row hMemNew hKey
+    rw [mem_flush_iff] at hMemNew
+    rcases hMemNew with hG | hL
+    · exact hOldFresh row hG.1 hKey
+    · exact insertLogEffect_local_no_archive_key (insertTxnId i) i snapshotDb localDb visibleDb
+        ⟨snapshotDb, hSnap, hReach, hRows⟩ hL.1 hKey
+  · -- preservesWellFormedTableFields
+    intro hOldWF row hMem
+    rw [mem_flush_iff] at hMem
+    rcases hMem with hG | hL
+    · exact hOldWF row hG.1
+    · rcases hLocalRow row hL.1 with hLogR | hCounterR
+      · subst hLogR
+        exact ⟨logTable, i, logRow_key? (insertTxnId i) (i : Int),
+          rowFieldInt?_logRow_table (insertTxnId i) (i : Int)⟩
+      · exact ⟨counterTable, 0, hCounterR.1, hCounterR.2.1⟩
 
 /-- Archive guarantee bridge. -/
 theorem archiveLogEffect_guarantee_final (i : Nat) :
