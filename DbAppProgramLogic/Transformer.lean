@@ -8,3 +8,9 @@ import DbAppProgramLogic.Transformer.InferenceSoundness
 import DbAppProgramLogic.Transformer.InferenceCapstone
 import DbAppProgramLogic.Transformer.InferenceExample
 import DbAppProgramLogic.Transformer.InferenceCapstoneExample
+import DbAppProgramLogic.Transformer.AuditLogExample
+import DbAppProgramLogic.Transformer.LogStorageExample.Effects
+import DbAppProgramLogic.Transformer.LogStorageExample.Spec
+import DbAppProgramLogic.Transformer.LogStorageExample.SnapshotPost
+import DbAppProgramLogic.Transformer.LogStorageExample.TransactionProofs
+import DbAppProgramLogic.Transformer.LogStorageExample.Final
