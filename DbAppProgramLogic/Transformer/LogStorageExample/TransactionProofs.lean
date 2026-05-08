@@ -406,6 +406,108 @@ theorem selectAllLogSnapshotPost_local_resultRowFor_iff
     · simp [liveRow, resultRowLit, Row.fromInsert]
     · exact resultRowLit_key? (selectTxnId q) q n
 
+/-- The denotation of `selectAllLogEffect` at the snapshot, restricted to result-row
+literals, characterizes exactly `expandedLog snapshot`. -/
+theorem selectAllLogEffect_resultRowLit_iff_expanded
+    (q : Nat) (snapshotDb : Database) (n : Int)
+    (hSnapshotInv : logSystemInv snapshotDb) :
+    SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+        (selectAllLogEffect (selectTxnId q) q) (resultRowLit (selectTxnId q) q n) ↔
+      expandedLog snapshotDb n := by
+  rcases hSnapshotInv with ⟨_cut, _next, hShape, _hResults⟩
+  rcases hShape with ⟨_hCut, _hCounter, _hCounterAtZero, _hHaveNext,
+    hStorageLive, hWFTable, _hLiveLog, _hArchive, _hIntervals⟩
+  unfold selectAllLogEffect
+  rw [SetLanguage.denote_bind]
+  constructor
+  · rintro ⟨entry, hEntry, hOut⟩
+    rw [selectedStorageEntriesSet_denote_iff] at hEntry
+    rcases hEntry with ⟨hMem, _hTable⟩
+    rw [show selectEntryResultEffect (selectTxnId q) q entry =
+      .union (selectLogResultEffect (selectTxnId q) q entry)
+        (selectArchiveResultEffect (selectTxnId q) q entry) from rfl] at hOut
+    rw [SetLanguage.denote_union] at hOut
+    rcases hOut with hLog | hArchiveCase
+    · change (∃ m, (∃ id, entry.key? = some (logTable, id)) ∧
+        rowFieldInt? entry idField = some m ∧
+          resultRowLit (selectTxnId q) q n = resultRowLit (selectTxnId q) q m) at hLog
+      rcases hLog with ⟨m, ⟨id, hEntryKey⟩, hN, hRow⟩
+      have hMNeq : n = m := resultRowLit_n_inj hRow
+      subst hMNeq
+      have hLive : liveRow entry := hStorageLive entry hMem (Or.inr (Or.inl ⟨id, hEntryKey⟩))
+      have hIdEq : id = n := by
+        have hExtract := rowFieldInt?_idField_of_key hEntryKey
+        rw [hN] at hExtract
+        exact (Option.some.inj hExtract).symm
+      subst hIdEq
+      exact Or.inl ⟨entry, hMem, hLive, hEntryKey⟩
+    · change (∃ lo hi m, (∃ id, entry.key? = some (archiveTable, id)) ∧
+        rowFieldInt? entry loField = some lo ∧
+          rowFieldInt? entry hiField = some hi ∧
+          lo ≤ m ∧ m < hi ∧
+          resultRowLit (selectTxnId q) q n = resultRowLit (selectTxnId q) q m) at hArchiveCase
+      rcases hArchiveCase with ⟨lo, hi, m, ⟨id, hEntryKey⟩, hLo, hHi, hLe, hLt, hRow⟩
+      have : n = m := resultRowLit_n_inj hRow
+      subst this
+      have hLive : liveRow entry :=
+        hStorageLive entry hMem (Or.inr (Or.inr ⟨id, hEntryKey⟩))
+      exact Or.inr ⟨entry, id, lo, hi, hMem, hLive, hEntryKey, hLo, hHi, hLe, hLt⟩
+  · intro hExpanded
+    rcases hExpanded with hLog | hArchiveCase
+    · rcases hLog with ⟨entry, hMem, _hLive, hEntryKey⟩
+      have hTableF : rowFieldInt? entry tableField = some logTable :=
+        hWFTable entry hMem logTable n hEntryKey
+      refine ⟨entry, ?_, ?_⟩
+      · rw [selectedStorageEntriesSet_denote_iff]
+        exact ⟨hMem, Or.inl hTableF⟩
+      · change (∃ m, (∃ id, entry.key? = some (logTable, id)) ∧
+          rowFieldInt? entry idField = some m ∧
+            resultRowLit (selectTxnId q) q n = resultRowLit (selectTxnId q) q m) ∨ _
+        left
+        refine ⟨n, ⟨n, hEntryKey⟩, rowFieldInt?_idField_of_key hEntryKey, rfl⟩
+    · rcases hArchiveCase with ⟨entry, id, lo, hi, hMem, _hLive, hEntryKey, hLo, hHi, hLe, hLt⟩
+      have hTableF : rowFieldInt? entry tableField = some archiveTable :=
+        hWFTable entry hMem archiveTable id hEntryKey
+      refine ⟨entry, ?_, ?_⟩
+      · rw [selectedStorageEntriesSet_denote_iff]
+        exact ⟨hMem, Or.inr hTableF⟩
+      · change _ ∨ (∃ lo' hi' m, (∃ id, entry.key? = some (archiveTable, id)) ∧
+          rowFieldInt? entry loField = some lo' ∧
+            rowFieldInt? entry hiField = some hi' ∧
+            lo' ≤ m ∧ m < hi' ∧
+            resultRowLit (selectTxnId q) q n = resultRowLit (selectTxnId q) q m)
+        right
+        exact ⟨lo, hi, n, ⟨id, hEntryKey⟩, hLo, hHi, hLe, hLt, rfl⟩
+
+theorem selectAllLogSnapshotPost_local_result_prefix
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb) :
+    ∃ k : Nat, ∀ n : Nat,
+      resultRowLit (selectTxnId q) q n ∈ localDb ↔ n < k := by
+  rcases hPost with ⟨snapshotDb, hSnapshotInv, _hReach, hRows⟩
+  rcases logSystemInv_expandedLog_prefix hSnapshotInv with ⟨k, hPrefix⟩
+  refine ⟨k, ?_⟩
+  intro n
+  rw [← hRows (resultRowLit (selectTxnId q) q n),
+    selectAllLogEffect_resultRowLit_iff_expanded q snapshotDb n hSnapshotInv,
+    hPrefix n]
+
+theorem selectAllLogSnapshotPost_local_result_expanded_visible
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb) :
+    ∀ n : Nat,
+      resultRowLit (selectTxnId q) q n ∈ localDb → expandedLog visibleDb n := by
+  rcases hPost with ⟨snapshotDb, hSnapshotInv, hReach, hRows⟩
+  intro n hMem
+  have hSnapshotExpanded : expandedLog snapshotDb n :=
+    (selectAllLogEffect_resultRowLit_iff_expanded q snapshotDb n hSnapshotInv).1
+      ((hRows _).2 hMem)
+  exact R_select_multiStep_preserves_expandedLog hReach hSnapshotInv hSnapshotExpanded
+
 
 
 /-! ## PaperInfer / stability helpers -/

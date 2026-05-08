@@ -160,6 +160,34 @@ theorem rowFieldInt?_idField_of_key {row : Row} {table : TableName} {id : Int}
       simp at h
       simp [Row.id?, hI, h.2]
 
+/-- If a row has explicit `tableField` and `idField` integer fields, its key
+agrees. Used to bridge effect-denotation reasoning (which works on field
+lookups) with key-based predicates. -/
+theorem rowKey?_of_table_id_fields {row : Row} {table : TableName} {id : Int}
+    (hTable : rowFieldInt? row tableField = some table)
+    (hId : rowFieldInt? row idField = some id) :
+    row.key? = some (table, id) := by
+  unfold rowFieldInt? at hTable hId
+  unfold tableField at hTable
+  unfold idField at hId
+  unfold Row.key? RecordLit.key? RecordLit.table? RecordLit.id?
+  cases hT : row.visible.lookup? "table" with
+  | none => rw [hT] at hTable; cases hTable
+  | some litT =>
+    cases litT with
+    | bool _ => rw [hT] at hTable; cases hTable
+    | int v =>
+      rw [hT] at hTable; simp at hTable
+      cases hI : row.visible.lookup? "id" with
+      | none => rw [hI] at hId; cases hId
+      | some litI =>
+        cases litI with
+        | bool _ => rw [hI] at hId; cases hId
+        | int w =>
+          rw [hI] at hId; simp at hId
+          subst hTable; subst hId
+          simp [hT, hI]
+
 theorem rowFieldInt?_counterRow_next (txnId : TxnId) (next : Int) :
     rowFieldInt? (counterRow txnId next) nextField = some next := by
   simp [rowFieldInt?, counterRow, counterRecord, Row.fromInsert,
@@ -562,15 +590,36 @@ def storageRowsLive (db : Database) : Prop :=
     (rowInTable row counterTable ∨ rowInTable row logTable ∨ rowInTable row archiveTable) →
       liveRow row
 
+/-- Every row in the database has its `tableField` set explicitly to its key
+table. This rules out the legacy `kindField` fallback path of `RecordLit.table?`
+for our model and lets us bridge between `row.key?` and `rowFieldInt? row
+tableField`. Reachable databases satisfy this because every operation either
+preserves a row from the initial DB (which sets `tableField`) or inserts/updates
+via records that include `tableField`. -/
+def wellFormedTableFields (db : Database) : Prop :=
+  ∀ row, row ∈ db → ∀ table : TableName, ∀ id : Int,
+    row.key? = some (table, id) →
+      rowFieldInt? row tableField = some table
+
+theorem rowFieldInt?_tableField_of_key_wellFormed
+    {db : Database} {row : Row} {table : TableName} {id : Int}
+    (hWF : wellFormedTableFields db)
+    (hMem : row ∈ db)
+    (hKey : row.key? = some (table, id)) :
+    rowFieldInt? row tableField = some table :=
+  hWF row hMem table id hKey
+
 /-- Storage shape: cut ≤ next, exactly one live counter row at `(counterTable, 0)`
 holding `next`, live logs are precisely `[cut, next)`, archives cover `[0, cut)`,
-intervals are well-formed, storage rows are live. -/
+intervals are well-formed, storage rows are live, and every row has its
+`tableField` set explicitly. -/
 def storageShape (db : Database) (cut next : Nat) : Prop :=
   cut ≤ next ∧
     liveCounterAt db next ∧
     counterRowsAtZero db ∧
     liveCountersHaveNext db next ∧
     storageRowsLive db ∧
+    wellFormedTableFields db ∧
     (∀ n : Nat, liveLog db n ↔ cut ≤ n ∧ n < next) ∧
     (∀ n : Nat, archiveCovers db n ↔ n < cut) ∧
     archiveIntervalsWellFormed db
@@ -601,7 +650,7 @@ theorem logSystemInv_of_logSystemInvAtNext {db : Database} {next : Nat}
 theorem storageShape_expandedLog_iff {db : Database} {cut next : Nat}
     (hShape : storageShape db cut next) :
     ∀ n : Nat, expandedLog db n ↔ n < next := by
-  rcases hShape with ⟨hCut, _, _, _, _, hLive, hArchive, _⟩
+  rcases hShape with ⟨hCut, _, _, _, _, _, hLive, hArchive, _⟩
   intro n
   unfold expandedLog
   rw [hLive n, hArchive n]
@@ -615,8 +664,8 @@ theorem logSystemInv_expandedLog_prefix {db : Database} (hInv : logSystemInv db)
 theorem storageShape_next_unique {db : Database} {cut₁ cut₂ next₁ next₂ : Nat}
     (h₁ : storageShape db cut₁ next₁) (h₂ : storageShape db cut₂ next₂) :
     next₁ = next₂ := by
-  rcases h₁ with ⟨_, _, _, hHaveNext₁, _, _, _, _⟩
-  rcases h₂ with ⟨_, hCounter₂, _, _, _, _, _, _⟩
+  rcases h₁ with ⟨_, _, _, hHaveNext₁, _, _, _, _, _⟩
+  rcases h₂ with ⟨_, hCounter₂, _, _, _, _, _, _, _⟩
   rcases hCounter₂ with ⟨row, hMem, hLive, hKey, hNext₂⟩
   have hInTable : rowInTable row counterTable := ⟨0, hKey⟩
   have hNext₁ := hHaveNext₁ row hMem hLive hInTable
@@ -684,9 +733,20 @@ theorem counterRowsAtZero_initialDb : counterRowsAtZero initialDb := by
   subst row
   exact counterRow_key? 0 0
 
+theorem wellFormedTableFields_initialDb : wellFormedTableFields initialDb := by
+  intro row hMem table id hKey
+  rw [mem_initialDb_iff] at hMem
+  subst row
+  rw [counterRow_key?] at hKey
+  have hTab : counterTable = table := (Prod.mk.inj (Option.some.inj hKey)).1
+  subst hTab
+  simp [rowFieldInt?, counterRow, counterRecord, Row.fromInsert,
+    RecordLit.lookup?, tableField, idField, nextField]
+
 theorem storageShape_initialDb : storageShape initialDb 0 0 := by
   refine ⟨Nat.le_refl _, liveCounterAt_initialDb, counterRowsAtZero_initialDb,
-    liveCountersHaveNext_initialDb, storageRowsLive_initialDb, ?_, ?_,
+    liveCountersHaveNext_initialDb, storageRowsLive_initialDb,
+    wellFormedTableFields_initialDb, ?_, ?_,
     archiveIntervalsWellFormed_initialDb⟩
   · intro n
     constructor
