@@ -66,6 +66,17 @@ theorem transformerPostI_to_txnSnapshotPost
   simpa [transformerPost, SetLanguage.SetExpr.union, SetLanguage.empty,
     SetLanguage.denote] using hRow
 
+/-- Weakening the snapshot's invariant. Any snapshot post under a stronger
+invariant is also a snapshot post under any weaker invariant. -/
+theorem txnSnapshotPost_weaken
+    {I I' : Assertion} (hImpl : ∀ db, I db → I' db)
+    {R : Rely} {F : SetLanguage.SetExpr}
+    {localDb visibleDb : Database}
+    (hPost : txnSnapshotPost I R F localDb visibleDb) :
+    txnSnapshotPost I' R F localDb visibleDb := by
+  rcases hPost with ⟨snapshotDb, hInv, hReach, hRows⟩
+  exact ⟨snapshotDb, hImpl snapshotDb hInv, hReach, hRows⟩
+
 end LogStorageExample
 
 end Transformer
