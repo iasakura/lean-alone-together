@@ -431,6 +431,42 @@ theorem logSystemInv_stable_multiStep {R : Rely} {oldDb newDb : Database}
   | refl => exact hInv
   | tail _hPrev hLast ih => exact hStable _ _ ih hLast
 
+/-! ## R_archive preserves cut and only weakly increases next -/
+
+/-- Each `R_archive` step preserves `cut` and either keeps or increments `next`. -/
+theorem R_archive_step_storageShape {oldDb newDb : Database}
+    (hStep : R_archive oldDb newDb)
+    (hOldInv : logSystemInv oldDb)
+    {cut next : Nat} (hOld : storageShape oldDb cut next) :
+    storageShape newDb cut next ∨ storageShape newDb cut (next + 1) := by
+  rcases hStep with hInsert | hSelect
+  · rcases hInsert hOldInv with ⟨c', n', hOldShape', hNewShape', _, _, _⟩
+    have hCut : c' = cut := storageShape_cut_unique hOldShape' hOld
+    have hNext : n' = next := storageShape_next_unique hOldShape' hOld
+    subst hCut; subst hNext
+    exact Or.inr hNewShape'
+  · rcases hSelect with ⟨_q, hSelect⟩
+    rcases hSelect hOldInv with ⟨hSameShape, _⟩
+    exact Or.inl ((hSameShape cut next).1 hOld)
+
+/-- `R_archive` multi-steps preserve `cut` and weakly increase `next`. -/
+theorem R_archive_multiStep_storageShape
+    {snapDb visDb : Database}
+    (hReach : Logic.MultiStep R_archive snapDb visDb)
+    (hSnapInv : logSystemInv snapDb)
+    {snapCut snapNext : Nat}
+    (hSnapShape : storageShape snapDb snapCut snapNext) :
+    ∃ visNext, snapNext ≤ visNext ∧ storageShape visDb snapCut visNext := by
+  induction hReach with
+  | refl => exact ⟨snapNext, Nat.le_refl _, hSnapShape⟩
+  | tail hPrev hLast ih =>
+      rcases ih with ⟨midNext, hMidLe, hMidShape⟩
+      have hMidInv :=
+        logSystemInv_stable_multiStep logSystemInv_stable_R_archive hPrev hSnapInv
+      rcases R_archive_step_storageShape hLast hMidInv hMidShape with hSame | hAdv
+      · exact ⟨midNext, hMidLe, hSame⟩
+      · exact ⟨midNext + 1, by omega, hAdv⟩
+
 theorem multiStep_preserves_expandedLog_of_step {R : Rely}
     {oldDb newDb : Database} {n : Nat}
     (hStable : Logic.stableAssertion R logSystemInv)

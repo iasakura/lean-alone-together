@@ -1170,6 +1170,24 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
           rowFieldInt?_logRow_table (insertTxnId i) (i : Int)⟩
       · exact ⟨counterTable, 0, hCounterR.1, hCounterR.2.1⟩
 
+/-- Visible's freshness from the indexed snapshot post via stability under
+`R_archive`. -/
+theorem archiveKeysFreshFrom_visible_of_indexedSnapshotPost
+    (i : Nat) (localDb visibleDb : Database)
+    (hPost : txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+        R_archive (archiveLogEffect (archiveTxnId i) i) localDb visibleDb) :
+    archiveKeysFreshFrom i visibleDb := by
+  rcases hPost with ⟨snapshotDb, ⟨hSnapInv, hSnapFresh⟩, hReach, _hRows⟩
+  -- Stability of (logSystemInv ∧ archiveKeysFreshFrom i) under R_archive
+  have hStable : Logic.stableAssertion R_archive
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) :=
+    archiveIndexedInv_stable_R_archive i
+  have : (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) visibleDb := by
+    induction hReach with
+    | refl => exact ⟨hSnapInv, hSnapFresh⟩
+    | tail _hPrev hLast ih => exact hStable _ _ ih hLast
+  exact this.2
+
 /-- Indexed archive guarantee bridge.
 
 The snapshot post is now over the strengthened invariant
@@ -1186,7 +1204,42 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
       txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
           R_archive (archiveLogEffect (archiveTxnId i) i) localDb visibleDb →
         G_archive visibleDb (Database.flush localDb visibleDb) := by
-  sorry
+  intro localDb visibleDb hPost hVisInv
+  -- Snapshot info
+  rcases hPost with ⟨snapshotDb, hSnapBoth, hReach, hRows⟩
+  have hSnapLogInvFull : logSystemInv snapshotDb := hSnapBoth.1
+  have hSnapFresh : archiveKeysFreshFrom i snapshotDb := hSnapBoth.2
+  rcases hSnapLogInvFull with ⟨snapCut, snapNext, hSnapShape, hSnapResults, hSnapWF⟩
+  have hSnapLogInv : logSystemInv snapshotDb :=
+    ⟨snapCut, snapNext, hSnapShape, hSnapResults, hSnapWF⟩
+  -- Visible's storage shape via stability lemma
+  rcases R_archive_multiStep_storageShape hReach hSnapLogInv hSnapShape with
+    ⟨visNext, hSnapNextLeVis, hVisShape⟩
+  have hVisLogInv : logSystemInv visibleDb := hVisInv
+  -- Visible has archive-id freshness
+  have hVisFresh : archiveKeysFreshFrom i visibleDb :=
+    archiveKeysFreshFrom_visible_of_indexedSnapshotPost i localDb visibleDb
+      ⟨snapshotDb, ⟨hSnapLogInv, hSnapFresh⟩, hReach, hRows⟩
+  -- Local row characterization (weaken to logSystemInv-only snapshot post first)
+  have hPostStrong :
+      txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+        R_archive (archiveLogEffect (archiveTxnId i) i) localDb visibleDb :=
+    ⟨snapshotDb, ⟨hSnapLogInv, hSnapFresh⟩, hReach, hRows⟩
+  have hPostWeak : txnSnapshotPost logSystemInv R_archive
+      (archiveLogEffect (archiveTxnId i) i) localDb visibleDb :=
+    txnSnapshotPost_weaken
+      (I := fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      (I' := logSystemInv)
+      (fun _ h => h.1) hPostStrong
+  have hLocalRowKey := archiveLogSnapshotPost_local_row_key i localDb visibleDb hPostWeak
+  -- Provide G_archiveCore
+  refine ⟨snapCut, snapNext, visNext, hVisShape, hSnapShape.1, hSnapNextLeVis, ?_, ?_, ?_⟩
+  · -- storageShape (flush) snapNext visNext
+    sorry
+  · -- sameResultRows
+    sorry
+  · -- preservesWellFormedTableFields
+    sorry
 
 /-- Storage rows in a `wellFormedTableFields` database have keys disjoint
 from any `resultTable q`. -/
