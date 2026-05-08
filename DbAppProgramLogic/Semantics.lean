@@ -524,6 +524,62 @@ theorem overwrite_key?_of_explicit
     exact RecordLit.lookup?_setField
   rw [hFinalTable, hFinalId]
 
+/-- For fields other than the key fields (`id`, `table`, `kind`),
+`Row.overwrite` passes the lookup through to `updated`. -/
+theorem overwrite_lookup?_of_ne
+    (row : Row) (txnId : TxnId) (updated : RecordLit) {field : FieldName}
+    (hNeId : field ≠ "id") (hNeTable : field ≠ "table") (hNeKind : field ≠ "kind") :
+    (row.overwrite txnId updated).visible.lookup? field = updated.lookup? field := by
+  unfold Row.overwrite preserveKeyFields
+  show (let updated' := match row.visible.id? with
+                        | some id => updated.setField "id" (.int id)
+                        | none => updated;
+        match row.visible.lookup? "table" with
+        | some (.int table) => updated'.setField "table" (.int table)
+        | _ =>
+            match row.visible.lookup? "kind" with
+            | some (.int kind) => updated'.setField "kind" (.int kind)
+            | _ => updated').lookup? field = updated.lookup? field
+  -- After both potential setFields, lookup? field passes through if field ≠ "id"/"table"/"kind".
+  have hStep1 : ∀ (rec : RecordLit),
+      (match row.visible.id? with
+       | some id => rec.setField "id" (.int id)
+       | none => rec).lookup? field = rec.lookup? field := by
+    intro rec
+    cases hI : row.visible.id? with
+    | none => simp
+    | some idVal =>
+        simp [RecordLit.lookup?_setField_of_ne hNeId]
+  generalize hUpd' : (match row.visible.id? with
+                       | some id => updated.setField "id" (.int id)
+                       | none => updated) = updated' at *
+  have hUpd'_lookup : updated'.lookup? field = updated.lookup? field := by
+    rw [← hUpd']; exact hStep1 updated
+  cases hT : row.visible.lookup? "table" with
+  | none =>
+      cases hK : row.visible.lookup? "kind" with
+      | none => simp [hT, hK]; exact hUpd'_lookup
+      | some lit =>
+          cases lit with
+          | int kind =>
+              simp [hT, hK, RecordLit.lookup?_setField_of_ne hNeKind]
+              exact hUpd'_lookup
+          | bool _ => simp [hT, hK]; exact hUpd'_lookup
+  | some lit =>
+      cases lit with
+      | int table =>
+          simp [hT, RecordLit.lookup?_setField_of_ne hNeTable]
+          exact hUpd'_lookup
+      | bool _ =>
+          cases hK : row.visible.lookup? "kind" with
+          | none => simp [hT, hK]; exact hUpd'_lookup
+          | some lit =>
+              cases lit with
+              | int kind =>
+                  simp [hT, hK, RecordLit.lookup?_setField_of_ne hNeKind]
+                  exact hUpd'_lookup
+              | bool _ => simp [hT, hK]; exact hUpd'_lookup
+
 end Row
 
 namespace Database

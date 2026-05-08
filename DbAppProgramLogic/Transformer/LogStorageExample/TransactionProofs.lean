@@ -708,18 +708,23 @@ theorem updateSetExpr_denote_iff
       exact hBody
 
 /-- The local delta of `insertLogBody i` against a snapshot satisfying
-`logSystemInvAtNext i` consists of either the inserted log row (with key
-`(logTable, i)`) or a counter overwrite row (with key `(counterTable, 0)`). -/
-theorem insertLogEffect_local_row_key
+`logSystemInvAtNext i` consists of either:
+- the inserted log row `logRow txnId i` (with key `(logTable, i)`), or
+- a counter overwrite row whose key is `(counterTable, 0)`, with
+  `nextField` set to `i + 1` and live (`del = false`). -/
+theorem insertLogEffect_local_row
     (txnId : TxnId) (i : Nat) (snapshotDb : Database)
     (hSnap : logSystemInvAtNext i snapshotDb)
     (row : Row)
     (hDenote :
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
         (insertLogEffect txnId i) row) :
-    row.key? = some (logTable, (i : Int)) ∨ row.key? = some (counterTable, 0) := by
+    row = logRow txnId (i : Int) ∨
+      (row.key? = some (counterTable, 0) ∧
+        rowFieldInt? row nextField = some ((i : Int) + 1) ∧
+        liveRow row) := by
   rcases hSnap with ⟨_cut, hShape, _hResults, hWF⟩
-  rcases hShape with ⟨_hCut, _hCounter, hCounterAtZero, _hHaveNext, _hStorageLive,
+  rcases hShape with ⟨_hCut, _hCounter, hCounterAtZero, _hHaveNext, hStorageLive,
     _hLiveLog, _hArchive, _hIntervals⟩
   unfold insertLogEffect at hDenote
   rw [SetLanguage.denote_union] at hDenote
@@ -727,29 +732,24 @@ theorem insertLogEffect_local_row_key
   · -- Inserted log row branch
     left
     have hEval : Expr.eval (instantiateSymExpr emptySymEnv [] (logRecordExpr (.int i))) =
-        some (.record (logRecord (i : Int))) := by
-      rfl
+        some (.record (logRecord (i : Int))) := rfl
     have hClosed :
         evalExprInSetEnv emptySymEnv
             ((SetLanguage.Env.ofDatabases [] snapshotDb).bindElem "_row" row)
             (logRecordExpr (.int i)) =
-          Expr.eval (instantiateSymExpr emptySymEnv [] (logRecordExpr (.int i))) := by
-      rfl
+          Expr.eval (instantiateSymExpr emptySymEnv [] (logRecordExpr (.int i))) := rfl
     have hRowEq :=
       (denote_insertedRowSet txnId emptySymEnv (logRecordExpr (.int i)) snapshotDb row
         (logRecord i) hClosed hEval).1 hInserted
-    rw [hRowEq]
-    show (Row.fromInsert txnId (logRecord i)).key? = some (logTable, (i : Int))
-    exact logRow_key? txnId (i : Int)
+    rw [hRowEq]; rfl
   · -- Counter overwrite branch
     right
     rw [updateSetExpr_denote_iff] at hUpdated
     rcases hUpdated with ⟨mid, hMidMem, hPred, _updated, _hEval, hRow⟩
-    have hMidTab : rowFieldInt? mid tableField = some counterTable := by
-      have := (satisfiesPredicate_isTableExpr_iff mid counterTable).mp
+    have hMidTab : rowFieldInt? mid tableField = some counterTable :=
+      (satisfiesPredicate_isTableExpr_iff mid counterTable).mp
         (by simpa [isCounterExpr, isTableExpr, instantiateExpr, Expr.subst, rowVar]
             using hPred)
-      exact this
     rcases rowKey?_of_tableField_wellFormed hWF hMidMem hMidTab with ⟨id, hMidKey⟩
     have hMidKeyZero : mid.key? = some (counterTable, 0) :=
       hCounterAtZero mid hMidMem ⟨id, hMidKey⟩
@@ -757,8 +757,47 @@ theorem insertLogEffect_local_row_key
       lookup?_id_of_key hMidKeyZero
     have hMidTableField : mid.visible.lookup? "table" = some (.int counterTable) :=
       lookup?_table_of_key_wellFormed hWF hMidMem hMidKeyZero
+    have hMidLive : liveRow mid :=
+      hStorageLive mid hMidMem (Or.inl ⟨0, hMidKeyZero⟩)
+    -- The `_updated` value comes from evaluating the update expression on `mid.visible`.
+    -- It equals `mid.visible.setField nextField (.int (i+1))`.
+    have hUpdatedEq : _updated = mid.visible.setField nextField (.int ((i : Int) + 1)) := by
+      have hInnerEval : Expr.eval (.int ((i : Int) + 1)) = some (.scalar (.int ((i : Int) + 1))) :=
+        rfl
+      have hEvalCanonical :
+          Expr.eval (Semantics.instantiateRecord rowVar mid.visible
+            (instantiateExpr [] [rowVar] (insertCounterUpdateExpr i))) =
+          some (.record (mid.visible.setField nextField (.int ((i : Int) + 1)))) := by
+        show Expr.eval
+          (.withUpdates (.lit (.record mid.visible)) [(nextField, .int ((i : Int) + 1))]) = _
+        exact Expr.eval_lit_record_single_update (record := mid.visible) (field := nextField)
+          (expr := .int ((i : Int) + 1)) (value := .int ((i : Int) + 1)) hInnerEval
+      rw [hEvalCanonical] at _hEval
+      exact (Value.record.inj (Option.some.inj _hEval)).symm
     subst hRow
-    exact Row.overwrite_key?_of_explicit mid txnId _updated hMidIdField hMidTableField
+    subst hUpdatedEq
+    refine ⟨?_, ?_, ?_⟩
+    · -- Key is (counterTable, 0)
+      exact Row.overwrite_key?_of_explicit mid txnId
+        (mid.visible.setField nextField (.int ((i : Int) + 1)))
+        hMidIdField hMidTableField
+    · -- nextField = i+1
+      have hNeId : (nextField : FieldName) ≠ "id" := by unfold nextField; decide
+      have hNeTable : (nextField : FieldName) ≠ "table" := by unfold nextField; decide
+      have hNeKind : (nextField : FieldName) ≠ "kind" := by unfold nextField; decide
+      have hOverwriteLookup :=
+        Row.overwrite_lookup?_of_ne mid txnId
+          (mid.visible.setField nextField (.int ((i : Int) + 1)))
+          (field := nextField) hNeId hNeTable hNeKind
+      have hSetFieldNext :
+          (mid.visible.setField nextField (.int ((i : Int) + 1))).lookup? nextField =
+            some (.int ((i : Int) + 1)) := RecordLit.lookup?_setField
+      rw [rowFieldInt?_eq_some_iff_lookup]
+      rw [hOverwriteLookup, hSetFieldNext]
+    · -- Live: del = false
+      show (mid.overwrite txnId _).del = false
+      rw [Row.overwrite_del]
+      exact hMidLive
 
 /-- Indexed insert guarantee bridge. -/
 theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
