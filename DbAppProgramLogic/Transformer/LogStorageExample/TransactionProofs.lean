@@ -414,9 +414,9 @@ theorem selectAllLogEffect_resultRowLit_iff_expanded
     SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
         (selectAllLogEffect (selectTxnId q) q) (resultRowLit (selectTxnId q) q n) ↔
       expandedLog snapshotDb n := by
-  rcases hSnapshotInv with ⟨_cut, _next, hShape, _hResults⟩
+  rcases hSnapshotInv with ⟨_cut, _next, hShape, _hResults, hWFTable⟩
   rcases hShape with ⟨_hCut, _hCounter, _hCounterAtZero, _hHaveNext,
-    hStorageLive, hWFTable, _hLiveLog, _hArchive, _hIntervals⟩
+    hStorageLive, _hLiveLog, _hArchive, _hIntervals⟩
   unfold selectAllLogEffect
   rw [SetLanguage.denote_bind]
   constructor
@@ -687,13 +687,380 @@ theorem archiveLogEffect_guarantee_final (i : Nat) :
         G_archive visibleDb (Database.flush localDb visibleDb) := by
   sorry
 
-/-- Select guarantee bridge. -/
+/-- Storage rows in a `wellFormedTableFields` database have keys disjoint
+from any `resultTable q`. -/
+theorem storageKey_ne_resultKey
+    {row : Row} {table : TableName} {id n : Int} {q : Nat}
+    (hKey : row.key? = some (table, id))
+    (hStorage : table = counterTable ∨ table = logTable ∨ table = archiveTable)
+    (hResult : row.key? = some (resultTable q, n)) :
+    False := by
+  rw [hKey] at hResult
+  have hPair : (table, id) = (resultTable q, n) := Option.some.inj hResult
+  have hTab : table = resultTable q := (Prod.mk.inj hPair).1
+  rcases hStorage with rfl | rfl | rfl
+  · exact resultTable_ne_counterTable q hTab.symm
+  · exact resultTable_ne_logTable q hTab.symm
+  · exact resultTable_ne_archiveTable q hTab.symm
+
+/-- Local rows of select have keys disjoint from any storage table key. -/
+theorem selectAllLogSnapshotPost_storageNoClobber
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb)
+    (row : Row) (key : RowKey)
+    (_hMem : row ∈ visibleDb)
+    (hKey : row.key? = some key)
+    (hStorage : key.fst = counterTable ∨ key.fst = logTable ∨ key.fst = archiveTable) :
+    key ∉ localDb.keyDom := by
+  intro hLocal
+  rcases selectAllLogSnapshotPost_local_keyDom_results q localDb visibleDb hPost key hLocal with
+    ⟨n, hKeyEq⟩
+  subst hKeyEq
+  simp at hStorage
+  rcases hStorage with hCounter | hLog | hArchive
+  · exact resultTable_ne_counterTable q hCounter
+  · exact resultTable_ne_logTable q hLog
+  · exact resultTable_ne_archiveTable q hArchive
+
+/-- For result-row keys for queries other than `q`, local does not clobber. -/
+theorem selectAllLogSnapshotPost_otherQueryNoClobber
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb)
+    {q' : Nat} {n : Int} (hNe : q' ≠ q) :
+    (resultTable q', n) ∉ localDb.keyDom := by
+  intro hLocal
+  rcases selectAllLogSnapshotPost_local_keyDom_results q localDb visibleDb hPost _ hLocal with
+    ⟨_m, hKeyEq⟩
+  have hPair : (resultTable q', n) = (resultTable q, _m) := hKeyEq
+  have hTab : resultTable q' = resultTable q := (Prod.mk.inj hPair).1
+  exact hNe (resultTable_injective hTab)
+
+/-- Local rows of select are alive `resultRowLit (selectTxnId q) q m` rows. They
+sit in `resultTable q`, so they cannot have any storage-table key. -/
+theorem selectAllLogSnapshotPost_local_no_storage_key
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb)
+    {row : Row} (hMem : row ∈ localDb)
+    {table : TableName} {id : Int}
+    (hKey : row.key? = some (table, id))
+    (hStorage : table = counterTable ∨ table = logTable ∨ table = archiveTable) :
+    False := by
+  rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPost row hMem with
+    ⟨m, hEq⟩
+  subst hEq
+  rw [resultRowLit_key?] at hKey
+  have hPair : (resultTable q, m) = (table, id) := Option.some.inj hKey
+  have hTab : resultTable q = table := (Prod.mk.inj hPair).1
+  rcases hStorage with hCounter | hLog | hArchive
+  · exact resultTable_ne_counterTable q (hTab.trans hCounter)
+  · exact resultTable_ne_logTable q (hTab.trans hLog)
+  · exact resultTable_ne_archiveTable q (hTab.trans hArchive)
+
+/-- Mirror image of `liveLog_of_flush` and `liveLog_flush_of_global` packaged as
+an iff for select: local has no log rows, so `liveLog` transfers in both
+directions. -/
+theorem selectAllLogSnapshotPost_liveLog_iff
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb) :
+    ∀ n : Int, liveLog (Database.flush localDb visibleDb) n ↔ liveLog visibleDb n := by
+  intro n
+  refine ⟨?_, ?_⟩
+  · intro h
+    rcases liveLog_of_flush h with hVis | hLoc
+    · exact hVis
+    · rcases hLoc with ⟨row, hMem, _hLive, hKey⟩
+      exact False.elim (selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+        hMem hKey (Or.inr (Or.inl rfl)))
+  · intro h
+    refine liveLog_flush_of_global ?_ h
+    intro hLocal
+    rcases selectAllLogSnapshotPost_local_keyDom_results q localDb visibleDb hPost _ hLocal with
+      ⟨_m, hEq⟩
+    have hTab : logTable = resultTable q := (Prod.mk.inj hEq).1
+    exact resultTable_ne_logTable q hTab.symm
+
+/-- Same for `liveCounterAt`. -/
+theorem selectAllLogSnapshotPost_liveCounterAt_iff
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb) :
+    ∀ next : Int,
+      liveCounterAt (Database.flush localDb visibleDb) next ↔ liveCounterAt visibleDb next := by
+  intro next
+  refine ⟨?_, ?_⟩
+  · intro h
+    rcases liveCounterAt_of_flush h with hVis | hLoc
+    · exact hVis
+    · rcases hLoc with ⟨row, hMem, _hLive, hKey, _hNext⟩
+      exact False.elim (selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+        hMem hKey (Or.inl rfl))
+  · intro h
+    refine liveCounterAt_flush_of_global ?_ h
+    intro hLocal
+    rcases selectAllLogSnapshotPost_local_keyDom_results q localDb visibleDb hPost _ hLocal with
+      ⟨_m, hEq⟩
+    have hTab : counterTable = resultTable q := (Prod.mk.inj hEq).1
+    exact resultTable_ne_counterTable q hTab.symm
+
+/-- Same for `archiveCovers`. -/
+theorem selectAllLogSnapshotPost_archiveCovers_iff
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb) :
+    ∀ n : Int, archiveCovers (Database.flush localDb visibleDb) n ↔ archiveCovers visibleDb n := by
+  intro n
+  refine ⟨?_, ?_⟩
+  · intro h
+    rcases archiveCovers_of_flush h with hVis | hLoc
+    · exact hVis
+    · rcases hLoc with ⟨row, _i, _lo, _hi, hMem, _hLive, hKey, _, _, _, _⟩
+      exact False.elim (selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+        hMem hKey (Or.inr (Or.inr rfl)))
+  · intro h
+    refine archiveCovers_flush_of_global ?_ h
+    intro i hLocal
+    rcases selectAllLogSnapshotPost_local_keyDom_results q localDb visibleDb hPost _ hLocal with
+      ⟨_m, hEq⟩
+    have hTab : archiveTable = resultTable q := (Prod.mk.inj hEq).1
+    exact resultTable_ne_archiveTable q hTab.symm
+
+/-- A key in `localDb.keyDom` comes from some local row whose `key?` matches. -/
+theorem mem_keyDom_iff (db : Database) (key : RowKey) :
+    key ∈ db.keyDom ↔ ∃ row, row ∈ db ∧ row.key? = some key := by
+  unfold Database.keyDom
+  simp [List.mem_filterMap]
+
+/-- The key `(table, id)` is not in select's local keyDom whenever `table` is a
+storage table. -/
+theorem selectAllLogSnapshotPost_local_storage_no_clobber
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb)
+    {table : TableName} {id : Int}
+    (hStorage : table = counterTable ∨ table = logTable ∨ table = archiveTable) :
+    (table, id) ∉ localDb.keyDom := by
+  intro hLocal
+  rw [mem_keyDom_iff] at hLocal
+  rcases hLocal with ⟨row, hMem, hKey⟩
+  exact selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+    hMem hKey hStorage
+
+theorem selectAllLogSnapshotPost_sameStorageShape
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb) :
+    sameStorageShape visibleDb (Database.flush localDb visibleDb) := by
+  intro cut next
+  have hLiveLogIff := selectAllLogSnapshotPost_liveLog_iff q localDb visibleDb hPost
+  have hCounterIff := selectAllLogSnapshotPost_liveCounterAt_iff q localDb visibleDb hPost
+  have hArchiveIff := selectAllLogSnapshotPost_archiveCovers_iff q localDb visibleDb hPost
+  have hCounterClobber : ∀ id : Int, (counterTable, id) ∉ localDb.keyDom := fun id =>
+    selectAllLogSnapshotPost_local_storage_no_clobber
+      (q := q) (localDb := localDb) (visibleDb := visibleDb) (id := id) hPost (Or.inl rfl)
+  have hLogClobber : ∀ id : Int, (logTable, id) ∉ localDb.keyDom := fun id =>
+    selectAllLogSnapshotPost_local_storage_no_clobber
+      (q := q) (localDb := localDb) (visibleDb := visibleDb) (id := id) hPost (Or.inr (Or.inl rfl))
+  have hArchClobber : ∀ id : Int, (archiveTable, id) ∉ localDb.keyDom := fun id =>
+    selectAllLogSnapshotPost_local_storage_no_clobber
+      (q := q) (localDb := localDb) (visibleDb := visibleDb) (id := id) hPost (Or.inr (Or.inr rfl))
+  refine ⟨?_, ?_⟩
+  · -- forward
+    rintro ⟨hCut, hCounter, hCounterAtZero, hHaveNext, hStorageLive,
+      hLiveLog, hArchive, hIntervals⟩
+    refine ⟨hCut, (hCounterIff _).2 hCounter, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    · -- counterRowsAtZero flush
+      intro row hMem hInTable
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hCounterAtZero row hG.1 hInTable
+      · rcases hInTable with ⟨id, hKey⟩
+        exact False.elim (selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+          hL.1 hKey (Or.inl rfl))
+    · -- liveCountersHaveNext flush
+      intro row hMem hLive hInTable
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hHaveNext row hG.1 hLive hInTable
+      · rcases hInTable with ⟨id, hKey⟩
+        exact False.elim (selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+          hL.1 hKey (Or.inl rfl))
+    · -- storageRowsLive flush
+      intro row hMem hStorage
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hStorageLive row hG.1 hStorage
+      · exact hL.2
+    · intro n; exact (hLiveLogIff n).trans (hLiveLog n)
+    · intro n; exact (hArchiveIff n).trans (hArchive n)
+    · -- archiveIntervalsWellFormed flush
+      intro row i lo hi hMem hLive hKey hLo hHi
+      rw [mem_flush_iff] at hMem
+      rcases hMem with hG | hL
+      · exact hIntervals row i lo hi hG.1 hLive hKey hLo hHi
+      · exact False.elim (selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+          hL.1 hKey (Or.inr (Or.inr rfl)))
+  · -- backward
+    rintro ⟨hCut, hCounter, hCounterAtZero, hHaveNext, hStorageLive,
+      hLiveLog, hArchive, hIntervals⟩
+    refine ⟨hCut, (hCounterIff next).1 hCounter, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    · -- counterRowsAtZero visible
+      intro row hMem hInTable
+      apply hCounterAtZero row _ hInTable
+      rw [mem_flush_iff]
+      refine Or.inl ⟨hMem, ?_⟩
+      rcases hInTable with ⟨id, hKey⟩
+      rw [hKey]
+      exact hCounterClobber id
+    · -- liveCountersHaveNext visible
+      intro row hMem hLive hInTable
+      apply hHaveNext row _ hLive hInTable
+      rw [mem_flush_iff]
+      refine Or.inl ⟨hMem, ?_⟩
+      rcases hInTable with ⟨id, hKey⟩
+      rw [hKey]
+      exact hCounterClobber id
+    · -- storageRowsLive visible
+      intro row hMem hStorage
+      apply hStorageLive row _ hStorage
+      rw [mem_flush_iff]
+      refine Or.inl ⟨hMem, ?_⟩
+      rcases hStorage with ⟨id, hKey⟩ | ⟨id, hKey⟩ | ⟨id, hKey⟩
+      · rw [hKey]; exact hCounterClobber id
+      · rw [hKey]; exact hLogClobber id
+      · rw [hKey]; exact hArchClobber id
+    · intro n; exact (hLiveLogIff n).symm.trans (hLiveLog n)
+    · intro n; exact (hArchiveIff n).symm.trans (hArchive n)
+    · -- archiveIntervalsWellFormed visible
+      intro row i lo hi hMem hLive hKey hLo hHi
+      apply hIntervals row i lo hi _ hLive hKey hLo hHi
+      rw [mem_flush_iff]
+      refine Or.inl ⟨hMem, ?_⟩
+      rw [hKey]
+      exact hArchClobber i
+
+theorem selectAllLogSnapshotPost_preservesWellFormedTableFields
+    (q : Nat) (localDb visibleDb : Database)
+    (hPost :
+      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+        localDb visibleDb) :
+    preservesWellFormedTableFields visibleDb (Database.flush localDb visibleDb) := by
+  intro hWFOld row hMem table id hKey
+  rw [mem_flush_iff] at hMem
+  rcases hMem with hG | hL
+  · exact hWFOld row hG.1 table id hKey
+  · rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPost row
+      hL.1 with ⟨m, hEq⟩
+    subst hEq
+    rw [resultRowLit_key?] at hKey
+    have hPair : (resultTable q, m) = (table, id) := Option.some.inj hKey
+    have hTab : resultTable q = table := (Prod.mk.inj hPair).1
+    subst hTab
+    simp [rowFieldInt?, resultRowLit, resultRecord, Row.fromInsert,
+      RecordLit.lookup?, tableField, idField]
+
+theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
+    ∀ localDb visibleDb,
+      logSystemInv visibleDb →
+        txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
+            localDb visibleDb →
+          G_selectCore q visibleDb (Database.flush localDb visibleDb) := by
+  intro localDb visibleDb _hVisInv hPost
+  refine ⟨selectAllLogSnapshotPost_sameStorageShape q localDb visibleDb hPost,
+    ?_, ?_, selectAllLogSnapshotPost_preservesWellFormedTableFields q localDb visibleDb hPost, ?_⟩
+  -- sameResultRowsExcept
+  · intro q' n hNe
+    constructor
+    · intro hNew
+      rcases resultRowFor_of_flush hNew with hOld | hLocal
+      · exact hOld
+      · exfalso
+        rcases hLocal with ⟨row, hMem, _hLive, hKey⟩
+        rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPost row
+          hMem with ⟨m, hEq⟩
+        subst hEq
+        rw [resultRowLit_key?] at hKey
+        have : resultTable q = resultTable q' := (Prod.mk.inj (Option.some.inj hKey)).1
+        exact hNe (resultTable_injective this).symm
+    · intro hOld
+      exact resultRowFor_flush_of_global
+        (selectAllLogSnapshotPost_otherQueryNoClobber q localDb visibleDb hPost hNe)
+        hOld
+  -- preservesArchiveKeyFreshness
+  · intro i hOldFresh row hMemNew hKey
+    rw [mem_flush_iff] at hMemNew
+    rcases hMemNew with hG | hL
+    · exact hOldFresh row hG.1 hKey
+    · exact selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+        hL.1 hKey (Or.inr (Or.inr rfl))
+  -- prefix
+  · rcases selectAllLogSnapshotPost_local_result_prefix q localDb visibleDb hPost with
+      ⟨k, hLocalPrefix⟩
+    refine ⟨k, ?_, ?_⟩
+    · intro n
+      constructor
+      · intro hNew
+        rcases resultRowFor_of_flush hNew with hOld | hLocal
+        · exact Or.inl hOld
+        · have hMem :=
+            (selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPost n).1 hLocal
+          exact Or.inr ((hLocalPrefix n).1 hMem)
+      · intro hOldOrPrefix
+        rcases hOldOrPrefix with hOld | hPrefix
+        · -- hOld : resultRowFor visibleDb q n. Need: resultRowFor flush q n.
+          -- If n < k, local has the row, use resultRowFor_flush_of_local.
+          -- Else (n ≥ k), local doesn't have the key, use resultRowFor_flush_of_global.
+          by_cases hLt : n < k
+          · have hMem : resultRowLit (selectTxnId q) q n ∈ localDb := (hLocalPrefix n).2 hLt
+            exact resultRowFor_flush_of_local
+              ((selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPost n).2 hMem)
+          · apply resultRowFor_flush_of_global _ hOld
+            intro hLocal
+            rcases selectAllLogSnapshotPost_local_keyDom_results q localDb visibleDb hPost _
+              hLocal with ⟨m, hEq⟩
+            have hPair : (resultTable q, (n : Int)) = (resultTable q, m) := hEq
+            have hM : (n : Int) = m := (Prod.mk.inj hPair).2
+            have hMemLocal : resultRowLit (selectTxnId q) q (n : Int) ∈ localDb := by
+              -- Construct from the local key membership
+              unfold Database.keyDom at hLocal
+              simp [List.mem_filterMap] at hLocal
+              rcases hLocal with ⟨row, hMem, hKey⟩
+              rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPost row
+                hMem with ⟨m', hEq'⟩
+              subst hEq'
+              rw [resultRowLit_key?] at hKey
+              have : m' = (n : Int) := by
+                have hPair' : (resultTable q, m') = (resultTable q, (n : Int)) :=
+                  Option.some.inj hKey
+                exact (Prod.mk.inj hPair').2
+              subst this
+              exact hMem
+            exact hLt ((hLocalPrefix n).1 hMemLocal)
+        · have hMem : resultRowLit (selectTxnId q) q n ∈ localDb := (hLocalPrefix n).2 hPrefix
+          exact resultRowFor_flush_of_local
+            ((selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPost n).2 hMem)
+    · intro n hlt
+      have hMem : resultRowLit (selectTxnId q) q n ∈ localDb := (hLocalPrefix n).2 hlt
+      exact selectAllLogSnapshotPost_local_result_expanded_visible q localDb visibleDb hPost n hMem
+
 theorem selectAllLogEffect_guarantee_final (q : Nat) :
     ∀ localDb visibleDb,
       txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
           localDb visibleDb →
         G_select q visibleDb (Database.flush localDb visibleDb) := by
-  sorry
+  intro localDb visibleDb hPost hVisInv
+  exact selectAllLogEffect_guaranteeCore_final q localDb visibleDb hVisInv hPost
 
 /-! ## Indexed archive leaf
 

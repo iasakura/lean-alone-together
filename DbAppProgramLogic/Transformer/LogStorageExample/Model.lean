@@ -611,15 +611,17 @@ theorem rowFieldInt?_tableField_of_key_wellFormed
 
 /-- Storage shape: cut ≤ next, exactly one live counter row at `(counterTable, 0)`
 holding `next`, live logs are precisely `[cut, next)`, archives cover `[0, cut)`,
-intervals are well-formed, storage rows are live, and every row has its
-`tableField` set explicitly. -/
+intervals are well-formed, storage rows are live. The `wellFormedTableFields`
+condition lives at the `logSystemInv` level rather than here so that
+`sameStorageShape` (an iff over arbitrary `cut`, `next`) can transfer
+storage-table information in both directions without dragging along
+information about non-storage rows that may be clobbered by `Database.flush`. -/
 def storageShape (db : Database) (cut next : Nat) : Prop :=
   cut ≤ next ∧
     liveCounterAt db next ∧
     counterRowsAtZero db ∧
     liveCountersHaveNext db next ∧
     storageRowsLive db ∧
-    wellFormedTableFields db ∧
     (∀ n : Nat, liveLog db n ↔ cut ≤ n ∧ n < next) ∧
     (∀ n : Nat, archiveCovers db n ↔ n < cut) ∧
     archiveIntervalsWellFormed db
@@ -634,23 +636,26 @@ def resultPrefixAll (db : Database) : Prop :=
   ∀ q, resultPrefixFor db q
 
 def logSystemInv : Assertion :=
-  fun db => ∃ cut next, storageShape db cut next ∧ resultPrefixAll db
+  fun db => ∃ cut next,
+    storageShape db cut next ∧ resultPrefixAll db ∧ wellFormedTableFields db
 
 def logSystemInvFor (q : Nat) : Assertion :=
-  fun db => ∃ cut next, storageShape db cut next ∧ resultPrefixFor db q
+  fun db => ∃ cut next,
+    storageShape db cut next ∧ resultPrefixFor db q ∧ wellFormedTableFields db
 
 def logSystemInvAtNext (next : Nat) : Assertion :=
-  fun db => ∃ cut, storageShape db cut next ∧ resultPrefixAll db
+  fun db => ∃ cut,
+    storageShape db cut next ∧ resultPrefixAll db ∧ wellFormedTableFields db
 
 theorem logSystemInv_of_logSystemInvAtNext {db : Database} {next : Nat}
     (h : logSystemInvAtNext next db) : logSystemInv db := by
-  rcases h with ⟨cut, hShape, hResults⟩
-  exact ⟨cut, next, hShape, hResults⟩
+  rcases h with ⟨cut, hShape, hResults, hWF⟩
+  exact ⟨cut, next, hShape, hResults, hWF⟩
 
 theorem storageShape_expandedLog_iff {db : Database} {cut next : Nat}
     (hShape : storageShape db cut next) :
     ∀ n : Nat, expandedLog db n ↔ n < next := by
-  rcases hShape with ⟨hCut, _, _, _, _, _, hLive, hArchive, _⟩
+  rcases hShape with ⟨hCut, _, _, _, _, hLive, hArchive, _⟩
   intro n
   unfold expandedLog
   rw [hLive n, hArchive n]
@@ -658,14 +663,14 @@ theorem storageShape_expandedLog_iff {db : Database} {cut next : Nat}
 
 theorem logSystemInv_expandedLog_prefix {db : Database} (hInv : logSystemInv db) :
     ∃ next : Nat, ∀ n : Nat, expandedLog db n ↔ n < next := by
-  rcases hInv with ⟨_cut, next, hShape, _hResults⟩
+  rcases hInv with ⟨_cut, next, hShape, _hResults, _hWF⟩
   exact ⟨next, storageShape_expandedLog_iff hShape⟩
 
 theorem storageShape_next_unique {db : Database} {cut₁ cut₂ next₁ next₂ : Nat}
     (h₁ : storageShape db cut₁ next₁) (h₂ : storageShape db cut₂ next₂) :
     next₁ = next₂ := by
-  rcases h₁ with ⟨_, _, _, hHaveNext₁, _, _, _, _, _⟩
-  rcases h₂ with ⟨_, hCounter₂, _, _, _, _, _, _, _⟩
+  rcases h₁ with ⟨_, _, _, hHaveNext₁, _, _, _, _⟩
+  rcases h₂ with ⟨_, hCounter₂, _, _, _, _, _, _⟩
   rcases hCounter₂ with ⟨row, hMem, hLive, hKey, hNext₂⟩
   have hInTable : rowInTable row counterTable := ⟨0, hKey⟩
   have hNext₁ := hHaveNext₁ row hMem hLive hInTable
@@ -745,8 +750,7 @@ theorem wellFormedTableFields_initialDb : wellFormedTableFields initialDb := by
 
 theorem storageShape_initialDb : storageShape initialDb 0 0 := by
   refine ⟨Nat.le_refl _, liveCounterAt_initialDb, counterRowsAtZero_initialDb,
-    liveCountersHaveNext_initialDb, storageRowsLive_initialDb,
-    wellFormedTableFields_initialDb, ?_, ?_,
+    liveCountersHaveNext_initialDb, storageRowsLive_initialDb, ?_, ?_,
     archiveIntervalsWellFormed_initialDb⟩
   · intro n
     constructor
@@ -776,13 +780,16 @@ theorem resultPrefixAll_initialDb : resultPrefixAll initialDb :=
   fun q => resultPrefixFor_initialDb q
 
 theorem logSystemInv_initialDb : logSystemInv initialDb :=
-  ⟨0, 0, storageShape_initialDb, resultPrefixAll_initialDb⟩
+  ⟨0, 0, storageShape_initialDb, resultPrefixAll_initialDb,
+    wellFormedTableFields_initialDb⟩
 
 theorem logSystemInvAtNext_initialDb : logSystemInvAtNext 0 initialDb :=
-  ⟨0, storageShape_initialDb, resultPrefixAll_initialDb⟩
+  ⟨0, storageShape_initialDb, resultPrefixAll_initialDb,
+    wellFormedTableFields_initialDb⟩
 
 theorem logSystemInvFor_initialDb (q : Nat) : logSystemInvFor q initialDb :=
-  ⟨0, 0, storageShape_initialDb, resultPrefixFor_initialDb q⟩
+  ⟨0, 0, storageShape_initialDb, resultPrefixFor_initialDb q,
+    wellFormedTableFields_initialDb⟩
 
 /-! ## Archive-key freshness invariant -/
 
