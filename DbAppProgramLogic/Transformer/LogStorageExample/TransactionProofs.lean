@@ -1236,10 +1236,93 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
   refine ⟨snapCut, snapNext, visNext, hVisShape, hSnapShape.1, hSnapNextLeVis, ?_, ?_, ?_⟩
   · -- storageShape (flush) snapNext visNext
     sorry
-  · -- sameResultRows
-    sorry
+  · -- sameResultRows: local has only archive/log keys, never resultTable
+    intro q n
+    constructor
+    · intro hNew
+      rcases resultRowFor_of_flush hNew with hOld | hLocal
+      · exact hOld
+      · exfalso
+        rcases hLocal with ⟨row, hMem, _hLive, hKey⟩
+        rcases hLocalRowKey row hMem with hArch | ⟨_n', hLog⟩
+        · rw [hArch] at hKey
+          have : archiveTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact resultTable_ne_archiveTable q this.symm
+        · rw [hLog] at hKey
+          have : logTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact resultTable_ne_logTable q this.symm
+    · intro hOld
+      apply resultRowFor_flush_of_global _ hOld
+      intro hLocal
+      rw [mem_keyDom_iff'] at hLocal
+      rcases hLocal with ⟨row, hMem, hKey⟩
+      rcases hLocalRowKey row hMem with hArch | ⟨_n', hLog⟩
+      · rw [hArch] at hKey
+        have : archiveTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+        exact resultTable_ne_archiveTable q this.symm
+      · rw [hLog] at hKey
+        have : logTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+        exact resultTable_ne_logTable q this.symm
   · -- preservesWellFormedTableFields
-    sorry
+    intro hOldWF row hMem
+    rw [mem_flush_iff] at hMem
+    rcases hMem with hG | hL
+    · exact hOldWF row hG.1
+    · rcases hLocalRowKey row hL.1 with hArch | ⟨n, hLog⟩
+      · -- Archive insert row
+        refine ⟨archiveTable, (i : Int), hArch, ?_⟩
+        -- Need: rowFieldInt? row tableField = some archiveTable
+        -- The row is denoted by archiveLogInsertEffect, so it equals
+        -- archiveRow txnId i lo (hi0+1). Use the existing helper.
+        rcases hPostWeak with ⟨snapDb', _hSnapInv', _hReach', hRows'⟩
+        have hDenote := (hRows' row).2 hL.1
+        unfold archiveLogEffect at hDenote
+        rw [SetLanguage.denote_union] at hDenote
+        rcases hDenote with hInsert | hDelete
+        · rcases hInsert with ⟨lo, hi0, _hMin, _hMax, hRow⟩
+          subst hRow
+          exact rowFieldInt?_archiveRow_table _ _ _ _
+        · rcases hDelete with ⟨src, _n', _lo, _hi0, _, _, hSel, _, _, hRow⟩
+          subst hRow
+          rcases hSel with ⟨_hMem, hSrcKey⟩
+          rw [markDeleted_key?] at hArch
+          rw [hSrcKey] at hArch
+          have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hArch)).1
+          exact absurd this logTable_ne_archiveTable
+      · -- Log delete marker
+        refine ⟨logTable, n, hLog, ?_⟩
+        -- Need: rowFieldInt? row tableField = some logTable
+        -- The row is denoted by archiveLogDeleteEffect, so it equals
+        -- src.markDeleted txnId where src is a log row.
+        rcases hPostWeak with ⟨snapDb', hSnapInv', _hReach', hRows'⟩
+        have hDenote := (hRows' row).2 hL.1
+        unfold archiveLogEffect at hDenote
+        rw [SetLanguage.denote_union] at hDenote
+        rcases hDenote with hInsert | hDelete
+        · -- archive insert: contradicts hLog
+          exfalso
+          rcases hInsert with ⟨lo, hi0, _hMin, _hMax, hRow⟩
+          subst hRow
+          rw [archiveRow_key?] at hLog
+          have : archiveTable = logTable := (Prod.mk.inj (Option.some.inj hLog)).1
+          exact logTable_ne_archiveTable this.symm
+        · rcases hDelete with ⟨src, _n', _lo, _hi0, _, _, hSel, _, _, hRow⟩
+          subst hRow
+          rcases hSel with ⟨hSrcMem, hSrcKey⟩
+          -- src is in snapshot's globalDb (= snapDb'). We have hSrcKey : src.key? = some (logTable, _n').
+          -- The markDeleted preserves visible, so row.visible = src.visible.
+          -- We need rowFieldInt? row tableField = some logTable.
+          -- src has wellFormedTableFields → src.tableField = some logTable.
+          rcases hSnapInv' with ⟨_, _, _, _, hSnapWF'⟩
+          have hSrcMemDb : src ∈ snapDb' := hSrcMem
+          have hSrcTab := rowFieldInt?_tableField_of_key_wellFormed hSnapWF' hSrcMemDb hSrcKey
+          show rowFieldInt? (src.markDeleted (archiveTxnId i)) tableField = some logTable
+          rw [rowFieldInt?_eq_some_iff_lookup]
+          show (src.markDeleted (archiveTxnId i)).visible.lookup? tableField = some (.int logTable)
+          show src.visible.lookup? tableField = some (.int logTable)
+          have := (rowFieldInt?_eq_some_iff_lookup (row := src)
+            (field := tableField) (v := logTable)).mp hSrcTab
+          exact this
 
 /-- Storage rows in a `wellFormedTableFields` database have keys disjoint
 from any `resultTable q`. -/
