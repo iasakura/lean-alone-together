@@ -743,6 +743,22 @@ theorem logSystemInv_expandedLog_prefix {db : Database} (hInv : logSystemInv db)
   rcases hInv with ⟨_cut, next, hShape, _hResults, _hWF⟩
   exact ⟨next, storageShape_expandedLog_iff hShape⟩
 
+theorem storageShape_cut_unique {db : Database} {cut₁ cut₂ next₁ next₂ : Nat}
+    (h₁ : storageShape db cut₁ next₁) (h₂ : storageShape db cut₂ next₂) :
+    cut₁ = cut₂ := by
+  rcases h₁ with ⟨_, _, _, _, _, _, hArchive₁, _⟩
+  rcases h₂ with ⟨_, _, _, _, _, _, hArchive₂, _⟩
+  -- cut is determined by the iff: archiveCovers db n ↔ n < cut.
+  rcases Nat.lt_or_ge cut₁ cut₂ with hLt | hGe
+  · have hCov : archiveCovers db cut₁ := (hArchive₂ cut₁).2 hLt
+    have hSelf : cut₁ < cut₁ := (hArchive₁ cut₁).1 hCov
+    omega
+  · rcases Nat.lt_or_ge cut₂ cut₁ with hLt2 | hGe2
+    · have hCov : archiveCovers db cut₂ := (hArchive₁ cut₂).2 hLt2
+      have hSelf : cut₂ < cut₂ := (hArchive₂ cut₂).1 hCov
+      omega
+    · omega
+
 theorem storageShape_next_unique {db : Database} {cut₁ cut₂ next₁ next₂ : Nat}
     (h₁ : storageShape db cut₁ next₁) (h₂ : storageShape db cut₂ next₂) :
     next₁ = next₂ := by

@@ -632,11 +632,16 @@ theorem paperInfer_insertLogBody_indexed_final (i : Nat) :
   paperInfer_insertLogBody_of_stable R_insert (logSystemInvAtNext i)
     (insertTxnId i) i (logSystemInvAtNext_stable_R_insert i)
 
-/-- `PaperInfer` derivation for `archiveLogBody`. -/
-theorem paperInfer_archiveLogBody_final (i : Nat) :
+/-- Indexed `PaperInfer` derivation for `archiveLogBody` against the
+strengthened invariant `logSystemInv ∧ archiveKeysFreshFrom i`. The
+strengthening lets the guarantee bridge know archive-id `i` is fresh in the
+visible database. -/
+theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
     PaperInfer
       (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).exec)
-      (archiveTxnId i) logSystemInv SetLanguage.empty (archiveLogBody i)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty (archiveLogBody i)
       (archiveLogEffect (archiveTxnId i) i) := by
   sorry
 
@@ -663,6 +668,14 @@ theorem archiveLogEffect_qstable_final (i : Nat) :
       (txnSnapshotPost logSystemInv R_archive (archiveLogEffect (archiveTxnId i) i)) :=
   txnSnapshotPost_stable_readCommitted logSystemInv R_archive
     (archiveLogEffect (archiveTxnId i) i)
+
+theorem archiveLogIndexedEffect_qstable_final (i : Nat) :
+    Logic.stableBiAssertion
+      (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).commit)
+      (txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+        R_archive (archiveLogEffect (archiveTxnId i) i)) :=
+  txnSnapshotPost_stable_readCommitted (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+    R_archive (archiveLogEffect (archiveTxnId i) i)
 
 theorem selectAllLogEffect_qstable_final (q : Nat) :
     Logic.stableBiAssertion
@@ -1157,11 +1170,21 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
           rowFieldInt?_logRow_table (insertTxnId i) (i : Int)⟩
       · exact ⟨counterTable, 0, hCounterR.1, hCounterR.2.1⟩
 
-/-- Archive guarantee bridge. -/
-theorem archiveLogEffect_guarantee_final (i : Nat) :
+/-- Indexed archive guarantee bridge.
+
+The snapshot post is now over the strengthened invariant
+`logSystemInv ∧ archiveKeysFreshFrom i`, which gives:
+- the snapshot's storage shape and frontier;
+- archive-id `i`'s freshness in the snapshot, which propagates to the
+  visible database by `archiveIndexedInv_stable_R_archive`.
+
+These together let us conclude that the local archive insert at
+`(archiveTable, i)` purely extends archive coverage from `[0, vis.cut)`
+to `[0, snap.next)`, without any clobber-induced shape distortion. -/
+theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
     ∀ localDb visibleDb,
-      txnSnapshotPost logSystemInv R_archive (archiveLogEffect (archiveTxnId i) i)
-          localDb visibleDb →
+      txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+          R_archive (archiveLogEffect (archiveTxnId i) i) localDb visibleDb →
         G_archive visibleDb (Database.flush localDb visibleDb) := by
   sorry
 
@@ -1602,6 +1625,55 @@ theorem archiveLogIndexedTxnSpec_of_paperObligations (i : Nat)
               localDb visibleDb hInv.2 hPost
           ⟩)
 
+/-- Indexed archive wrapper that threads `archiveKeysFreshFrom i` into the
+PaperInfer invariant. The bridge therefore receives a snapshot post over the
+strengthened invariant `logSystemInv ∧ archiveKeysFreshFrom i`, which in turn
+gives visible's freshness for the storage-shape transition (no archive-id
+collision means the local archive row purely extends archive coverage). -/
+theorem archiveLogIndexedTxnSpec_of_indexedPaperObligations (i : Nat)
+    (hInfer :
+      PaperInfer
+        (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).exec)
+        (archiveTxnId i)
+        (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+        SetLanguage.empty (archiveLogBody i)
+        (archiveLogEffect (archiveTxnId i) i))
+    (hQstable :
+      Logic.stableBiAssertion
+        (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).commit)
+        (txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+          R_archive (archiveLogEffect (archiveTxnId i) i)))
+    (hGuarantee :
+      ∀ localDb visibleDb,
+        txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+            R_archive (archiveLogEffect (archiveTxnId i) i) localDb visibleDb →
+          G_archive visibleDb (Database.flush localDb visibleDb)) :
+    archiveLogIndexedTxnSpec i := by
+  let hObligations :
+      TxnPaperObligations R_archive
+        (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) G_archive
+        (archiveTxnId i) (archiveLogBody i) :=
+    { effect := archiveLogEffect (archiveTxnId i) i
+      infer := hInfer
+      qstable := hQstable
+      guarantee := hGuarantee }
+  simpa [archiveLogIndexedTxnSpec, txnSpecValid, txnSpecProgram,
+    archiveLogIndexedSpec, archiveLogTxn]
+    using
+      globalValid_readCommitted_of_paperObligations_post
+        (archiveIndexedInv_stable_R_archive i)
+        (archiveIndexedInv_stable_R_archive i)
+        (archiveIndexedInv_stable_R_archive (i + 1))
+        (fun _ hInv => hInv)
+        hObligations
+        (fun localDb visibleDb hInv hPost =>
+          ⟨ G_archive_preserves_logSystemInv hInv.1
+              (hObligations.guarantee localDb visibleDb hPost)
+          , archiveLogSnapshotPost_preservesArchiveKeysFreshFrom_succ_final i
+              localDb visibleDb hInv.2
+              (txnSnapshotPost_weaken (fun _ h => h.1) hPost)
+          ⟩)
+
 /-! ## Final leaf theorems -/
 
 theorem insertLogIndexedTxnSpec_final (i : Nat) :
@@ -1615,10 +1687,10 @@ theorem insertLogIndexedTxnSpec_final (i : Nat) :
 
 theorem archiveLogIndexedTxnSpec_final (i : Nat) :
     archiveLogIndexedTxnSpec i :=
-  archiveLogIndexedTxnSpec_of_paperObligations i
-    (paperInfer_archiveLogBody_final i)
-    (archiveLogEffect_qstable_final i)
-    (archiveLogEffect_guarantee_final i)
+  archiveLogIndexedTxnSpec_of_indexedPaperObligations i
+    (paperInfer_archiveLogBody_indexed_final i)
+    (archiveLogIndexedEffect_qstable_final i)
+    (archiveLogIndexedEffect_guarantee_final i)
 
 theorem selectAllLogTxnSpec_final (q : Nat) :
     selectAllLogTxnSpec q := by
