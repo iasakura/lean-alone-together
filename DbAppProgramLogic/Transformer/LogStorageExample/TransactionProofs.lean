@@ -1300,7 +1300,60 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
     · -- liveLog (flush) n iff snapNext ≤ n ∧ n < visNext
       sorry
     · -- archiveCovers (flush) n iff n < snapNext
-      sorry
+      have hSnapCutLeNext : snapCut ≤ snapNext := hSnapShape.1
+      intro n
+      constructor
+      · -- forward: archiveCovers (flush) n → n < snapNext
+        intro hC
+        rcases archiveCovers_of_flush hC with hVis | hLoc
+        · -- Visible side: by visible's iff, n < snapCut, hence n < snapNext.
+          have := (hVisArchive n).1 hVis
+          omega
+        · -- Local side: must be the archive insert.
+          rcases hLoc with ⟨row, _idx, _lo, _hi, hMem, hLive, _hKey, hLo, hHi, hLeq, hLt⟩
+          have hDenote := (hRows row).2 hMem
+          unfold archiveLogEffect at hDenote
+          rw [SetLanguage.denote_union] at hDenote
+          rcases hDenote with hInsert | hDelete
+          · -- Archive insert
+            rcases hInsert with ⟨lo', hi0', _hMin', hMax', hRow⟩
+            subst hRow
+            rw [rowFieldInt?_archiveRow_lo] at hLo
+            rw [rowFieldInt?_archiveRow_hi] at hHi
+            have hLoEq : _lo = lo' := (Option.some.inj hLo).symm
+            have hHiEq : _hi = hi0' + 1 := (Option.some.inj hHi).symm
+            subst hLoEq; subst hHiEq
+            -- We have lo' ≤ n < hi0'+1, so n ≤ hi0'.
+            -- Witness for selectedLogMax hi0' shows snap has a log at (logTable, hi0').
+            rcases hMax' with ⟨⟨witMax, hWitMax⟩, _hMaxAll⟩
+            rcases hWitMax with ⟨hWitMem, hWitKey⟩
+            have hHi0_nonneg : (0 : Int) ≤ hi0' := by
+              have hN_nonneg : (0 : Int) ≤ (n : Int) := Int.natCast_nonneg n
+              omega
+            obtain ⟨hi0Nat, hHi0Cast⟩ : ∃ k : Nat, hi0' = (k : Int) :=
+              ⟨hi0'.toNat, (Int.toNat_of_nonneg hHi0_nonneg).symm⟩
+            rw [hHi0Cast] at hWitKey
+            rcases hSnapShape with ⟨_, _, _, _, hSnapStorageLive, hSnapLiveLog, _, _⟩
+            have hWitLive : liveRow witMax :=
+              hSnapStorageLive witMax hWitMem (Or.inr (Or.inl ⟨_, hWitKey⟩))
+            have hSnapLog : liveLog snapshotDb (hi0Nat : Int) :=
+              ⟨witMax, hWitMem, hWitLive, hWitKey⟩
+            have hRange := (hSnapLiveLog hi0Nat).1 hSnapLog
+            -- hRange : snapCut ≤ hi0Nat ∧ hi0Nat < snapNext.
+            -- We have n ≤ hi0' = hi0Nat, so n < snapNext.
+            have hN_le : (n : Int) ≤ (hi0Nat : Int) := by rw [← hHi0Cast]; omega
+            have hN_le_nat : n ≤ hi0Nat := by exact_mod_cast hN_le
+            omega
+          · -- Delete marker: hLive contradicts (markDeleted has del = true)
+            exfalso
+            rcases hDelete with ⟨src, _n', _lo', _hi0', _, _, _, _, _, hRow⟩
+            subst hRow
+            unfold liveRow at hLive
+            have : (src.markDeleted (archiveTxnId i)).del = true := rfl
+            rw [this] at hLive
+            exact Bool.noConfusion hLive
+      · -- backward: n < snapNext → archiveCovers (flush) n
+        sorry
     · -- archiveIntervalsWellFormed (flush)
       intro row idx lo hi hMem hLive hKey hLo hHi
       rw [mem_flush_iff] at hMem
