@@ -1170,6 +1170,45 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
           rowFieldInt?_logRow_table (insertTxnId i) (i : Int)⟩
       · exact ⟨counterTable, 0, hCounterR.1, hCounterR.2.1⟩
 
+/-- A local row with `(logTable, n)` key in archive's effect denotation comes
+from a snap log row at the same key (a delete marker, since archive insert
+rows have key `(archiveTable, i)`). -/
+theorem archiveLogSnapshotPost_local_logKey_implies_snap_log
+    (i : Nat) (snapshotDb : Database)
+    (hSnapInv : logSystemInv snapshotDb)
+    {row : Row} {n : Int}
+    (hDenote :
+      SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+        (archiveLogEffect (archiveTxnId i) i) row)
+    (hKey : row.key? = some (logTable, n)) :
+    ∃ src, src ∈ snapshotDb ∧ liveRow src ∧ src.key? = some (logTable, n) := by
+  unfold archiveLogEffect at hDenote
+  rw [SetLanguage.denote_union] at hDenote
+  rcases hDenote with hInsert | hDelete
+  · -- archive insert: row has (archiveTable, i) key, contradicting (logTable, n)
+    exfalso
+    rcases hInsert with ⟨lo', hi0', _, _, hRow⟩
+    subst hRow
+    rw [archiveRow_key?] at hKey
+    have : archiveTable = logTable := (Prod.mk.inj (Option.some.inj hKey)).1
+    exact logTable_ne_archiveTable this.symm
+  · -- delete marker: row = src.markDeleted, src has logTable key
+    rcases hDelete with ⟨src, n', _, _, _, _, hSel, _, _, hRow⟩
+    subst hRow
+    rcases hSel with ⟨hSrcMem, hSrcKey⟩
+    -- markDeleted preserves key
+    rw [markDeleted_key?] at hKey
+    rw [hSrcKey] at hKey
+    have hPair : (logTable, n') = (logTable, n) := Option.some.inj hKey
+    have hN'Eq : n' = n := (Prod.mk.inj hPair).2
+    rw [hN'Eq] at hSrcKey
+    -- src is live by snap's storageRowsLive (since src has logTable key)
+    rcases hSnapInv with ⟨_, _, hShape, _, _⟩
+    rcases hShape with ⟨_, _, _, _, hStorageLive, _, _, _⟩
+    have hLive : liveRow src :=
+      hStorageLive src hSrcMem (Or.inr (Or.inl ⟨n, hSrcKey⟩))
+    exact ⟨src, hSrcMem, hLive, hSrcKey⟩
+
 /-- Visible's freshness from the indexed snapshot post via stability under
 `R_archive`. -/
 theorem archiveKeysFreshFrom_visible_of_indexedSnapshotPost
@@ -1298,7 +1337,110 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
         -- Since hL.2 is `row.del = false`, the row is alive.
         exact hL.2
     · -- liveLog (flush) n iff snapNext ≤ n ∧ n < visNext
-      sorry
+      have hSnapCutLeNext : snapCut ≤ snapNext := hSnapShape.1
+      intro n
+      constructor
+      · -- forward
+        intro hL
+        rcases liveLog_of_flush hL with hVis | hLoc
+        · -- Visible has live log at n. By iff: snapCut ≤ n < visNext. Need n ≥ snapNext.
+          have hVisRange := (hVisLiveLog n).1 hVis
+          -- Suppose n < snapNext. Then snap.liveLog n. So (logTable, n) ∈ local. But for the
+          -- row to be in flush from visible, key should NOT be in local. So we need to extract
+          -- the visible row's key-not-in-local from `hL`.
+          -- Approach: re-derive from mem_flush_iff applied to liveLog directly.
+          rcases hL with ⟨row, hMem, hLive, hKey⟩
+          rw [mem_flush_iff] at hMem
+          rcases hMem with hG | hLocalRow
+          · -- row from visible. (logTable, n) ∉ local.
+            have hKeyNotInLocal : (logTable, (n : Int)) ∉ localDb.keyDom := by
+              rw [hKey] at hG
+              exact hG.2
+            -- Suppose snap.liveLog n. Then (logTable, n) ∈ local. Contradiction.
+            -- For our n : Nat with snapCut ≤ n < visNext: if n < snapNext, then snap.liveLog n.
+            -- But we need (logTable, n) ∉ local to imply ¬ snap.liveLog n.
+            -- However, going the other way: if snap.liveLog n, then via the converse of our
+            -- helper (which we don't have constructively), we'd get (logTable, n) ∈ local.
+            -- WORKAROUND: split on n vs snapNext.
+            by_cases hCase : n < snapNext
+            · -- n < snapNext. snapCut ≤ n < snapNext. So snap.liveLog n.
+              -- Need to derive (logTable, n) ∈ local. Without constructive min/max, can't directly.
+              sorry
+            · have hGe : snapNext ≤ n := by omega
+              exact ⟨hGe, hVisRange.2⟩
+          · -- row from local: alive. Local alive rows are archive insert (key archiveTable).
+            -- But row's key is (logTable, n). Contradiction.
+            exfalso
+            rcases hLocalRow with ⟨hLocMem, _hAlive⟩
+            rcases hLocalRowKey row hLocMem with hArch | ⟨_n', hLog⟩
+            · rw [hArch] at hKey
+              have : archiveTable = logTable := (Prod.mk.inj (Option.some.inj hKey)).1
+              exact logTable_ne_archiveTable this.symm
+            · -- Local has logTable key. Was the row originally a delete marker (del=true)?
+              -- mem_flush_iff says committed rows are filtered for !del. So if from local, alive.
+              -- But our archive local logTable rows are delete markers (del=true). They don't
+              -- pass the filter. So local has no alive logTable row. Contradiction.
+              -- Concretely: hAlive : row.del = false. But local logTable rows are markDeleted,
+              -- which has del = true. So row.del = true, contradicting hAlive.
+              have hDenote := (hRows row).2 hLocMem
+              unfold archiveLogEffect at hDenote
+              rw [SetLanguage.denote_union] at hDenote
+              rcases hDenote with hInsert | hDelete
+              · rcases hInsert with ⟨_, _, _, _, hRowEq⟩
+                subst hRowEq
+                rw [archiveRow_key?] at hLog
+                have : archiveTable = logTable := (Prod.mk.inj (Option.some.inj hLog)).1
+                exact logTable_ne_archiveTable this.symm
+              · rcases hDelete with ⟨src, _, _, _, _, _, _, _, _, hRowEq⟩
+                subst hRowEq
+                have : (src.markDeleted (archiveTxnId i)).del = true := rfl
+                rw [this] at _hAlive
+                exact Bool.noConfusion _hAlive
+        · -- Local has live log at n. But local's alive rows are archive inserts.
+          exfalso
+          rcases hLoc with ⟨row, hMem, _hLive, hKey⟩
+          rcases hLocalRowKey row hMem with hArch | ⟨_n', hLog⟩
+          · rw [hArch] at hKey
+            have : archiveTable = logTable := (Prod.mk.inj (Option.some.inj hKey)).1
+            exact logTable_ne_archiveTable this.symm
+          · -- Local logTable row is a delete marker (del=true). Not live.
+            -- Same argument as above.
+            have hDenote := (hRows row).2 hMem
+            unfold archiveLogEffect at hDenote
+            rw [SetLanguage.denote_union] at hDenote
+            rcases hDenote with hInsert | hDelete
+            · rcases hInsert with ⟨_, _, _, _, hRowEq⟩
+              subst hRowEq
+              rw [archiveRow_key?] at hLog
+              have : archiveTable = logTable := (Prod.mk.inj (Option.some.inj hLog)).1
+              exact logTable_ne_archiveTable this.symm
+            · rcases hDelete with ⟨src, _, _, _, _, _, _, _, _, hRowEq⟩
+              subst hRowEq
+              have hDel : (src.markDeleted (archiveTxnId i)).del = true := rfl
+              unfold liveRow at _hLive
+              rw [hDel] at _hLive
+              exact Bool.noConfusion _hLive
+      · -- backward: snapNext ≤ n ∧ n < visNext → liveLog (flush) n
+        rintro ⟨hN, hLt⟩
+        have hVisLog : liveLog visibleDb n :=
+          (hVisLiveLog n).2 ⟨by omega, hLt⟩
+        rcases hVisLog with ⟨row, hMem, hLive, hKey⟩
+        refine ⟨row, ?_, hLive, hKey⟩
+        rw [mem_flush_iff]
+        refine Or.inl ⟨hMem, ?_⟩
+        rw [hKey]
+        intro hLocal
+        -- Use easy helper: (logTable, n) ∈ local → snap has live log at n.
+        rw [mem_keyDom_iff'] at hLocal
+        rcases hLocal with ⟨row', hMem', hKey'⟩
+        have hDenote' := (hRows row').2 hMem'
+        rcases archiveLogSnapshotPost_local_logKey_implies_snap_log i snapshotDb hSnapLogInv
+            hDenote' hKey' with ⟨src, hSrcMem, _hSrcLive, hSrcKey⟩
+        -- snap has live log at n. By snap.iff: snapCut ≤ n < snapNext.
+        rcases hSnapShape with ⟨_, _, _, _, _, hSnapLiveLog, _, _⟩
+        have hSnapLog : liveLog snapshotDb (n : Int) := ⟨src, hSrcMem, _hSrcLive, hSrcKey⟩
+        have := (hSnapLiveLog n).1 hSnapLog
+        omega
     · -- archiveCovers (flush) n iff n < snapNext
       have hSnapCutLeNext : snapCut ≤ snapNext := hSnapShape.1
       intro n
