@@ -1170,6 +1170,172 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
           rowFieldInt?_logRow_table (insertTxnId i) (i : Int)⟩
       · exact ⟨counterTable, 0, hCounterR.1, hCounterR.2.1⟩
 
+/-! ## Constructive min/max for the set of log keys in a finite database -/
+
+private theorem selectedLogMin_exists :
+    ∀ (db : Database) (witRow : Row) (witN : Int),
+      witRow ∈ db → witRow.key? = some (logTable, witN) →
+      ∃ lo, (∃ row, row ∈ db ∧ row.key? = some (logTable, lo)) ∧
+        ∀ row' n', row' ∈ db → row'.key? = some (logTable, n') → lo ≤ n' := by
+  intro db
+  induction db with
+  | nil =>
+      intro witRow _witN hMem _
+      cases hMem
+  | cons head tail ih =>
+      intro witRow witN hMem hKey
+      rcases List.mem_cons.mp hMem with hHead | hTail
+      · subst hHead
+        by_cases hTailLog : ∃ row n, row ∈ tail ∧ row.key? = some (logTable, n)
+        · rcases hTailLog with ⟨tw, tn, tMem, tKey⟩
+          rcases ih tw tn tMem tKey with ⟨tailLo, ⟨tailRow, tailMem, tailKey⟩, tailMin⟩
+          by_cases hCmp : witN ≤ tailLo
+          · refine ⟨witN, ⟨witRow, List.mem_cons_self, hKey⟩, ?_⟩
+            intro row' n' hMem' hKey'
+            rcases List.mem_cons.mp hMem' with hHead' | hTail'
+            · subst hHead'
+              rw [hKey] at hKey'
+              have : witN = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+              omega
+            · have := tailMin row' n' hTail' hKey'
+              omega
+          · refine ⟨tailLo, ⟨tailRow, List.mem_cons_of_mem _ tailMem, tailKey⟩, ?_⟩
+            intro row' n' hMem' hKey'
+            rcases List.mem_cons.mp hMem' with hHead' | hTail'
+            · subst hHead'
+              rw [hKey] at hKey'
+              have : witN = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+              omega
+            · exact tailMin row' n' hTail' hKey'
+        · refine ⟨witN, ⟨witRow, List.mem_cons_self, hKey⟩, ?_⟩
+          intro row' n' hMem' hKey'
+          rcases List.mem_cons.mp hMem' with hHead' | hTail'
+          · subst hHead'
+            rw [hKey] at hKey'
+            have : witN = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+            omega
+          · exact absurd ⟨row', n', hTail', hKey'⟩ hTailLog
+      · rcases ih witRow witN hTail hKey with ⟨tailLo, ⟨tailRow, tailMem, tailKey⟩, tailMin⟩
+        cases hHeadKey : head.key? with
+        | none =>
+            refine ⟨tailLo, ⟨tailRow, List.mem_cons_of_mem _ tailMem, tailKey⟩, ?_⟩
+            intro row' n' hMem' hKey'
+            rcases List.mem_cons.mp hMem' with hHead' | hTail'
+            · subst hHead'; rw [hHeadKey] at hKey'; cases hKey'
+            · exact tailMin row' n' hTail' hKey'
+        | some key =>
+            rcases key with ⟨table, k⟩
+            by_cases hLogTable : table = logTable
+            · subst hLogTable
+              by_cases hCmp : k ≤ tailLo
+              · refine ⟨k, ⟨head, List.mem_cons_self, hHeadKey⟩, ?_⟩
+                intro row' n' hMem' hKey'
+                rcases List.mem_cons.mp hMem' with hHead' | hTail'
+                · subst hHead'
+                  rw [hHeadKey] at hKey'
+                  have : k = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+                  omega
+                · have := tailMin row' n' hTail' hKey'
+                  omega
+              · refine ⟨tailLo, ⟨tailRow, List.mem_cons_of_mem _ tailMem, tailKey⟩, ?_⟩
+                intro row' n' hMem' hKey'
+                rcases List.mem_cons.mp hMem' with hHead' | hTail'
+                · subst hHead'
+                  rw [hHeadKey] at hKey'
+                  have : k = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+                  omega
+                · exact tailMin row' n' hTail' hKey'
+            · refine ⟨tailLo, ⟨tailRow, List.mem_cons_of_mem _ tailMem, tailKey⟩, ?_⟩
+              intro row' n' hMem' hKey'
+              rcases List.mem_cons.mp hMem' with hHead' | hTail'
+              · subst hHead'
+                rw [hHeadKey] at hKey'
+                have hT : table = logTable := (Prod.mk.inj (Option.some.inj hKey')).1
+                exact absurd hT hLogTable
+              · exact tailMin row' n' hTail' hKey'
+
+private theorem selectedLogMax_exists :
+    ∀ (db : Database) (witRow : Row) (witN : Int),
+      witRow ∈ db → witRow.key? = some (logTable, witN) →
+      ∃ hi, (∃ row, row ∈ db ∧ row.key? = some (logTable, hi)) ∧
+        ∀ row' n', row' ∈ db → row'.key? = some (logTable, n') → n' ≤ hi := by
+  intro db
+  induction db with
+  | nil =>
+      intro witRow _witN hMem _
+      cases hMem
+  | cons head tail ih =>
+      intro witRow witN hMem hKey
+      rcases List.mem_cons.mp hMem with hHead | hTail
+      · subst hHead
+        by_cases hTailLog : ∃ row n, row ∈ tail ∧ row.key? = some (logTable, n)
+        · rcases hTailLog with ⟨tw, tn, tMem, tKey⟩
+          rcases ih tw tn tMem tKey with ⟨tailHi, ⟨tailRow, tailMem, tailKey⟩, tailMax⟩
+          by_cases hCmp : tailHi ≤ witN
+          · refine ⟨witN, ⟨witRow, List.mem_cons_self, hKey⟩, ?_⟩
+            intro row' n' hMem' hKey'
+            rcases List.mem_cons.mp hMem' with hHead' | hTail'
+            · subst hHead'
+              rw [hKey] at hKey'
+              have : witN = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+              omega
+            · have := tailMax row' n' hTail' hKey'
+              omega
+          · refine ⟨tailHi, ⟨tailRow, List.mem_cons_of_mem _ tailMem, tailKey⟩, ?_⟩
+            intro row' n' hMem' hKey'
+            rcases List.mem_cons.mp hMem' with hHead' | hTail'
+            · subst hHead'
+              rw [hKey] at hKey'
+              have : witN = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+              omega
+            · exact tailMax row' n' hTail' hKey'
+        · refine ⟨witN, ⟨witRow, List.mem_cons_self, hKey⟩, ?_⟩
+          intro row' n' hMem' hKey'
+          rcases List.mem_cons.mp hMem' with hHead' | hTail'
+          · subst hHead'
+            rw [hKey] at hKey'
+            have : witN = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+            omega
+          · exact absurd ⟨row', n', hTail', hKey'⟩ hTailLog
+      · rcases ih witRow witN hTail hKey with ⟨tailHi, ⟨tailRow, tailMem, tailKey⟩, tailMax⟩
+        cases hHeadKey : head.key? with
+        | none =>
+            refine ⟨tailHi, ⟨tailRow, List.mem_cons_of_mem _ tailMem, tailKey⟩, ?_⟩
+            intro row' n' hMem' hKey'
+            rcases List.mem_cons.mp hMem' with hHead' | hTail'
+            · subst hHead'; rw [hHeadKey] at hKey'; cases hKey'
+            · exact tailMax row' n' hTail' hKey'
+        | some key =>
+            rcases key with ⟨table, k⟩
+            by_cases hLogTable : table = logTable
+            · subst hLogTable
+              by_cases hCmp : tailHi ≤ k
+              · refine ⟨k, ⟨head, List.mem_cons_self, hHeadKey⟩, ?_⟩
+                intro row' n' hMem' hKey'
+                rcases List.mem_cons.mp hMem' with hHead' | hTail'
+                · subst hHead'
+                  rw [hHeadKey] at hKey'
+                  have : k = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+                  omega
+                · have := tailMax row' n' hTail' hKey'
+                  omega
+              · refine ⟨tailHi, ⟨tailRow, List.mem_cons_of_mem _ tailMem, tailKey⟩, ?_⟩
+                intro row' n' hMem' hKey'
+                rcases List.mem_cons.mp hMem' with hHead' | hTail'
+                · subst hHead'
+                  rw [hHeadKey] at hKey'
+                  have : k = n' := (Prod.mk.inj (Option.some.inj hKey')).2
+                  omega
+                · exact tailMax row' n' hTail' hKey'
+            · refine ⟨tailHi, ⟨tailRow, List.mem_cons_of_mem _ tailMem, tailKey⟩, ?_⟩
+              intro row' n' hMem' hKey'
+              rcases List.mem_cons.mp hMem' with hHead' | hTail'
+              · subst hHead'
+                rw [hHeadKey] at hKey'
+                have hT : table = logTable := (Prod.mk.inj (Option.some.inj hKey')).1
+                exact absurd hT hLogTable
+              · exact tailMax row' n' hTail' hKey'
+
 /-- A local row with `(logTable, n)` key in archive's effect denotation comes
 from a snap log row at the same key (a delete marker, since archive insert
 rows have key `(archiveTable, i)`). -/
@@ -1208,6 +1374,48 @@ theorem archiveLogSnapshotPost_local_logKey_implies_snap_log
     have hLive : liveRow src :=
       hStorageLive src hSrcMem (Or.inr (Or.inl ⟨n, hSrcKey⟩))
     exact ⟨src, hSrcMem, hLive, hSrcKey⟩
+
+/-- Converse of `archiveLogSnapshotPost_local_logKey_implies_snap_log`:
+if snap has a live log row at `n`, the archive's local delta has a delete
+marker at the same key. -/
+private theorem archiveLogEffect_local_has_logKey
+    (i : Nat) (snapshotDb : Database) {snapCut snapNext : Nat}
+    (hSnapShape : storageShape snapshotDb snapCut snapNext)
+    (localDb : Database)
+    (hRows : ∀ row,
+      SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+        (archiveLogEffect (archiveTxnId i) i) row ↔ row ∈ localDb)
+    {n : Nat} (hLow : snapCut ≤ n) (hHigh : n < snapNext) :
+    (logTable, (n : Int)) ∈ localDb.keyDom := by
+  rcases hSnapShape with ⟨_, _, _, _, _, hSnapLiveLog, _, _⟩
+  rcases (hSnapLiveLog n).2 ⟨hLow, hHigh⟩ with ⟨src, hSrcMem, _hSrcLive, hSrcKey⟩
+  rcases selectedLogMin_exists snapshotDb src n hSrcMem hSrcKey with
+    ⟨lo, ⟨witLo, hLoMem, hLoKey⟩, hLoMin⟩
+  rcases selectedLogMax_exists snapshotDb src n hSrcMem hSrcKey with
+    ⟨hi, ⟨witHi, hHiMem, hHiKey⟩, hHiMax⟩
+  let archRow : Row := src.markDeleted (archiveTxnId i)
+  have hDenote :
+      SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+        (archiveLogEffect (archiveTxnId i) i) archRow := by
+    unfold archiveLogEffect
+    rw [SetLanguage.denote_union]
+    refine Or.inr ?_
+    refine ⟨src, (n : Int), lo, hi, ?_, ?_, ⟨hSrcMem, hSrcKey⟩, ?_, ?_, rfl⟩
+    · refine ⟨⟨witLo, hLoMem, hLoKey⟩, ?_⟩
+      intro row' n' hSel'
+      exact hLoMin row' n' hSel'.1 hSel'.2
+    · refine ⟨⟨witHi, hHiMem, hHiKey⟩, ?_⟩
+      intro row' n' hSel'
+      exact hHiMax row' n' hSel'.1 hSel'.2
+    · exact hLoMin src n hSrcMem hSrcKey
+    · exact hHiMax src n hSrcMem hSrcKey
+  have hLocalMem : archRow ∈ localDb := (hRows archRow).1 hDenote
+  have hKey : archRow.key? = some (logTable, (n : Int)) := by
+    show (src.markDeleted (archiveTxnId i)).key? = _
+    rw [markDeleted_key?]
+    exact hSrcKey
+  rw [mem_keyDom_iff']
+  exact ⟨archRow, hLocalMem, hKey⟩
 
 /-- Visible's freshness from the indexed snapshot post via stability under
 `R_archive`. -/
@@ -1363,9 +1571,14 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
             -- helper (which we don't have constructively), we'd get (logTable, n) ∈ local.
             -- WORKAROUND: split on n vs snapNext.
             by_cases hCase : n < snapNext
-            · -- n < snapNext. snapCut ≤ n < snapNext. So snap.liveLog n.
-              -- Need to derive (logTable, n) ∈ local. Without constructive min/max, can't directly.
-              sorry
+            · -- n < snapNext together with snapCut ≤ n gives snap.liveLog n.
+              -- The converse helper builds a local delete marker at (logTable, n),
+              -- contradicting hKeyNotInLocal.
+              exfalso
+              have hLow : snapCut ≤ n := hVisRange.1
+              exact hKeyNotInLocal
+                (archiveLogEffect_local_has_logKey i snapshotDb hSnapShape localDb
+                  (fun row => hRows row) hLow hCase)
             · have hGe : snapNext ≤ n := by omega
               exact ⟨hGe, hVisRange.2⟩
           · -- row from local: alive. Local alive rows are archive insert (key archiveTable).
@@ -1518,11 +1731,44 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
           · rw [hLog] at hKey'
             have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey')).1
             exact logTable_ne_archiveTable this
-        · -- snapCut ≤ n < snapNext: need local archive insert
+        · -- snapCut ≤ n < snapNext: build local archive insert via min/max.
           have hCase' : snapCut ≤ n := by omega
-          -- This requires constructing the local archive row when snap had logs.
-          -- Construction needs finite-set reasoning for selectedLogMin/Max.
-          sorry
+          rcases hSnapShape with ⟨_, _, _, _, _, hSnapLiveLogShape, _, _⟩
+          rcases (hSnapLiveLogShape n).2 ⟨hCase', hN⟩ with
+            ⟨src, hSrcMem, _, hSrcKey⟩
+          rcases selectedLogMin_exists snapshotDb src n hSrcMem hSrcKey with
+            ⟨lo, ⟨witLo, hLoMem, hLoKey⟩, hLoMin⟩
+          rcases selectedLogMax_exists snapshotDb src n hSrcMem hSrcKey with
+            ⟨hi, ⟨witHi, hHiMem, hHiKey⟩, hHiMax⟩
+          let archRow : Row := archiveRow (archiveTxnId i) i lo (hi + 1)
+          have hDenote :
+              SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+                (archiveLogEffect (archiveTxnId i) i) archRow := by
+            unfold archiveLogEffect
+            rw [SetLanguage.denote_union]
+            refine Or.inl ?_
+            refine ⟨lo, hi, ?_, ?_, rfl⟩
+            · refine ⟨⟨witLo, hLoMem, hLoKey⟩, ?_⟩
+              intro row' n' hSel'
+              exact hLoMin row' n' hSel'.1 hSel'.2
+            · refine ⟨⟨witHi, hHiMem, hHiKey⟩, ?_⟩
+              intro row' n' hSel'
+              exact hHiMax row' n' hSel'.1 hSel'.2
+          have hLocalMem : archRow ∈ localDb := (hRows archRow).1 hDenote
+          have hKey : archRow.key? = some (archiveTable, (i : Int)) :=
+            archiveRow_key? _ _ _ _
+          have hLive : liveRow archRow := rfl
+          have hLoFld : rowFieldInt? archRow loField = some lo :=
+            rowFieldInt?_archiveRow_lo _ _ _ _
+          have hHiFld : rowFieldInt? archRow hiField = some (hi + 1) :=
+            rowFieldInt?_archiveRow_hi _ _ _ _
+          have hLoLeN : lo ≤ (n : Int) := hLoMin src n hSrcMem hSrcKey
+          have hNLeHi : (n : Int) ≤ hi := hHiMax src n hSrcMem hSrcKey
+          have hMemFlush : archRow ∈ Database.flush localDb visibleDb := by
+            rw [mem_flush_iff]
+            exact Or.inr ⟨hLocalMem, hLive⟩
+          refine ⟨archRow, (i : Int), lo, hi + 1, hMemFlush, hLive, hKey,
+            hLoFld, hHiFld, hLoLeN, by omega⟩
     · -- archiveIntervalsWellFormed (flush)
       intro row idx lo hi hMem hLive hKey hLo hHi
       rw [mem_flush_iff] at hMem
