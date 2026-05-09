@@ -1353,7 +1353,34 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
             rw [this] at hLive
             exact Bool.noConfusion hLive
       · -- backward: n < snapNext → archiveCovers (flush) n
-        sorry
+        intro hN
+        by_cases hCase : n < snapCut
+        · -- Visible side covers it
+          have hVisCov : archiveCovers visibleDb n := (hVisArchive n).2 hCase
+          rcases hVisCov with ⟨row, j, lo, hi, hMem, hLive, hKey, hLo, hHi, hLe, hLt⟩
+          -- j is a Nat (from archiveCovers). visible's row at (archiveTable, ↑j).
+          -- By hVisFresh, j ≠ i (else visible would have (archiveTable, ↑i) which is forbidden).
+          apply archiveCovers_flush_of_global_witness hMem hLive hKey hLo hHi hLe hLt
+          intro hLocal
+          rw [mem_keyDom_iff'] at hLocal
+          rcases hLocal with ⟨row', hMem', hKey'⟩
+          rcases hLocalRowKey row' hMem' with hArch | ⟨_n', hLog⟩
+          · -- Local archive at (archiveTable, ↑i). Visible's at (archiveTable, j).
+            rw [hArch] at hKey'
+            have hPair : (archiveTable, (i : Int)) = (archiveTable, j) :=
+              Option.some.inj hKey'
+            have hijEq : (i : Int) = j := (Prod.mk.inj hPair).2
+            have hKeyAtI : row.key? = some (archiveTable, (i : Int)) := by
+              rw [hKey, hijEq]
+            exact hVisFresh i (Nat.le_refl i) row hMem hKeyAtI
+          · rw [hLog] at hKey'
+            have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey')).1
+            exact logTable_ne_archiveTable this
+        · -- snapCut ≤ n < snapNext: need local archive insert
+          have hCase' : snapCut ≤ n := by omega
+          -- This requires constructing the local archive row when snap had logs.
+          -- Construction needs finite-set reasoning for selectedLogMin/Max.
+          sorry
     · -- archiveIntervalsWellFormed (flush)
       intro row idx lo hi hMem hLive hKey hLo hHi
       rw [mem_flush_iff] at hMem

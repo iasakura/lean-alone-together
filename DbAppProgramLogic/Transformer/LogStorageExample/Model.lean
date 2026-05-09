@@ -574,6 +574,24 @@ theorem archiveCovers_flush_of_global {localDb globalDb : Database} {n : Int}
   rw [hKey]
   exact hNoClobber i
 
+/-- Per-row variant of `archiveCovers_flush_of_global`. The no-clobber check is
+applied only to the specific archive row used for coverage. -/
+theorem archiveCovers_flush_of_global_witness
+    {localDb globalDb : Database} {n : Int}
+    {row : Row} {idx : Int} {lo hi : Int}
+    (hMem : row ∈ globalDb) (hLive : liveRow row)
+    (hKey : row.key? = some (archiveTable, idx))
+    (hLo : rowFieldInt? row loField = some lo)
+    (hHi : rowFieldInt? row hiField = some hi)
+    (hLe : lo ≤ n) (hLt : n < hi)
+    (hNoClobber : (archiveTable, idx) ∉ localDb.keyDom) :
+    archiveCovers (Database.flush localDb globalDb) n := by
+  refine ⟨row, idx, lo, hi, ?_, hLive, hKey, hLo, hHi, hLe, hLt⟩
+  rw [mem_flush_iff]
+  refine Or.inl ⟨hMem, ?_⟩
+  rw [hKey]
+  exact hNoClobber
+
 theorem resultRowFor_flush_of_global {localDb globalDb : Database} {q : Nat} {n : Int}
     (hNoClobber : (resultTable q, n) ∉ localDb.keyDom) :
     resultRowFor globalDb q n → resultRowFor (Database.flush localDb globalDb) q n := by
