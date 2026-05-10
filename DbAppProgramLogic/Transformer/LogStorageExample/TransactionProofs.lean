@@ -871,11 +871,45 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
   unfold archiveLogBody
   refine Logic.localValid_select_false (archiveTxnId i) _ _ logsVar rowVar _ _ ?_
   intro localDb visibleDb selected hPre _hSelect
-  -- Substituted ite body. `Command.subst logsVar (.lit (.set selected))` is
-  -- propagated through the ite/letE structure; .var logsVar references
-  -- become .lit (.set selected), but rowVar/loVar/hi0Var aren't logsVar so
-  -- those occurrences are untouched (modulo what subst does to nested .var).
-  sorry
+  -- Substituted body: `.ite (.setNonempty (.lit (.set selected)))
+  --   (archiveCompactBody[logsVar→selected]) .skip`
+  simp only [Command.subst, Expr.subst, archiveCompactBody, archiveDeletePredicate,
+    archiveRecordExpr, isLogExpr, isTableExpr, eqExpr, fieldExpr, andExpr,
+    leExpr, addExpr]
+  -- Some of those names may not unfold; the `.lit (.set selected)` substitution
+  -- propagates into setMinField/setMaxField etc. Continue with localValid_ite_false.
+  refine Logic.localValid_ite_false (archiveTxnId i) _ _ _ _ _ ?_ ?_
+  · -- True branch: nonempty selected. Need LocalValid for substituted compactBody.
+    intro _hEvalTrue
+    sorry
+  · -- False branch: empty selected. Substituted body is .skip.
+    intro hEvalFalse
+    -- Extract `selected = []` from hEvalFalse.
+    have hSelectedEmpty : selected = [] := by
+      cases hSel : selected with
+      | nil => rfl
+      | cons head tail =>
+          exfalso
+          simp [Expr.eval, Literal.toValue, hSel] at hEvalFalse
+    -- Local row characterization: visibleDb has no log rows.
+    have hNoLogs : ∀ row, row ∈ visibleDb → ∀ n : Int, row.key? ≠ some (logTable, n) := by
+      intro row hMem n hKey
+      -- selected was the result of collecting log rows; selected = [] means no row matched.
+      -- But the predicate isLogExpr checks rowFieldInt? row tableField = some logTable.
+      -- And key? = some (logTable, n) implies tableField = logTable.
+      -- We use _hSelect to relate selected to visibleDb's log rows.
+      sorry
+    -- Now use localValid_skip_false + conseq.
+    refine Logic.localValid_conseq
+      (P := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
+      (P' := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
+      (Q' := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
+      (fun _ _ h => h)
+      (Logic.localValid_skip_false (archiveTxnId i) _) ?_
+    intro localDb' visibleDb' hPre'
+    -- hPre' : transformerPre Iinfer empty localDb' visibleDb'
+    -- Goal: transformerPost empty F localDb' visibleDb'
+    sorry
 
 /-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely.
 Same skeleton as archive's: `viaLocalValid + localValid_of_stutterRely`,
