@@ -879,8 +879,15 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
   -- Some of those names may not unfold; the `.lit (.set selected)` substitution
   -- propagates into setMinField/setMaxField etc. Continue with localValid_ite_false.
   refine Logic.localValid_ite_false (archiveTxnId i) _ _ _ _ _ ?_ ?_
-  · -- True branch: nonempty selected. Need LocalValid for substituted compactBody.
-    intro _hEvalTrue
+  · -- True branch: nonempty selected. archiveCompactBody[logsVar→selected]
+    -- decomposes into letE loVar / letE hi0Var / seq (insert) (delete).
+    intro hEvalTrue
+    have hSelectedNonempty : selected ≠ [] := by
+      intro hSel
+      simp [Expr.eval, Literal.toValue, hSel] at hEvalTrue
+    -- Compute lo = min idField(selected), hi0 = max idField(selected). Both
+    -- exist since selected is nonempty and consists of log rows whose
+    -- idField is the log id.
     sorry
   · -- False branch: empty selected. Substituted body is .skip.
     intro hEvalFalse
