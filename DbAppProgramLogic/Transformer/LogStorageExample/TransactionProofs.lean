@@ -319,6 +319,48 @@ def archiveLogDeleteEffect (txnId : TxnId) : SetLanguage.SetExpr :=
 def archiveLogEffect (txnId : TxnId) (i : Nat) : SetLanguage.SetExpr :=
   .union (archiveLogInsertEffect txnId i) (archiveLogDeleteEffect txnId)
 
+/-! ### Selected-parameterized variants for `PaperInfer.selectLazy`
+
+These are the `Fbody : SetLit → SetExpr` forms used in the lazy SELECT
+rule (paper Fig.8 ST-SELECT). `selected` is the captured collectSelected
+result, and the min/max are computed from `selected` itself, not from
+globalDb. This eliminates the universal-quantification mismatch that
+arose when `selected` was baked into the body via `Command.subst` while
+the surrounding `archiveLogEffect` recomputed min/max from globalDb. -/
+
+private def selectedLitMin (selected : SetLit) : Option Int :=
+  match Expr.eval (.setMinField (.lit (.set selected)) idField) with
+  | some (.scalar (.int v)) => some v
+  | _ => none
+
+private def selectedLitMax (selected : SetLit) : Option Int :=
+  match Expr.eval (.setMaxField (.lit (.set selected)) idField) with
+  | some (.scalar (.int v)) => some v
+  | _ => none
+
+def archiveLogInsertEffect_with_selected
+    (txnId : TxnId) (i : Nat) (selected : SetLit) : SetLanguage.SetExpr :=
+  fun _localDb _globalDb out =>
+    ∃ lo hi0,
+      selectedLitMin selected = some lo ∧
+      selectedLitMax selected = some hi0 ∧
+      out = archiveRow txnId i lo (hi0 + 1)
+
+def archiveLogDeleteEffect_with_selected
+    (txnId : TxnId) (selected : SetLit) : SetLanguage.SetExpr :=
+  fun _localDb globalDb out =>
+    ∃ src n lo hi0,
+      selectedLitMin selected = some lo ∧
+      selectedLitMax selected = some hi0 ∧
+      globalDb src ∧ src.key? = some (logTable, n) ∧
+      lo ≤ n ∧ n ≤ hi0 ∧
+      out = src.markDeleted txnId
+
+def archiveLogEffect_with_selected (txnId : TxnId) (i : Nat) (selected : SetLit) :
+    SetLanguage.SetExpr :=
+  .union (archiveLogInsertEffect_with_selected txnId i selected)
+    (archiveLogDeleteEffect_with_selected txnId selected)
+
 def selectLogResultEffect (txnId : TxnId) (q : Nat) (entry : Row) :
     SetLanguage.SetExpr :=
   fun _localDb _globalDb out =>
@@ -873,6 +915,38 @@ theorem paperInfer_insertLogBody_indexed_final (i : Nat) :
   paperInfer_insertLogBody_of_stable R_insert (logSystemInvAtNext i)
     (insertTxnId i) i (logSystemInvAtNext_stable_R_insert i)
 
+/-- Lazy variant: PaperInfer for `archiveLogBody` with the lazy F
+(produced by `PaperInfer.selectLazy`). The body's `Fbody selected` is
+parameterised over `selected`, so the universal LocalValid quantification
+over inner `(ld', vd')` no longer mismatches — body's writes and Fbody's
+denotation are both pinned via `selected`, with vd' only contributing
+the log-row source for delete markers in both. -/
+theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty (archiveLogBody i)
+      (fun localDb globalDb out =>
+        ∃ selected, ∃ visibleDb,
+          (∀ row, globalDb row ↔ row ∈ visibleDb) ∧
+          Semantics.collectSelected visibleDb rowVar
+              (instantiateSymExpr emptySymEnv [rowVar] (isLogExpr rowVar)) = some selected ∧
+          archiveLogEffect_with_selected (archiveTxnId i) i selected localDb globalDb out) := by
+  unfold archiveLogBody
+  refine PaperInfer.selectLazy
+    (env := emptySymEnv)
+    (Fbody := archiveLogEffect_with_selected (archiveTxnId i) i)
+    ?_ ?_
+  · -- stability of transformerPre under SI's local rely
+    sorry
+  · -- per-`selected` body PaperInfer
+    -- Fbody is parameterised by selected; archiveCompactBody[logsVar→selected]
+    -- has its writes pinned to `selected` (lo/hi from selectedLitMin/Max),
+    -- so universal LocalValid over (ld', vd') matches Fbody(selected) on both sides.
+    intro selected
+    sorry
+
 /-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
 (which forces `visibleDb = visibleDb'`). The strengthening lets the guarantee
 bridge know archive-id `i` is fresh in the visible database.
@@ -968,6 +1042,7 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
       (fun _ _ h => h)
       (Logic.localValid_skip_false (archiveTxnId i) _) ?_
     intro localDb' visibleDb' hPre'
+    simp [transformerPost, transformerPre] at hPre' |-
     -- hPre' : transformerPre Iinfer empty localDb' visibleDb'
     -- Goal: transformerPost empty F localDb' visibleDb'
     sorry
