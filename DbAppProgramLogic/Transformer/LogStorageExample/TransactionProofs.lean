@@ -1011,7 +1011,8 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
           | some hi0Val =>
               refine Logic.localValid_let_false (archiveTxnId i) _ _ hi0Var _ _ hi0Val hMaxEval ?_
               -- Simplify the substituted body: var-name decidable equalities propagate.
-              simp only [Command.subst, Expr.subst,
+              simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
+                Expr.substFieldExprs_nil, Expr.subst_lit, Value.subst_toExpr,
                 logsVar, loVar, hi0Var, rowVar, idField, tableField, loField, hiField,
                 show ("logs" : VarName) ≠ "lo" from by decide,
                 show ("logs" : VarName) ≠ "hi0" from by decide,
@@ -1019,7 +1020,8 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
                 show ("lo" : VarName) ≠ "hi0" from by decide,
                 show ("lo" : VarName) ≠ "row" from by decide,
                 show ("hi0" : VarName) ≠ "row" from by decide,
-                if_true, if_false, ite_eq_left_iff, ite_eq_right_iff]
+                if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
+                Expr.int]
               -- Goal should now be a clean .seq (insert; delete) under the substitutions.
               sorry
     · -- False branch: empty selected → .skip. Now Fbody(selected=[]) denotes nothing.

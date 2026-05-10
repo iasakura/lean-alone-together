@@ -75,7 +75,7 @@ namespace Expr
 
 mutual
 
-  private def substFieldExprs (x : VarName) (replacement : Expr) :
+  def substFieldExprs (x : VarName) (replacement : Expr) :
       List (FieldName × Expr) → List (FieldName × Expr)
     | [] => []
     | (field, value) :: rest =>
@@ -97,9 +97,32 @@ mutual
 
 end
 
+@[simp] theorem substFieldExprs_nil (x : VarName) (replacement : Expr) :
+    substFieldExprs x replacement [] = [] := rfl
+
+@[simp] theorem substFieldExprs_cons (x : VarName) (replacement : Expr)
+    (field : FieldName) (value : Expr) (rest : List (FieldName × Expr)) :
+    substFieldExprs x replacement ((field, value) :: rest) =
+      (field, subst x replacement value) :: substFieldExprs x replacement rest := rfl
+
+@[simp] theorem subst_lit (x : VarName) (replacement : Expr) (lit : Literal) :
+    subst x replacement (Expr.lit lit) = Expr.lit lit := rfl
+
+end Expr
+
+namespace Value
+
+@[simp] theorem subst_toExpr (x : VarName) (replacement : Expr) (v : Value) :
+    Expr.subst x replacement v.toExpr = v.toExpr := by
+  cases v <;> rfl
+
+end Value
+
+namespace Expr
+
 mutual
 
-  private theorem substFieldExprs_shadow_lit (x : VarName) (replacement : Expr) (lit : Literal) :
+  theorem substFieldExprs_shadow_lit (x : VarName) (replacement : Expr) (lit : Literal) :
       ∀ fields,
         substFieldExprs x replacement (substFieldExprs x (.lit lit) fields) =
           substFieldExprs x (.lit lit) fields
