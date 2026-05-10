@@ -338,6 +338,32 @@ private def selectedLitMax (selected : SetLit) : Option Int :=
   | some (.scalar (.int v)) => some v
   | _ => none
 
+/-- `setMinField` on a set literal always returns `.scalar (.int _)` when it
+returns `some`. Pinning this fact lets callers extract the integer value from
+an opaque `loVal`. -/
+private theorem setMinField_lit_eval_int {selected : SetLit} {field : FieldName} {v : Value}
+    (h : Expr.eval (.setMinField (.lit (.set selected)) field) = some v) :
+    ∃ lo : Int, v = .scalar (.int lo) := by
+  simp only [Expr.eval, Literal.toValue] at h
+  rcases hVals : Expr.collectIntFieldValues field selected with _ | values
+  · simp [hVals] at h
+  · rcases hMin : Expr.minInt? values with _ | m
+    · simp [hVals, hMin] at h
+    · simp [hVals, hMin] at h
+      exact ⟨m, h.symm⟩
+
+/-- `setMaxField` analogue. -/
+private theorem setMaxField_lit_eval_int {selected : SetLit} {field : FieldName} {v : Value}
+    (h : Expr.eval (.setMaxField (.lit (.set selected)) field) = some v) :
+    ∃ hi : Int, v = .scalar (.int hi) := by
+  simp only [Expr.eval, Literal.toValue] at h
+  rcases hVals : Expr.collectIntFieldValues field selected with _ | values
+  · simp [hVals] at h
+  · rcases hMax : Expr.maxInt? values with _ | m
+    · simp [hVals, hMax] at h
+    · simp [hVals, hMax] at h
+      exact ⟨m, h.symm⟩
+
 def archiveLogInsertEffect_with_selected
     (txnId : TxnId) (i : Nat) (selected : SetLit) : SetLanguage.SetExpr :=
   fun _localDb _globalDb out =>
@@ -1022,8 +1048,45 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
                 show ("hi0" : VarName) ≠ "row" from by decide,
                 if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
                 Expr.int]
-              -- Goal should now be a clean .seq (insert; delete) under the substitutions.
-              sorry
+              -- Extract integer values from loVal/hi0Val. setMinField/setMaxField
+              -- always return `.scalar (.int _)` when they succeed.
+              obtain ⟨lo, hLoVal⟩ := setMinField_lit_eval_int hMinEval
+              obtain ⟨hi0, hHi0Val⟩ := setMaxField_lit_eval_int hMaxEval
+              subst hLoVal
+              subst hHi0Val
+              -- Pin the selectedLitMin/Max characterizations from hMinEval/hMaxEval.
+              have hSelMin : selectedLitMin selected = some lo := by
+                simp [selectedLitMin, hMinEval]
+              have hSelMax : selectedLitMax selected = some hi0 := by
+                simp [selectedLitMax, hMaxEval]
+              -- Decompose seq into insert step + delete step.
+              -- Intermediate post: insert produces archiveRow only.
+              refine Logic.localValid_seq_false (archiveTxnId i)
+                (transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
+                (transformerPost SetLanguage.empty
+                  (archiveLogInsertEffect_with_selected (archiveTxnId i) i selected))
+                (transformerPost SetLanguage.empty
+                  (archiveLogEffect_with_selected (archiveTxnId i) i selected))
+                _ _ ?_ ?_
+              · -- Insert step
+                refine Logic.localValid_insert_false (archiveTxnId i) _ _ _ ?_
+                intro ld vd record hPre hEval _hFresh
+                rcases hPre with ⟨hLocal, _hInv⟩
+                -- ld = [] from transformerPre on empty
+                have hLdEmpty : ld = [] := by
+                  cases ld with
+                  | nil => rfl
+                  | cons row rest =>
+                      have := (hLocal row).mpr List.mem_cons_self
+                      simp [SetLanguage.denote, SetLanguage.empty] at this
+                subst hLdEmpty
+                -- record value is archiveRecord i lo (hi0+1)
+                simp only [Expr.eval, Value.toExpr, Literal.toValue,
+                  Expr.evalFieldValues] at hEval
+                -- After all field evaluations, record = archiveRecord i lo (hi0+1)
+                sorry
+              · -- Delete step
+                sorry
     · -- False branch: empty selected → .skip. Now Fbody(selected=[]) denotes nothing.
       intro hEvalFalse
       have hSelectedEmpty : selected = [] := by

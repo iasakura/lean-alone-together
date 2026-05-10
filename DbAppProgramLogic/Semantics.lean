@@ -159,23 +159,23 @@ mutual
 
 end
 
-private def intField? (record : RecordLit) (field : FieldName) : Option Int :=
+def intField? (record : RecordLit) (field : FieldName) : Option Int :=
   match record.lookup? field with
   | some (.int value) => some value
   | _ => none
 
-private def collectIntFieldValues (field : FieldName) : SetLit → Option (List Int)
+def collectIntFieldValues (field : FieldName) : SetLit → Option (List Int)
   | [] => some []
   | rec :: records => do
       let value ← intField? rec field
       let rest ← collectIntFieldValues field records
       pure (value :: rest)
 
-private def minInt? : List Int → Option Int
+def minInt? : List Int → Option Int
   | [] => none
   | value :: values => some (values.foldl min value)
 
-private def maxInt? : List Int → Option Int
+def maxInt? : List Int → Option Int
   | [] => none
   | value :: values => some (values.foldl max value)
 
@@ -194,7 +194,7 @@ def intNatPair? (a b : Int) : Option Int :=
 
 mutual
 
-  private def evalFieldValues : List (FieldName × Expr) → Option (List (FieldName × ScalarLit))
+  def evalFieldValues : List (FieldName × Expr) → Option (List (FieldName × ScalarLit))
     | [] => some []
     | (field, expr) :: rest => do
         let .scalar value ← eval expr | none
