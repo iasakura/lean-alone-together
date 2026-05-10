@@ -385,6 +385,46 @@ theorem relyNoUndo_R_archive : relyNoUndo R_archive := by
 theorem relyNoUndo_R_select (q : Nat) : relyNoUndo (R_select q) := by
   sorry
 
+/-- `collectSelected.go` returning `some []` implies no row in `db` matches. -/
+private theorem collectSelected_go_empty_no_match
+    {db : Database} {x : VarName} {predicate : Expr}
+    (h : Semantics.collectSelected.go x predicate db = some []) :
+    ∀ row, row ∈ db →
+      Semantics.satisfiesPredicate x predicate row.visible = some false := by
+  induction db with
+  | nil => intro row hMem; cases hMem
+  | cons head tail ih =>
+      intro row hMem
+      cases hKeep : Semantics.satisfiesPredicate x predicate head.visible with
+      | none =>
+          simp [Semantics.collectSelected.go, hKeep] at h
+      | some keep =>
+          cases hRest : Semantics.collectSelected.go x predicate tail with
+          | none =>
+              simp [Semantics.collectSelected.go, hKeep, hRest] at h
+          | some rest =>
+              cases keep with
+              | true =>
+                  -- if-true: head.visible :: rest = [], absurd
+                  simp [Semantics.collectSelected.go, hKeep, hRest] at h
+              | false =>
+                  -- if-false: rest = []
+                  have hRestEmpty : rest = [] := by
+                    simpa [Semantics.collectSelected.go, hKeep, hRest] using h
+                  subst hRestEmpty
+                  rcases List.mem_cons.mp hMem with rfl | hTail
+                  · exact hKeep
+                  · exact ih hRest row hTail
+
+/-- `collectSelected db x predicate = some []` implies no row in `db` satisfies
+the predicate. -/
+private theorem collectSelected_empty_no_match
+    {db : Database} {x : VarName} {predicate : Expr}
+    (h : Semantics.collectSelected db x predicate = some []) :
+    ∀ row, row ∈ db →
+      Semantics.satisfiesPredicate x predicate row.visible = some false := by
+  exact collectSelected_go_empty_no_match (by simpa [Semantics.collectSelected] using h)
+
 /-- Under SI's local rely, env steps are silent on visible: `v = v'`. -/
 theorem relyMod_snapshot_exec_silent {R : Rely} :
     ∀ localDb v v',
@@ -899,13 +939,27 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
           exfalso
           simp [Expr.eval, Literal.toValue, hSel] at hEvalFalse
     -- Local row characterization: visibleDb has no log rows.
+    have hSelectEmpty : Semantics.collectSelected visibleDb rowVar (isLogExpr rowVar) = some [] := by
+      rw [hSelectedEmpty] at _hSelect
+      exact _hSelect
+    -- Extract wellFormedTableFields from precondition's invariant.
+    have hWF : wellFormedTableFields visibleDb := by
+      rcases hPre with ⟨_, hInv, _⟩
+      rcases hInv with ⟨_, _, _, _, hWF⟩
+      exact hWF
     have hNoLogs : ∀ row, row ∈ visibleDb → ∀ n : Int, row.key? ≠ some (logTable, n) := by
       intro row hMem n hKey
-      -- selected was the result of collecting log rows; selected = [] means no row matched.
-      -- But the predicate isLogExpr checks rowFieldInt? row tableField = some logTable.
-      -- And key? = some (logTable, n) implies tableField = logTable.
-      -- We use _hSelect to relate selected to visibleDb's log rows.
-      sorry
+      -- From key? = some (logTable, n) + wellFormedTableFields: rowFieldInt? tableField = logTable.
+      have hTable : rowFieldInt? row tableField = some logTable :=
+        rowFieldInt?_tableField_of_key_wellFormed hWF hMem hKey
+      -- Hence isLogExpr predicate is satisfied.
+      have hSat : Semantics.satisfiesPredicate rowVar (isLogExpr rowVar) row.visible = some true :=
+        (satisfiesPredicate_isTableExpr_iff row logTable).mpr hTable
+      -- But collectSelected returned [], so no row satisfies — contradiction.
+      have hNoMatch : Semantics.satisfiesPredicate rowVar (isLogExpr rowVar) row.visible = some false :=
+        collectSelected_empty_no_match hSelectEmpty row hMem
+      rw [hSat] at hNoMatch
+      cases hNoMatch
     -- Now use localValid_skip_false + conseq.
     refine Logic.localValid_conseq
       (P := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
