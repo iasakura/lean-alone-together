@@ -397,10 +397,10 @@ def insertLogTxn (i : Nat) : Semantics.Program :=
   .txn (insertTxnId i) (IsolationSpec.readCommitted Database) (insertLogBody i)
 
 def archiveLogTxn (i : Nat) : Semantics.Program :=
-  .txn (archiveTxnId i) (IsolationSpec.readCommitted Database) (archiveLogBody i)
+  .txn (archiveTxnId i) IsolationSpec.snapshot (archiveLogBody i)
 
 def selectAllLogTxn (q : Nat) : Semantics.Program :=
-  .txn (selectTxnId q) (IsolationSpec.readCommitted Database) (selectAllLogBody q)
+  .txn (selectTxnId q) IsolationSpec.snapshot (selectAllLogBody q)
 
 def insertWorker (n : Nat) : Semantics.Program :=
   txSeq ((List.range n).map insertLogTxn)

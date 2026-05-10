@@ -140,16 +140,16 @@ def insertLogTxnSpec (i : Nat) : Prop :=
   txnSpecValid (insertTxnId i) (IsolationSpec.readCommitted Database) (insertLogSpec i)
 
 def archiveLogTxnSpec (i : Nat) : Prop :=
-  txnSpecValid (archiveTxnId i) (IsolationSpec.readCommitted Database) (archiveLogSpec i)
+  txnSpecValid (archiveTxnId i) IsolationSpec.snapshot (archiveLogSpec i)
 
 def selectAllLogTxnSpec (q : Nat) : Prop :=
-  txnSpecValid (selectTxnId q) (IsolationSpec.readCommitted Database) (selectAllLogSpec q)
+  txnSpecValid (selectTxnId q) IsolationSpec.snapshot (selectAllLogSpec q)
 
 def insertLogIndexedTxnSpec (i : Nat) : Prop :=
   txnSpecValid (insertTxnId i) (IsolationSpec.readCommitted Database) (insertLogIndexedSpec i)
 
 def archiveLogIndexedTxnSpec (i : Nat) : Prop :=
-  txnSpecValid (archiveTxnId i) (IsolationSpec.readCommitted Database) (archiveLogIndexedSpec i)
+  txnSpecValid (archiveTxnId i) IsolationSpec.snapshot (archiveLogIndexedSpec i)
 
 def G_system (q : Nat) : Guarantee :=
   fun oldDb newDb => G_insert oldDb newDb ∨ G_archive oldDb newDb ∨ G_select q oldDb newDb

@@ -375,27 +375,75 @@ theorem rowFieldInt?_tableField_eq_table?_int_some {row : Row} {table : TableNam
 
 /-! ## Bridges from obligations to txnSpec -/
 
+/-- TODO: prove `relyNoUndo R_archive` from R_archive's monotonicity in `next`
+and result rows. The current spec of G_insert/G_select is content-only, so
+list equality may need to be derived via additional structural arguments
+or by tightening G's. Stubbed for now to allow the rest of the SI pipeline
+to compose. -/
+theorem relyNoUndo_R_archive : relyNoUndo R_archive := by
+  sorry
+
+/-- Same caveat as `relyNoUndo_R_archive`. -/
+theorem relyNoUndo_R_select (q : Nat) : relyNoUndo (R_select q) := by
+  sorry
+
 theorem archiveLogTxnSpec_of_paperObligations (i : Nat)
     (hObligations : ArchiveLogPaperObligations i) :
     archiveLogTxnSpec i := by
+  have hCommitPost :
+      ∀ localDb visibleDb,
+        logSystemInv visibleDb →
+          txnSnapshotPost logSystemInv R_archive hObligations.effect localDb visibleDb →
+            logSystemInv (Database.flush localDb visibleDb) := by
+    intro localDb visibleDb _hPre hPost
+    have hG : G_archive visibleDb (Database.flush localDb visibleDb) :=
+      hObligations.guarantee localDb visibleDb hPost
+    rcases hPost with ⟨snapDb', hSnapInv', hReach', _⟩
+    have hVisInv : logSystemInv visibleDb :=
+      logSystemInv_stable_multiStep logSystemInv_stable_R_archive hReach' hSnapInv'
+    exact G_archive_preserves_logSystemInv hVisInv hG
+  have hMain := globalValid_snapshot_of_paperObligations_post
+    (R := R_archive) (Iinfer := logSystemInv) (Ipre := logSystemInv) (Ipost := logSystemInv)
+    (G := G_archive) (txnId := archiveTxnId i) (body := archiveLogBody i)
+    relyNoUndo_R_archive
+    logSystemInv_stable_R_archive
+    logSystemInv_stable_R_archive
+    logSystemInv_stable_R_archive
+    (fun _ h => h)
+    hObligations
+    hCommitPost
   simpa [archiveLogTxnSpec, txnSpecValid, txnSpecProgram, archiveLogSpec,
     ArchiveLogPaperObligations]
-    using
-      globalValid_readCommitted_of_paperObligations
-        logSystemInv_stable_R_archive
-        (fun _ _ hInv hG => G_archive_preserves_logSystemInv hInv hG)
-        hObligations
+    using hMain
 
 theorem selectAllLogTxnSpec_of_paperObligations (q : Nat)
     (hObligations : SelectAllLogPaperObligations q) :
     selectAllLogTxnSpec q := by
+  have hCommitPost :
+      ∀ localDb visibleDb,
+        logSystemInv visibleDb →
+          txnSnapshotPost logSystemInv (R_select q) hObligations.effect localDb visibleDb →
+            logSystemInv (Database.flush localDb visibleDb) := by
+    intro localDb visibleDb _hPre hPost
+    have hG : G_select q visibleDb (Database.flush localDb visibleDb) :=
+      hObligations.guarantee localDb visibleDb hPost
+    rcases hPost with ⟨snapDb', hSnapInv', hReach', _⟩
+    have hVisInv : logSystemInv visibleDb :=
+      logSystemInv_stable_multiStep (logSystemInv_stable_R_select q) hReach' hSnapInv'
+    exact G_select_preserves_logSystemInv hVisInv hG
+  have hMain := globalValid_snapshot_of_paperObligations_post
+    (R := R_select q) (Iinfer := logSystemInv) (Ipre := logSystemInv) (Ipost := logSystemInv)
+    (G := G_select q) (txnId := selectTxnId q) (body := selectAllLogBody q)
+    (relyNoUndo_R_select q)
+    (logSystemInv_stable_R_select q)
+    (logSystemInv_stable_R_select q)
+    (logSystemInv_stable_R_select q)
+    (fun _ h => h)
+    hObligations
+    hCommitPost
   simpa [selectAllLogTxnSpec, txnSpecValid, txnSpecProgram, selectAllLogSpec,
     SelectAllLogPaperObligations]
-    using
-      globalValid_readCommitted_of_paperObligations
-        (logSystemInv_stable_R_select q)
-        (fun _ _ hInv hG => G_select_preserves_logSystemInv hInv hG)
-        hObligations
+    using hMain
 
 theorem insertLogIndexedTxnSpec_of_indexedPaperObligations (i : Nat)
     (hObligations : InsertLogPaperObligations i) :
@@ -2437,7 +2485,8 @@ theorem archiveLogIndexedTxnSpec_of_paperObligations (i : Nat)
   simpa [archiveLogIndexedTxnSpec, txnSpecValid, txnSpecProgram,
     archiveLogIndexedSpec, archiveLogTxn]
     using
-      globalValid_readCommitted_of_paperObligations_post
+      globalValid_snapshot_of_paperObligations_post
+        relyNoUndo_R_archive
         logSystemInv_stable_R_archive
         (archiveIndexedInv_stable_R_archive i)
         (archiveIndexedInv_stable_R_archive (i + 1))
@@ -2485,7 +2534,8 @@ theorem archiveLogIndexedTxnSpec_of_indexedPaperObligations (i : Nat)
   simpa [archiveLogIndexedTxnSpec, txnSpecValid, txnSpecProgram,
     archiveLogIndexedSpec, archiveLogTxn]
     using
-      globalValid_readCommitted_of_paperObligations_post
+      globalValid_snapshot_of_paperObligations_post
+        relyNoUndo_R_archive
         (archiveIndexedInv_stable_R_archive i)
         (archiveIndexedInv_stable_R_archive i)
         (archiveIndexedInv_stable_R_archive (i + 1))
