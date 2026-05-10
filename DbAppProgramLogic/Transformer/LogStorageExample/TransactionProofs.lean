@@ -442,6 +442,176 @@ private theorem mem_selected_iff_log_row
       (satisfiesPredicate_isTableExpr_iff sr logTable).mpr hTab
     exact ⟨sr, hSrMem, hSat, hVis⟩
 
+/-- For a log row, its visible record's `intField? idField` equals the
+log id from its key. -/
+private theorem intField?_idField_of_log_row {row : Row} {n : Int}
+    (hKey : row.key? = some (logTable, n)) :
+    Expr.intField? row.visible idField = some n := by
+  have h := rowFieldInt?_idField_of_key hKey
+  unfold Expr.intField? rowFieldInt? at *
+  exact h
+
+/-- For each `rec ∈ selected`, `collectIntFieldValues` extracts some `n` and
+that `n` appears in the produced values list. -/
+private theorem mem_collectIntFieldValues_of_mem
+    {selected : SetLit} {values : List Int} {rec : RecordLit}
+    (hValues : Expr.collectIntFieldValues idField selected = some values)
+    (hMem : rec ∈ selected) :
+    ∃ n, Expr.intField? rec idField = some n ∧ n ∈ values := by
+  induction selected generalizing values with
+  | nil => cases hMem
+  | cons head tail ih =>
+      simp [Expr.collectIntFieldValues, Bind.bind, Option.bind] at hValues
+      cases hHd : Expr.intField? head idField with
+      | none => simp [hHd] at hValues
+      | some headN =>
+          cases hTl : Expr.collectIntFieldValues idField tail with
+          | none => simp [hHd, hTl] at hValues
+          | some tailVals =>
+              simp [hHd, hTl] at hValues
+              subst hValues
+              rcases List.mem_cons.mp hMem with hHead | hTail
+              · subst hHead
+                exact ⟨headN, hHd, List.mem_cons_self⟩
+              · rcases ih hTl hTail with ⟨n, hN, hMem'⟩
+                exact ⟨n, hN, List.mem_cons_of_mem _ hMem'⟩
+
+/-- Each value in `values` corresponds to some `rec ∈ selected` whose
+`intField? idField` produced it. -/
+private theorem exists_mem_selected_of_mem_values
+    {selected : SetLit} {values : List Int} {v : Int}
+    (hValues : Expr.collectIntFieldValues idField selected = some values)
+    (hMem : v ∈ values) :
+    ∃ rec, rec ∈ selected ∧ Expr.intField? rec idField = some v := by
+  induction selected generalizing values with
+  | nil =>
+      simp [Expr.collectIntFieldValues] at hValues
+      subst hValues
+      cases hMem
+  | cons head tail ih =>
+      simp [Expr.collectIntFieldValues, Bind.bind, Option.bind] at hValues
+      cases hHd : Expr.intField? head idField with
+      | none => simp [hHd] at hValues
+      | some headN =>
+          cases hTl : Expr.collectIntFieldValues idField tail with
+          | none => simp [hHd, hTl] at hValues
+          | some tailVals =>
+              simp [hHd, hTl] at hValues
+              subst hValues
+              rcases List.mem_cons.mp hMem with hHead | hTail
+              · subst hHead
+                exact ⟨head, List.mem_cons_self, hHd⟩
+              · rcases ih hTl hTail with ⟨rec, hRecMem, hRec⟩
+                exact ⟨rec, List.mem_cons_of_mem _ hRecMem, hRec⟩
+
+/-- If every `rec ∈ selected` has an integer idField, `collectIntFieldValues`
+succeeds. -/
+private theorem collectIntFieldValues_succeeds_of_each_intField
+    {selected : SetLit}
+    (hEach : ∀ rec, rec ∈ selected → ∃ n, Expr.intField? rec idField = some n) :
+    ∃ values, Expr.collectIntFieldValues idField selected = some values := by
+  induction selected with
+  | nil => exact ⟨[], rfl⟩
+  | cons head tail ih =>
+      rcases hEach head List.mem_cons_self with ⟨headN, hHd⟩
+      have hTailEach : ∀ rec, rec ∈ tail → ∃ n, Expr.intField? rec idField = some n :=
+        fun rec hMem => hEach rec (List.mem_cons_of_mem _ hMem)
+      rcases ih hTailEach with ⟨tailVals, hTl⟩
+      refine ⟨headN :: tailVals, ?_⟩
+      simp [Expr.collectIntFieldValues, hHd, hTl, Bind.bind, Option.bind]
+
+/-- `collectIntFieldValues` succeeds when each `rec ∈ selected` comes from a
+log row in `vd` (via `collectSelected`) under wellFormedness. -/
+private theorem collectIntFieldValues_log_succeeds
+    {vd : Database} {selected : SetLit}
+    (hSelect : Semantics.collectSelected vd rowVar (isLogExpr rowVar) = some selected)
+    (hWF : wellFormedTableFields vd) :
+    ∃ values, Expr.collectIntFieldValues idField selected = some values := by
+  refine collectIntFieldValues_succeeds_of_each_intField (fun rec hMem => ?_)
+  rcases (mem_selected_iff_log_row hSelect hWF rec).mp hMem with
+    ⟨row, _, ⟨n, hKey⟩, hVis⟩
+  refine ⟨n, ?_⟩
+  rw [← hVis]
+  exact intField?_idField_of_log_row hKey
+
+/-- Auxiliary: `List.foldl min init l` is ≤ `init`. -/
+private theorem foldl_min_le_init (init : Int) (l : List Int) :
+    l.foldl min init ≤ init := by
+  induction l generalizing init with
+  | nil => exact Int.le_refl _
+  | cons x xs ih =>
+      simp only [List.foldl]
+      have h₁ := ih (min init x)
+      have h₂ : min init x ≤ init := Int.min_le_left _ _
+      omega
+
+/-- Auxiliary: `List.foldl min init l` is ≤ every element of `l`. -/
+private theorem foldl_min_le_mem : ∀ (init : Int) (l : List Int) (y : Int), y ∈ l →
+    l.foldl min init ≤ y
+  | _, [], _, hMem => absurd hMem List.not_mem_nil
+  | init, x :: xs, y, hMem => by
+      simp only [List.foldl]
+      rcases List.mem_cons.mp hMem with rfl | hy
+      · have h₁ := foldl_min_le_init (min init y) xs
+        have h₂ : min init y ≤ y := Int.min_le_right _ _
+        omega
+      · exact foldl_min_le_mem (min init x) xs y hy
+
+/-- Auxiliary: `List.foldl min init l` equals `init` or some element of `l`. -/
+private theorem foldl_min_eq_init_or_mem : ∀ (init : Int) (l : List Int),
+    l.foldl min init = init ∨ ∃ y ∈ l, l.foldl min init = y
+  | _, [] => Or.inl rfl
+  | init, x :: xs => by
+      simp only [List.foldl]
+      rcases foldl_min_eq_init_or_mem (min init x) xs with hEq | ⟨y, hyMem, hyEq⟩
+      · by_cases h : init ≤ x
+        · have hMin : min init x = init := Int.min_eq_left h
+          left; rw [hEq, hMin]
+        · have h' : x ≤ init := by omega
+          have hMin : min init x = x := Int.min_eq_right h'
+          right
+          refine ⟨x, List.mem_cons_self, ?_⟩
+          rw [hEq, hMin]
+      · right
+        exact ⟨y, List.mem_cons_of_mem _ hyMem, hyEq⟩
+
+private theorem foldl_min_mem (init : Int) (l : List Int) :
+    l.foldl min init ∈ init :: l := by
+  rcases foldl_min_eq_init_or_mem init l with hEq | ⟨y, hyMem, hyEq⟩
+  · rw [hEq]; exact List.mem_cons_self
+  · rw [hyEq]; exact List.mem_cons_of_mem _ hyMem
+
+/-- `Expr.minInt?` characterization: the returned value is a member, and a
+lower bound for every member. -/
+private theorem minInt?_eq_some_iff (values : List Int) (lo : Int) :
+    Expr.minInt? values = some lo ↔
+      lo ∈ values ∧ ∀ v ∈ values, lo ≤ v := by
+  cases values with
+  | nil => simp [Expr.minInt?]
+  | cons head tail =>
+      simp [Expr.minInt?]
+      constructor
+      · rintro rfl
+        refine ⟨?_, ?_, ?_⟩
+        · -- foldl ∈ head :: tail, split form: foldl = head ∨ foldl ∈ tail
+          rcases foldl_min_eq_init_or_mem head tail with hEq | ⟨y, hyMem, hyEq⟩
+          · left; exact hEq
+          · right; rw [hyEq]; exact hyMem
+        · exact foldl_min_le_init _ _
+        · intro v hMem
+          exact foldl_min_le_mem _ _ _ hMem
+      · rintro ⟨hMem, hLB_head, hLB_tail⟩
+        have hMin_eq_or_mem := foldl_min_eq_init_or_mem head tail
+        have hMin_le_lo : tail.foldl min head ≤ lo := by
+          rcases hMem with rfl | hMem
+          · exact foldl_min_le_init _ _
+          · exact foldl_min_le_mem _ _ _ hMem
+        have hLo_le_min : lo ≤ tail.foldl min head := by
+          rcases hMin_eq_or_mem with hEq | ⟨y, hyMem, hyEq⟩
+          · rw [hEq]; exact hLB_head
+          · rw [hyEq]; exact hLB_tail _ hyMem
+        omega
+
 def archiveLogInsertEffect_with_selected
     (txnId : TxnId) (i : Nat) (selected : SetLit) : SetLanguage.SetExpr :=
   fun _localDb _globalDb out =>
