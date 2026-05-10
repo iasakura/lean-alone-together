@@ -593,8 +593,7 @@ private theorem minInt?_eq_some_iff (values : List Int) (lo : Int) :
       constructor
       · rintro rfl
         refine ⟨?_, ?_, ?_⟩
-        · -- foldl ∈ head :: tail, split form: foldl = head ∨ foldl ∈ tail
-          rcases foldl_min_eq_init_or_mem head tail with hEq | ⟨y, hyMem, hyEq⟩
+        · rcases foldl_min_eq_init_or_mem head tail with hEq | ⟨y, hyMem, hyEq⟩
           · left; exact hEq
           · right; rw [hyEq]; exact hyMem
         · exact foldl_min_le_init _ _
@@ -611,6 +610,85 @@ private theorem minInt?_eq_some_iff (values : List Int) (lo : Int) :
           · rw [hEq]; exact hLB_head
           · rw [hyEq]; exact hLB_tail _ hyMem
         omega
+
+/-- The bridge: under `collectSelected vd "row" isLogExpr = some selected` and
+wellFormedness, `selectedLitMin selected = some lo` is equivalent to
+`selectedLogMin vd lo`. Both characterise "lo = min log id in vd". -/
+private theorem selectedLitMin_iff_selectedLogMin
+    {vd : Database} {selected : SetLit} {lo : Int}
+    (hSelect : Semantics.collectSelected vd rowVar (isLogExpr rowVar) = some selected)
+    (hWF : wellFormedTableFields vd) :
+    selectedLitMin selected = some lo ↔ selectedLogMin vd lo := by
+  rcases collectIntFieldValues_log_succeeds hSelect hWF with ⟨values, hValues⟩
+  have hLitMin_iff : selectedLitMin selected = some lo ↔
+      Expr.minInt? values = some lo := by
+    unfold selectedLitMin
+    simp only [Expr.eval, Literal.toValue, hValues, Bind.bind, Option.bind, Option.some_bind]
+    cases hMin : Expr.minInt? values with
+    | none =>
+        simp [hMin]
+    | some m =>
+        simp [hMin]
+  rw [hLitMin_iff, minInt?_eq_some_iff]
+  unfold selectedLogMin selectedLogRow
+  constructor
+  · rintro ⟨hMem, hLB⟩
+    -- lo ∈ values: get the rec and log row witness for lo
+    rcases exists_mem_selected_of_mem_values hValues hMem with ⟨rec, hRecMem, hRecField⟩
+    rcases (mem_selected_iff_log_row hSelect hWF rec).mp hRecMem with
+      ⟨row, hRowMem, ⟨n, hKey⟩, hVis⟩
+    -- intField? row.visible idField = some n; and = some lo from hRecField (since rec = row.visible)
+    have hN : n = lo := by
+      have hHas := intField?_idField_of_log_row hKey
+      rw [hVis] at hHas
+      rw [hHas] at hRecField
+      exact Option.some.inj hRecField
+    subst hN
+    refine ⟨⟨row, hRowMem, hKey⟩, ?_⟩
+    intro row' n' ⟨hRow'Mem, hKey'⟩
+    -- row'.visible ∈ selected with intField? = some n'
+    have hRecMem' : row'.visible ∈ selected :=
+      (mem_selected_iff_log_row hSelect hWF row'.visible).mpr
+        ⟨row', hRow'Mem, ⟨n', hKey'⟩, rfl⟩
+    rcases mem_collectIntFieldValues_of_mem hValues hRecMem' with ⟨n'', hN''Field, hN''Mem⟩
+    have hN''_eq : n'' = n' := by
+      have hHas := intField?_idField_of_log_row hKey'
+      rw [hHas] at hN''Field
+      exact (Option.some.inj hN''Field).symm
+    subst hN''_eq
+    exact hLB _ hN''Mem
+  · rintro ⟨⟨row, hRowMem, hKey⟩, hMin⟩
+    -- selectedLogMin: row witnesses min, and lo is LB for log ids
+    have hVisMem : row.visible ∈ selected :=
+      (mem_selected_iff_log_row hSelect hWF row.visible).mpr
+        ⟨row, hRowMem, ⟨lo, hKey⟩, rfl⟩
+    rcases mem_collectIntFieldValues_of_mem hValues hVisMem with ⟨n, hNField, hNMem⟩
+    have hN_eq_lo : n = lo := by
+      have hHas := intField?_idField_of_log_row hKey
+      rw [hHas] at hNField
+      exact (Option.some.inj hNField).symm
+    subst hN_eq_lo
+    refine ⟨hNMem, ?_⟩
+    intro v hVMem
+    rcases exists_mem_selected_of_mem_values hValues hVMem with ⟨rec', hRecMem', hRecField'⟩
+    rcases (mem_selected_iff_log_row hSelect hWF rec').mp hRecMem' with
+      ⟨row', hRow'Mem, ⟨n', hKey'⟩, hVis'⟩
+    have hN'_eq_v : n' = v := by
+      have hHas := intField?_idField_of_log_row hKey'
+      rw [hVis'] at hHas
+      rw [hHas] at hRecField'
+      exact Option.some.inj hRecField'
+    subst hN'_eq_v
+    exact hMin row' n' ⟨hRow'Mem, hKey'⟩
+
+/-- Max analogue of `selectedLitMin_iff_selectedLogMin`. -/
+private theorem selectedLitMax_iff_selectedLogMax
+    {vd : Database} {selected : SetLit} {hi : Int}
+    (hSelect : Semantics.collectSelected vd rowVar (isLogExpr rowVar) = some selected)
+    (hWF : wellFormedTableFields vd) :
+    selectedLitMax selected = some hi ↔ selectedLogMax vd hi := by
+  -- Same structure as selectedLitMin_iff_selectedLogMin with `min` → `max` everywhere.
+  sorry
 
 def archiveLogInsertEffect_with_selected
     (txnId : TxnId) (i : Nat) (selected : SetLit) : SetLanguage.SetExpr :=
