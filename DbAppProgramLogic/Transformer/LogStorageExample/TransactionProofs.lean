@@ -139,6 +139,40 @@ theorem globalValid_readCommitted_of_paperObligations_post
     (fun _ _ => Iff.rfl)
     hLocal hObligations.qstable hObligations.guarantee hCommitPost
 
+/-! ## Snapshot-isolation variants of the bridges
+
+Under SI (`IsolationSpec.snapshot`), the body sees a frozen visible
+database during exec, which lets us discharge the
+"`F` is a function of body-end `globalDb`" requirement of
+`transformerPost`. The isolation-stability condition is satisfied
+when `R` admits no round-trips: if `MultiStep R A B` and
+`MultiStep R B A`, then `A = B`. This is the form in which the paper's
+`stable(R, I_ss)` argument actually holds (p.27:16). -/
+
+def relyNoUndo (R : Rely) : Prop :=
+  ∀ A B, Logic.MultiStep R A B → Logic.MultiStep R B A → A = B
+
+theorem stableIsolation_snapshot_exec_of_noUndo
+    {R : Rely} (hNoUndo : relyNoUndo R) :
+    Logic.stableIsolation R (IsolationSpec.snapshot (σ := Database)).exec := by
+  intro localDb baseDb midDb finalDb hReach hI hR
+  -- hI : IsolationSpec.snapshot.exec localDb baseDb finalDb = (baseDb = finalDb)
+  have hEq : baseDb = finalDb := hI
+  subst hEq
+  have hReachBack : Logic.MultiStep R midDb baseDb := Logic.MultiStep.tail Logic.MultiStep.refl hR
+  have hMidEq : baseDb = midDb := hNoUndo baseDb midDb hReach hReachBack
+  exact ⟨hMidEq, hMidEq.symm⟩
+
+theorem stableIsolation_snapshot_commit_of_noUndo
+    {R : Rely} (hNoUndo : relyNoUndo R) :
+    Logic.stableIsolation R (IsolationSpec.snapshot (σ := Database)).commit := by
+  intro localDb baseDb midDb finalDb hReach hI hR
+  have hEq : baseDb = finalDb := hI
+  subst hEq
+  have hReachBack : Logic.MultiStep R midDb baseDb := Logic.MultiStep.tail Logic.MultiStep.refl hR
+  have hMidEq : baseDb = midDb := hNoUndo baseDb midDb hReach hReachBack
+  exact ⟨hMidEq, hMidEq.symm⟩
+
 abbrev InsertLogPaperObligations (i : Nat) :=
   TxnPaperObligations R_insert (logSystemInvAtNext i) G_insert
     (insertTxnId i) (insertLogBody i)
