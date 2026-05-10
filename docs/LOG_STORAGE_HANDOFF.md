@@ -78,27 +78,38 @@ existing RC bridge works fine for it).
    `selectAllLogTxnSpec`) to `IsolationSpec.snapshot`**. **Done.**
 
 4. **Prove `paperInfer_archiveLogBody_indexed_final`** under the SI
-   rely. Body sorry remains. Under SI, `relyMod R IsolationSpec.snapshot.exec`
-   forces `visibleDb = visibleDb'` for any rely step seen by the body, so
-   stability premises in the PaperInfer constructors are trivial. The
-   structure of the proof:
+   rely. Body sorry remains.
 
-   * Use `PaperInfer.viaLocalValid` with a `LocalValid` proof under SI's
-     local rely (which is silent on visible).
-   * `localValid_of_stutterRely` (`Logic.lean:305`) lifts a `LocalValid`
-     under the `False` rely to one under any silent rely. So we can prove
-     the body's behaviour assuming no env interference at all.
-   * Under no env interference, V_start = V_end. The body's writes
-     deterministically depend on V_start, and F's denotation at V_start
-     matches them by construction (`selectedLogMin/Max` at V_start equal
-     `loVar`/`hi0Var`).
-   * Composition via `localValid_select` / `localValid_ite` /
-     `localValid_letE` / `localValid_seq` / `localValid_insert` /
-     `localValid_delete` gives the body proof piecewise.
+   Structure attempted in this session:
 
-5. **Same for `paperInfer_selectAllLogBody_final`**: use the same
-   structure, `R_select q`'s `relyNoUndo` instead of `R_archive`'s.
-   Body uses nested `.foreach` so use `localValid_foreach{,Start,Done,Next}`.
+   * Outer wrap: `PaperInfer.viaLocalValid` + `localValid_of_stutterRely`
+     reduces to `LocalValid (False rely)` (commits `f6c9b41`, `361d2b4`).
+   * Decomposition via `localValid_select_false` + `localValid_ite_false`
+     (commits `41ceb01`, `9a77047`, `f7b4e3a`).
+
+   **Discovered architectural issue with the decomposition** (commit
+   `ce1dbe5`): `localValid_*_false` body premises are universally
+   quantified over the inner starting state `(ld', vd')`, while our
+   archive body's correctness depends on the OUTER `visibleDb`'s log
+   content (through `selected`). For example, the False branch
+   (`selected = []` ⇒ `.skip`) requires showing `transformerPost empty F`
+   holds at `(∅, vd')` — but this is only true when `vd'` has no logs,
+   which we know about the outer `visibleDb` but cannot transfer to the
+   inner-quantified `vd'`.
+
+   **Forward path**: prove the entire `LocalValid (False rely) ...
+   archiveLogBody (transformerPost empty F)` directly by trace
+   induction (`hMulti`-induction), case-splitting on whether the
+   actual `visibleDb` has log rows. This bypasses the
+   `localValid_*_false` composition rules which can't carry the
+   outer-state knowledge through. Estimated 300-500 lines.
+
+   `collectSelected_empty_no_match` helper (commit `ce1dbe5`) is already
+   in place for the no-logs sub-case.
+
+5. **Same for `paperInfer_selectAllLogBody_final`**: same architectural
+   issue applies. Direct trace induction with case-analysis on visible's
+   storage content.
 
 ## The architectural problem (why naive RC fails here)
 
