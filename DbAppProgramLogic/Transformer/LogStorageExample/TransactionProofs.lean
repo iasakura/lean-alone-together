@@ -945,7 +945,53 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
     -- has its writes pinned to `selected` (lo/hi from selectedLitMin/Max),
     -- so universal LocalValid over (ld', vd') matches Fbody(selected) on both sides.
     intro selected
-    sorry
+    refine PaperInfer.viaLocalValid ?_
+    refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
+    -- Now goal: LocalValid (False rely) txnId
+    --   (transformerPre Iinfer empty) (subst body) (transformerPost empty (Fbody selected))
+    -- Decompose via localValid_ite_false, branching on setNonempty.
+    refine Logic.localValid_ite_false (archiveTxnId i) _ _ _ _ _ ?_ ?_
+    · -- True branch: nonempty selected → archiveCompactBody runs.
+      intro _hEvalTrue
+      sorry
+    · -- False branch: empty selected → .skip. Now Fbody(selected=[]) denotes nothing.
+      intro hEvalFalse
+      have hSelectedEmpty : selected = [] := by
+        cases hSel : selected with
+        | nil => rfl
+        | cons head tail =>
+            exfalso
+            simp [Expr.subst, Expr.eval, Literal.toValue, hSel] at hEvalFalse
+      subst hSelectedEmpty
+      -- Now Fbody [] denotes nothing (selectedLitMin/Max return none for empty).
+      refine Logic.localValid_conseq
+        (P := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
+        (P' := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
+        (Q' := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
+        (fun _ _ h => h)
+        (Logic.localValid_skip_false (archiveTxnId i) _) ?_
+      intro localDb' visibleDb' hPre'
+      -- This is the universal P → Q step. Now Q = transformerPost empty (Fbody []).
+      -- Fbody [] = archiveLogEffect_with_selected _ _ [] denotes nothing because
+      -- selectedLitMin [] / selectedLitMax [] are `none`.
+      rcases hPre' with ⟨hDenote, _hInv⟩
+      have hLocalEmpty : localDb' = [] := by
+        cases localDb' with
+        | nil => rfl
+        | cons row rest =>
+            have := (hDenote row).mpr List.mem_cons_self
+            simp [SetLanguage.denote, SetLanguage.empty] at this
+      subst hLocalEmpty
+      unfold transformerPost
+      intro row
+      have hMinNone : selectedLitMin [] = none := by native_decide
+      simp only [SetLanguage.denote_union, SetLanguage.denote_empty, false_or,
+        List.not_mem_nil, iff_false]
+      simp only [SetLanguage.denote, archiveLogEffect_with_selected,
+        SetLanguage.SetExpr.union, archiveLogInsertEffect_with_selected,
+        archiveLogDeleteEffect_with_selected]
+      rintro (⟨_, _, hMin, _, _⟩ | ⟨_, _, _, _, hMin, _, _, _, _, _, _⟩) <;>
+        rw [hMinNone] at hMin <;> cases hMin
 
 /-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
 (which forces `visibleDb = visibleDb'`). The strengthening lets the guarantee
