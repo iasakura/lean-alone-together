@@ -1700,14 +1700,181 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
   refine Logic.localValid_ite_false (archiveTxnId i) _ _ _ _ _ ?_ ?_
   · -- True branch: nonempty selected. archiveCompactBody[logsVar→selected]
     -- decomposes into letE loVar / letE hi0Var / seq (insert) (delete).
-    intro hEvalTrue
-    have hSelectedNonempty : selected ≠ [] := by
-      intro hSel
-      simp [Expr.eval, Literal.toValue, hSel] at hEvalTrue
-    -- Compute lo = min idField(selected), hi0 = max idField(selected). Both
-    -- exist since selected is nonempty and consists of log rows whose
-    -- idField is the log id.
-    sorry
+    -- Same body structure as via_lazy, but the post uses the direct F
+    -- (archiveLogEffect with selectedLogMin/Max vd). The pinVd combinator
+    -- gives us vd = visibleDb in the Pre, and the selectedLitMin/Max ↔
+    -- selectedLogMin/Max bridges close the gap.
+    intro _hEvalTrue
+    simp only [Command.subst, Expr.subst, archiveCompactBody, archiveDeletePredicate,
+      archiveRecordExpr, isLogExpr, isTableExpr, eqExpr, fieldExpr, andExpr,
+      leExpr, addExpr, if_true, if_false]
+    cases hMinEval :
+        Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) with
+    | none =>
+        exact localValid_letE_none_false (archiveTxnId i) _ _ loVar _ _ hMinEval
+    | some loVal =>
+        refine Logic.localValid_let_false (archiveTxnId i) _ _ loVar _ _ loVal hMinEval ?_
+        cases hMaxEval :
+            Expr.eval (.setMaxField (Expr.lit (Literal.set selected)) idField) with
+        | none =>
+            exact localValid_letE_none_false (archiveTxnId i) _ _ hi0Var _ _ hMaxEval
+        | some hi0Val =>
+            refine Logic.localValid_let_false (archiveTxnId i) _ _ hi0Var _ _ hi0Val hMaxEval ?_
+            simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
+              Expr.substFieldExprs_nil, Expr.subst_lit, Value.subst_toExpr,
+              logsVar, loVar, hi0Var, rowVar, idField, tableField, loField, hiField,
+              show ("logs" : VarName) ≠ "lo" from by decide,
+              show ("logs" : VarName) ≠ "hi0" from by decide,
+              show ("logs" : VarName) ≠ "row" from by decide,
+              show ("lo" : VarName) ≠ "hi0" from by decide,
+              show ("lo" : VarName) ≠ "row" from by decide,
+              show ("hi0" : VarName) ≠ "row" from by decide,
+              if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
+              Expr.int]
+            obtain ⟨lo, hLoVal⟩ := setMinField_lit_eval_int hMinEval
+            obtain ⟨hi0, hHi0Val⟩ := setMaxField_lit_eval_int hMaxEval
+            subst hLoVal
+            subst hHi0Val
+            have hSelMin : selectedLitMin selected = some lo := by
+              simp [selectedLitMin, hMinEval]
+            have hSelMax : selectedLitMax selected = some hi0 := by
+              simp [selectedLitMax, hMaxEval]
+            -- Decompose seq with intermediate post carrying `vd = visibleDb` plus
+            -- the invariant so the delete step has wellFormedness AND the bridge
+            -- can apply (selectedLitMin/Max selected ↔ selectedLogMin/Max vd).
+            refine Logic.localValid_seq_false (archiveTxnId i)
+              (fun ld vd =>
+                transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+                    SetLanguage.empty ld vd ∧ vd = visibleDb)
+              (fun ld vd =>
+                transformerPost SetLanguage.empty
+                    (archiveLogInsertEffect (archiveTxnId i) i) ld vd ∧
+                  logSystemInv vd ∧ archiveKeysFreshFrom i vd ∧ vd = visibleDb)
+              (transformerPost SetLanguage.empty
+                (archiveLogEffect (archiveTxnId i) i))
+              _ _ ?_ ?_
+            · -- Insert step
+              refine Logic.localValid_insert_false (archiveTxnId i) _ _ _ ?_
+              intro ld vd record hPre' hEval _hFresh
+              rcases hPre' with ⟨hPre, hVdEq⟩
+              rcases hPre with ⟨hLocal, hInv⟩
+              refine ⟨?_, hInv.1, hInv.2, hVdEq⟩
+              have hLdEmpty : ld = [] := by
+                cases ld with
+                | nil => rfl
+                | cons row rest =>
+                    have := (hLocal row).mpr List.mem_cons_self
+                    simp [SetLanguage.denote, SetLanguage.empty] at this
+              subst hLdEmpty
+              simp only [Expr.eval, Value.toExpr, Literal.toValue,
+                Expr.evalFieldValues, Bind.bind, Option.bind, Option.some_bind,
+                Pure.pure] at hEval
+              injection hEval with hEval
+              injection hEval with hEval
+              have hRecord : record = archiveRecord i lo (hi0 + 1) := by
+                rw [← hEval]
+                simp [archiveRecord, tableField, idField, loField, hiField]
+              subst hRecord
+              subst hVdEq
+              have hWF : wellFormedTableFields vd := by
+                rcases hInv.1 with ⟨_, _, _, _, hWF⟩
+                exact hWF
+              have hSelLogMin : selectedLogMin vd lo :=
+                (selectedLitMin_iff_selectedLogMin _hSelect hWF).mp hSelMin
+              have hSelLogMax : selectedLogMax vd hi0 :=
+                (selectedLitMax_iff_selectedLogMax _hSelect hWF).mp hSelMax
+              intro row
+              simp only [transformerPost, List.nil_append, List.mem_singleton,
+                SetLanguage.denote, SetLanguage.SetExpr.union, SetLanguage.empty,
+                archiveLogInsertEffect, false_or]
+              constructor
+              · rintro ⟨lo', hi0', hMin', hMax', hOut⟩
+                -- Both selectedLogMin's are about same vd, must agree
+                rcases hMin' with ⟨⟨wA, hwAMem, hwAKey⟩, hMinUB⟩
+                rcases hSelLogMin with ⟨⟨w, hwMem, hwKey⟩, hSelMinUB⟩
+                have h₁ : lo' ≤ lo := hMinUB w lo ⟨hwMem, hwKey⟩
+                have h₂ : lo ≤ lo' := hSelMinUB wA lo' ⟨hwAMem, hwAKey⟩
+                have hLoEq : lo' = lo := by omega
+                rcases hMax' with ⟨⟨wB, hwBMem, hwBKey⟩, hMaxUB⟩
+                rcases hSelLogMax with ⟨⟨w2, hw2Mem, hw2Key⟩, hSelMaxUB⟩
+                have h₃ : hi0 ≤ hi0' := hMaxUB w2 hi0 ⟨hw2Mem, hw2Key⟩
+                have h₄ : hi0' ≤ hi0 := hSelMaxUB wB hi0' ⟨hwBMem, hwBKey⟩
+                have hHiEq : hi0' = hi0 := by omega
+                rw [hLoEq, hHiEq] at hOut
+                exact hOut
+              · intro hRow
+                exact ⟨lo, hi0, hSelLogMin, hSelLogMax, hRow⟩
+            · -- Delete step
+              refine Logic.localValid_delete_false (archiveTxnId i) _ _ _ _ ?_
+              intro ld vd removed hPre' hCollect _hDisjoint
+              rcases hPre' with ⟨hPostIns, hInv, _hKeysFresh, hVdEq⟩
+              subst hVdEq
+              have hWF : wellFormedTableFields vd := by
+                rcases hInv with ⟨_, _, _, _, hWF⟩
+                exact hWF
+              have hSelLogMin : selectedLogMin vd lo :=
+                (selectedLitMin_iff_selectedLogMin _hSelect hWF).mp hSelMin
+              have hSelLogMax : selectedLogMax vd hi0 :=
+                (selectedLitMax_iff_selectedLogMax _hSelect hWF).mp hSelMax
+              simp only [transformerPost, SetLanguage.denote,
+                SetLanguage.SetExpr.union, SetLanguage.empty,
+                archiveLogInsertEffect, archiveLogDeleteEffect,
+                archiveLogEffect, false_or] at hPostIns ⊢
+              intro row
+              rw [List.mem_append]
+              constructor
+              · rintro (hIns | hDel)
+                · rcases hIns with ⟨lo', hi0', hMin', hMax', hOut⟩
+                  rcases hMin' with ⟨⟨wA, hwAMem, hwAKey⟩, hMinUB⟩
+                  obtain ⟨⟨w, hwMem, hwKey⟩, hSelMinUB⟩ := hSelLogMin
+                  obtain ⟨⟨w2, hw2Mem, hw2Key⟩, hSelMaxUB⟩ := hSelLogMax
+                  have h₁ : lo' ≤ lo := hMinUB w lo ⟨hwMem, hwKey⟩
+                  have h₂ : lo ≤ lo' := hSelMinUB wA lo' ⟨hwAMem, hwAKey⟩
+                  have hLoEq : lo' = lo := by omega
+                  rcases hMax' with ⟨⟨wB, hwBMem, hwBKey⟩, hMaxUB⟩
+                  have h₃ : hi0 ≤ hi0' := hMaxUB w2 hi0 ⟨hw2Mem, hw2Key⟩
+                  have h₄ : hi0' ≤ hi0 := hSelMaxUB wB hi0' ⟨hwBMem, hwBKey⟩
+                  have hHiEq : hi0' = hi0 := by omega
+                  rw [hLoEq, hHiEq] at hOut
+                  left
+                  exact (hPostIns row).mp ⟨lo, hi0,
+                    ⟨⟨w, hwMem, hwKey⟩, hSelMinUB⟩,
+                    ⟨⟨w2, hw2Mem, hw2Key⟩, hSelMaxUB⟩, hOut⟩
+                · rcases hDel with ⟨src, n, lo', hi0', hMin', hMax', hSelRow, hLo, hHi, hOut⟩
+                  rcases hMin' with ⟨⟨wA, hwAMem, hwAKey⟩, hMinUB⟩
+                  obtain ⟨⟨w, hwMem, hwKey⟩, hSelMinUB⟩ := hSelLogMin
+                  obtain ⟨⟨w2, hw2Mem, hw2Key⟩, hSelMaxUB⟩ := hSelLogMax
+                  have h₁ : lo' ≤ lo := hMinUB w lo ⟨hwMem, hwKey⟩
+                  have h₂ : lo ≤ lo' := hSelMinUB wA lo' ⟨hwAMem, hwAKey⟩
+                  have hLoEq : lo' = lo := by omega
+                  rcases hMax' with ⟨⟨wB, hwBMem, hwBKey⟩, hMaxUB⟩
+                  have h₃ : hi0 ≤ hi0' := hMaxUB w2 hi0 ⟨hw2Mem, hw2Key⟩
+                  have h₄ : hi0' ≤ hi0 := hSelMaxUB wB hi0' ⟨hwBMem, hwBKey⟩
+                  have hHiEq : hi0' = hi0 := by omega
+                  rw [hLoEq] at hLo
+                  rw [hHiEq] at hHi
+                  rcases hSelRow with ⟨hSrcMem, hSrcKey⟩
+                  right
+                  rw [Semantics.mem_collectDeleted_iff hCollect]
+                  refine ⟨src, hSrcMem, ?_, hOut⟩
+                  have hTab : rowFieldInt? src tableField = some logTable :=
+                    rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem hSrcKey
+                  have hSat :=
+                    (satisfiesPredicate_archiveDelete_iff src lo hi0).mpr
+                      ⟨hTab, n, rowFieldInt?_idField_of_key hSrcKey, hLo, hHi⟩
+                  exact hSat
+              · rintro (hLd | hRem)
+                · left
+                  exact (hPostIns row).mpr hLd
+                · right
+                  rw [Semantics.mem_collectDeleted_iff hCollect] at hRem
+                  rcases hRem with ⟨src, hSrc, hSat, hOut⟩
+                  have hSat' := (satisfiesPredicate_archiveDelete_iff src lo hi0).mp hSat
+                  rcases hSat' with ⟨hTab, n, hId, hLo, hHi⟩
+                  have hKey : src.key? = some (logTable, n) :=
+                    rowKey?_of_table_id_fields hTab hId
+                  exact ⟨src, n, lo, hi0, hSelLogMin, hSelLogMax,
+                    ⟨hSrc, hKey⟩, hLo, hHi, hOut⟩
   · -- False branch: empty selected. Substituted body is .skip.
     intro hEvalFalse
     -- Extract `selected = []` from hEvalFalse.
