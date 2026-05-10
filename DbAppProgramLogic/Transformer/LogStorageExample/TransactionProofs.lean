@@ -938,8 +938,8 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
     (env := emptySymEnv)
     (Fbody := archiveLogEffect_with_selected (archiveTxnId i) i)
     ?_ ?_
-  · -- stability of transformerPre under SI's local rely
-    sorry
+  · -- stability of transformerPre under SI's local rely (silent → trivial)
+    exact transformerPre_stable_relyMod_snapshot _ _
   · -- per-`selected` body PaperInfer
     -- Fbody is parameterised by selected; archiveCompactBody[logsVar→selected]
     -- has its writes pinned to `selected` (lo/hi from selectedLitMin/Max),
