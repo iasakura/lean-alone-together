@@ -427,6 +427,38 @@ theorem relyNoUndo_R_archive : relyNoUndo R_archive := by
 theorem relyNoUndo_R_select (q : Nat) : relyNoUndo (R_select q) := by
   sorry
 
+/-- Under False rely, a `.letE` with non-evaluating expression is stuck — no
+multistep transition leaves it. -/
+private theorem localMultiStep_false_from_letE_none
+    (txnId : TxnId) {x : VarName} {expr : Expr}
+    {body : Semantics.Program}
+    (hNone : Expr.eval expr = none)
+    {localDb visibleDb : Database}
+    {finalCfg : LocalConfig (IsolationSpec Database)}
+    (h : Logic.LocalMultiStep (fun _ _ _ => False) txnId (IsolationSpec Database)
+      ⟨(.letE x expr body : Semantics.Program), localDb, visibleDb⟩ finalCfg) :
+    finalCfg = ⟨(.letE x expr body : Semantics.Program), localDb, visibleDb⟩ := by
+  induction h with
+  | refl => rfl
+  | tail _hPrev hLast ih =>
+      cases ih
+      exfalso
+      rcases Logic.localInterleavedStep_let_inv hLast with ⟨_val, hEval, _⟩ | ⟨_, _, hRely⟩
+      · rw [hEval] at hNone; cases hNone
+      · exact hRely
+
+/-- `LocalValid` for a `.letE` whose expression doesn't evaluate is vacuously
+true under False rely (the body never reaches skip). -/
+private theorem localValid_letE_none_false (txnId : TxnId)
+    (P Q : BiAssertion) (x : VarName) (expr : Expr)
+    (body : Semantics.Program)
+    (hNone : Expr.eval expr = none) :
+    Logic.LocalValid (fun _ _ _ => False) txnId P (.letE x expr body) Q := by
+  intro localDb visibleDb finalCfg _hP hMulti hSkip
+  have hEq := localMultiStep_false_from_letE_none txnId hNone hMulti
+  cases hEq
+  cases hSkip
+
 /-- `collectSelected.go` returning `some []` implies no row in `db` matches. -/
 private theorem collectSelected_go_empty_no_match
     {db : Database} {x : VarName} {predicate : Expr}
@@ -952,8 +984,22 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
     -- Decompose via localValid_ite_false, branching on setNonempty.
     refine Logic.localValid_ite_false (archiveTxnId i) _ _ _ _ _ ?_ ?_
     · -- True branch: nonempty selected → archiveCompactBody runs.
+      -- archiveCompactBody[logsVar→selected] decomposes to:
+      --   letE loVar (setMinField selected idField)
+      --     (letE hi0Var (setMaxField selected idField)
+      --       (seq (insert archiveRow ...) (delete log markers in [lo, hi])))
       intro _hEvalTrue
-      sorry
+      simp only [Command.subst, Expr.subst, archiveCompactBody, archiveDeletePredicate,
+        archiveRecordExpr, isLogExpr, isTableExpr, eqExpr, fieldExpr, andExpr,
+        leExpr, addExpr, if_true, if_false]
+      -- Case on whether setMinField evaluates. If none, body stuck (vacuous).
+      cases hMinEval :
+          Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) with
+      | none =>
+          exact localValid_letE_none_false (archiveTxnId i) _ _ loVar _ _ hMinEval
+      | some loVal =>
+          -- loVal = .scalar (.int lo). Apply localValid_let_false then recurse.
+          sorry
     · -- False branch: empty selected → .skip. Now Fbody(selected=[]) denotes nothing.
       intro hEvalFalse
       have hSelectedEmpty : selected = [] := by
