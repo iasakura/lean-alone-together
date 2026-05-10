@@ -173,18 +173,41 @@ theorem stableIsolation_snapshot_commit_of_noUndo
   have hMidEq : baseDb = midDb := hNoUndo baseDb midDb hReach hReachBack
   exact ⟨hMidEq, hMidEq.symm⟩
 
+/-- Snapshot-isolation variant of `TxnPaperObligations`. The body's
+`PaperInfer` derivation is over SI's local rely (which forces `visibleDb` to
+remain frozen during exec); this is essential for archive-style bodies
+whose writes depend on the body-start snapshot. -/
+structure TxnPaperObligationsSI
+    (R : Rely) (I : Assertion) (G : Guarantee)
+    (txnId : TxnId) (body : Semantics.Program) where
+  effect : SetLanguage.SetExpr
+  infer :
+    PaperInfer
+      (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
+      txnId I SetLanguage.empty body effect
+  qstable :
+    Logic.stableBiAssertion
+      (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).commit)
+      (txnSnapshotPost I R effect)
+  guarantee :
+    ∀ localDb visibleDb,
+      txnSnapshotPost I R effect localDb visibleDb →
+        G visibleDb (Database.flush localDb visibleDb)
+
 /-- Snapshot-isolation variant of `globalValid_readCommitted_of_paperObligations_post`.
 Requires `relyNoUndo R` (no round-trips under R) which discharges the
-isolation-stability conditions for `IsolationSpec.snapshot`. -/
+isolation-stability conditions for `IsolationSpec.snapshot`. The body's
+`PaperInfer` derivation is taken under SI's local rely (so the body sees a
+frozen `visibleDb` during exec). -/
 theorem globalValid_snapshot_of_paperObligations_post
     {R : Rely} {Iinfer Ipre Ipost : Assertion} {G : Guarantee}
     {txnId : TxnId} {body : Semantics.Program}
     (hNoUndo : relyNoUndo R)
-    (_hStableInfer : Logic.stableAssertion R Iinfer)
+    (hStableInfer : Logic.stableAssertion R Iinfer)
     (hStablePre : Logic.stableAssertion R Ipre)
     (hStablePost : Logic.stableAssertion R Ipost)
     (hPreToInfer : ∀ db, Ipre db → Iinfer db)
-    (hObligations : TxnPaperObligations R Iinfer G txnId body)
+    (hObligations : TxnPaperObligationsSI R Iinfer G txnId body)
     (hCommitPost :
       ∀ localDb visibleDb,
         Ipre visibleDb →
@@ -201,33 +224,17 @@ theorem globalValid_snapshot_of_paperObligations_post
     stableIsolation_snapshot_commit_of_noUndo hNoUndo
   have hStableIBi :
       Logic.stableBiAssertion
-        (Logic.relyMod R (IsolationSpec.readCommitted Database).exec)
-        (fun _ visibleDb => Iinfer visibleDb) :=
-    stableBiAssertion_relyMod_of_stableAssertion
-      (IsolationSpec.readCommitted Database) _hStableInfer
-  -- PaperInfer.sound_with_invariant gives a LocalValid under RC's local rely.
-  have hLocalRC :
-      Logic.LocalValid
-        (Logic.relyMod R (IsolationSpec.readCommitted Database).exec)
-        txnId (transformerPre Iinfer SetLanguage.empty) body
-        (transformerPostI Iinfer SetLanguage.empty hObligations.effect) :=
-    PaperInfer.sound_with_invariant hStableIBi hObligations.infer
-  -- Under SI, the local rely is more restrictive: it forces visibleDb = visibleDb'.
-  -- So SI's local rely is a subset of RC's local rely, and LocalValid lifts.
-  have hRelySubset :
-      ∀ localDb v v',
-        Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec localDb v v' →
-          Logic.relyMod R (IsolationSpec.readCommitted Database).exec localDb v v' := by
-    intro localDb v v' hStep
-    rcases hStep with ⟨baseDb, hR, _hI, _hI'⟩
-    exact ⟨baseDb, hR, trivial, trivial⟩
+        (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
+        (fun _ visibleDb => Iinfer visibleDb) := by
+    intro localDb v v' hI hStep
+    rcases hStep with ⟨_baseDb, hR, _, _⟩
+    exact hStableInfer _ _ hI hR
   have hLocalSI :
       Logic.LocalValid
         (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
         txnId (transformerPre Iinfer SetLanguage.empty) body
         (transformerPostI Iinfer SetLanguage.empty hObligations.effect) :=
-    Logic.localValid_of_relySubset hLocalRC hRelySubset
-  -- Convert post to txnSnapshotPost
+    PaperInfer.sound_with_invariant hStableIBi hObligations.infer
   have hLocalInfer :
       Logic.LocalValid
         (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
@@ -248,30 +255,21 @@ theorem globalValid_snapshot_of_paperObligations_post
         ⟨hPre.1, hPreToInfer visibleDb hPre.2⟩)
       hLocalInfer
       (fun _ _ hPost => hPost)
-  -- qstable for txnSnapshotPost was given for RC.commit; need SI.commit version.
-  -- SI.commit's relyMod is also a subset of RC.commit's, so qstable lifts.
-  have hQstableSI :
-      Logic.stableBiAssertion
-        (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).commit)
-        (txnSnapshotPost Iinfer R hObligations.effect) := by
-    intro localDb v v' hPost hStep
-    rcases hStep with ⟨baseDb, hR, _hI, _hI'⟩
-    exact hObligations.qstable _ _ _ hPost ⟨baseDb, hR, trivial, trivial⟩
   exact Logic.txnGlobalValid_of_localValid_post
     hStablePre hStablePost hExecStable hCommitStable
     (fun _ _ => Iff.rfl)
-    hLocal hQstableSI hObligations.guarantee hCommitPost
+    hLocal hObligations.qstable hObligations.guarantee hCommitPost
 
 abbrev InsertLogPaperObligations (i : Nat) :=
   TxnPaperObligations R_insert (logSystemInvAtNext i) G_insert
     (insertTxnId i) (insertLogBody i)
 
 abbrev ArchiveLogPaperObligations (i : Nat) :=
-  TxnPaperObligations R_archive logSystemInv G_archive
+  TxnPaperObligationsSI R_archive logSystemInv G_archive
     (archiveTxnId i) (archiveLogBody i)
 
 abbrev SelectAllLogPaperObligations (q : Nat) :=
-  TxnPaperObligations (R_select q) logSystemInv (G_select q)
+  TxnPaperObligationsSI (R_select q) logSystemInv (G_select q)
     (selectTxnId q) (selectAllLogBody q)
 
 /-! ## Concrete symbolic effects -/
@@ -803,23 +801,22 @@ theorem paperInfer_insertLogBody_indexed_final (i : Nat) :
   paperInfer_insertLogBody_of_stable R_insert (logSystemInvAtNext i)
     (insertTxnId i) i (logSystemInvAtNext_stable_R_insert i)
 
-/-- Indexed `PaperInfer` derivation for `archiveLogBody` against the
-strengthened invariant `logSystemInv ∧ archiveKeysFreshFrom i`. The
-strengthening lets the guarantee bridge know archive-id `i` is fresh in the
-visible database. -/
+/-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
+(which forces `visibleDb = visibleDb'`). The strengthening lets the guarantee
+bridge know archive-id `i` is fresh in the visible database. -/
 theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
     PaperInfer
-      (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).exec)
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
       (archiveTxnId i)
       (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
       SetLanguage.empty (archiveLogBody i)
       (archiveLogEffect (archiveTxnId i) i) := by
   sorry
 
-/-- `PaperInfer` derivation for `selectAllLogBody q`. -/
+/-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely. -/
 theorem paperInfer_selectAllLogBody_final (q : Nat) :
     PaperInfer
-      (Logic.relyMod (R_select q) (IsolationSpec.readCommitted Database).exec)
+      (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
       (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
       (selectAllLogEffect (selectTxnId q) q) := by
   sorry
@@ -835,24 +832,24 @@ theorem insertLogIndexedEffect_qstable_final (i : Nat) :
 
 theorem archiveLogEffect_qstable_final (i : Nat) :
     Logic.stableBiAssertion
-      (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).commit)
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).commit)
       (txnSnapshotPost logSystemInv R_archive (archiveLogEffect (archiveTxnId i) i)) :=
-  txnSnapshotPost_stable_readCommitted logSystemInv R_archive
+  txnSnapshotPost_stable_snapshot logSystemInv R_archive
     (archiveLogEffect (archiveTxnId i) i)
 
 theorem archiveLogIndexedEffect_qstable_final (i : Nat) :
     Logic.stableBiAssertion
-      (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).commit)
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).commit)
       (txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
         R_archive (archiveLogEffect (archiveTxnId i) i)) :=
-  txnSnapshotPost_stable_readCommitted (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+  txnSnapshotPost_stable_snapshot (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
     R_archive (archiveLogEffect (archiveTxnId i) i)
 
 theorem selectAllLogEffect_qstable_final (q : Nat) :
     Logic.stableBiAssertion
-      (Logic.relyMod (R_select q) (IsolationSpec.readCommitted Database).commit)
+      (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).commit)
       (txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)) :=
-  txnSnapshotPost_stable_readCommitted logSystemInv (R_select q)
+  txnSnapshotPost_stable_snapshot logSystemInv (R_select q)
     (selectAllLogEffect (selectTxnId q) q)
 
 /-! ## Generic helpers -/
@@ -2464,12 +2461,12 @@ theorem archiveLogSnapshotPost_preservesArchiveKeysFreshFrom_succ_final (i : Nat
 theorem archiveLogIndexedTxnSpec_of_paperObligations (i : Nat)
     (hInfer :
       PaperInfer
-        (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).exec)
+        (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
         (archiveTxnId i) logSystemInv SetLanguage.empty (archiveLogBody i)
         (archiveLogEffect (archiveTxnId i) i))
     (hQstable :
       Logic.stableBiAssertion
-        (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).commit)
+        (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).commit)
         (txnSnapshotPost logSystemInv R_archive (archiveLogEffect (archiveTxnId i) i)))
     (hGuarantee :
       ∀ localDb visibleDb,
@@ -2507,14 +2504,14 @@ collision means the local archive row purely extends archive coverage). -/
 theorem archiveLogIndexedTxnSpec_of_indexedPaperObligations (i : Nat)
     (hInfer :
       PaperInfer
-        (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).exec)
+        (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
         (archiveTxnId i)
         (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
         SetLanguage.empty (archiveLogBody i)
         (archiveLogEffect (archiveTxnId i) i))
     (hQstable :
       Logic.stableBiAssertion
-        (Logic.relyMod R_archive (IsolationSpec.readCommitted Database).commit)
+        (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).commit)
         (txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
           R_archive (archiveLogEffect (archiveTxnId i) i)))
     (hGuarantee :
@@ -2524,7 +2521,7 @@ theorem archiveLogIndexedTxnSpec_of_indexedPaperObligations (i : Nat)
           G_archive visibleDb (Database.flush localDb visibleDb)) :
     archiveLogIndexedTxnSpec i := by
   let hObligations :
-      TxnPaperObligations R_archive
+      TxnPaperObligationsSI R_archive
         (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) G_archive
         (archiveTxnId i) (archiveLogBody i) :=
     { effect := archiveLogEffect (archiveTxnId i) i

@@ -51,6 +51,18 @@ theorem txnSnapshotPost_stable_readCommitted
   rcases hStep with ⟨_baseDb, hR, _hCommitOld, _hCommitNew⟩
   exact ⟨snapshotDb, hInv, Logic.MultiStep.tail hReach hR, hRows⟩
 
+/-- Same fact under SI's commit isolation: SI's `commit` is `prev = curr`,
+so the relyMod step still produces an `R` step on the visible. -/
+theorem txnSnapshotPost_stable_snapshot
+    (I : Assertion) (R : Rely) (F : SetLanguage.SetExpr) :
+    Logic.stableBiAssertion
+      (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).commit)
+      (txnSnapshotPost I R F) := by
+  intro localDb visibleDb visibleDb' hPost hStep
+  rcases hPost with ⟨snapshotDb, hInv, hReach, hRows⟩
+  rcases hStep with ⟨_baseDb, hR, _hCommitOld, _hCommitNew⟩
+  exact ⟨snapshotDb, hInv, Logic.MultiStep.tail hReach hR, hRows⟩
+
 /-- A current-visible invariant postcondition is a snapshot postcondition with
 the current visible database as the snapshot. -/
 theorem transformerPostI_to_txnSnapshotPost
