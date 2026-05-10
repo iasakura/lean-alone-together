@@ -826,6 +826,68 @@ theorem collectSelected_singleton_true {row : Row} {x : VarName} {predicate : Ex
     collectSelected [row] x predicate = some [row.visible] := by
   simp [collectSelected, collectSelected.go, hPred]
 
+theorem mem_collectSelected_go_iff {db : Database} {x : VarName} {predicate : Expr}
+    {rows : SetLit} {rec : RecordLit}
+    (hCollect : collectSelected.go x predicate db = some rows) :
+    rec ∈ rows ↔
+      ∃ sourceRow, sourceRow ∈ db ∧
+        satisfiesPredicate x predicate sourceRow.visible = some true ∧
+        sourceRow.visible = rec := by
+  induction db generalizing rows with
+  | nil =>
+      simp [collectSelected.go] at hCollect
+      cases hCollect
+      simp
+  | cons head tail ih =>
+      cases hKeep : satisfiesPredicate x predicate head.visible with
+      | none =>
+          have : False := by
+            simpa [collectSelected.go, hKeep] using hCollect
+          exact False.elim this
+      | some keep =>
+          cases keep
+          · have hRest : collectSelected.go x predicate tail = some rows := by
+              simpa [collectSelected.go, hKeep] using hCollect
+            constructor
+            · intro hMem
+              rcases (ih hRest).mp hMem with ⟨sr, hSrMem, hSat, hVis⟩
+              exact ⟨sr, List.mem_cons_of_mem _ hSrMem, hSat, hVis⟩
+            · rintro ⟨sr, hSrMem, hSat, hVis⟩
+              rcases List.mem_cons.mp hSrMem with rfl | hSrTail
+              · rw [hKeep] at hSat; cases hSat
+              · exact (ih hRest).mpr ⟨sr, hSrTail, hSat, hVis⟩
+          · cases hRest : collectSelected.go x predicate tail with
+            | none =>
+                have : False := by
+                  simpa [collectSelected.go, hKeep, hRest] using hCollect
+                exact False.elim this
+            | some rest =>
+                have hRows : head.visible :: rest = rows := by
+                  simpa [collectSelected.go, hKeep, hRest] using hCollect
+                symm at hRows
+                subst hRows
+                constructor
+                · intro hMem
+                  rcases List.mem_cons.mp hMem with hHead | hRest'
+                  · exact ⟨head, List.mem_cons_self, hKeep, hHead.symm⟩
+                  · rcases (ih hRest).mp hRest' with ⟨sr, hSrMem, hSat, hVis⟩
+                    exact ⟨sr, List.mem_cons_of_mem _ hSrMem, hSat, hVis⟩
+                · rintro ⟨sr, hSrMem, hSat, hVis⟩
+                  rcases List.mem_cons.mp hSrMem with rfl | hSrTail
+                  · subst hVis; exact List.mem_cons_self
+                  · exact List.mem_cons_of_mem _ ((ih hRest).mpr ⟨sr, hSrTail, hSat, hVis⟩)
+
+theorem mem_collectSelected_iff {db : Database} {x : VarName} {predicate : Expr}
+    {rows : SetLit} {rec : RecordLit}
+    (hCollect : collectSelected db x predicate = some rows) :
+    rec ∈ rows ↔
+      ∃ sourceRow, sourceRow ∈ db ∧
+        satisfiesPredicate x predicate sourceRow.visible = some true ∧
+        sourceRow.visible = rec := by
+  simpa [collectSelected] using
+    (mem_collectSelected_go_iff (db := db) (x := x) (predicate := predicate)
+      (rows := rows) (rec := rec) hCollect)
+
 theorem collectUpdated_singleton_true {row : Row} {txnId : TxnId} {x : VarName}
     {updateExpr predicate : Expr} {updated : RecordLit}
     (hPred : satisfiesPredicate x predicate row.visible = some true)
