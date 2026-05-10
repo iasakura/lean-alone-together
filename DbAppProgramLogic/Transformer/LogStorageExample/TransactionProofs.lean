@@ -1082,9 +1082,27 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
                 subst hLdEmpty
                 -- record value is archiveRecord i lo (hi0+1)
                 simp only [Expr.eval, Value.toExpr, Literal.toValue,
-                  Expr.evalFieldValues] at hEval
-                -- After all field evaluations, record = archiveRecord i lo (hi0+1)
-                sorry
+                  Expr.evalFieldValues, Bind.bind, Option.bind, Option.some_bind,
+                  Pure.pure] at hEval
+                injection hEval with hEval
+                injection hEval with hEval
+                have hRecord : record = archiveRecord i lo (hi0 + 1) := by
+                  rw [← hEval]
+                  simp [archiveRecord, tableField, idField, loField, hiField]
+                subst hRecord
+                -- Goal: union empty insertEffect at vd ↔ row = archiveRow ... lo (hi0+1)
+                intro row
+                simp only [transformerPost, List.nil_append, List.mem_singleton,
+                  SetLanguage.denote, SetLanguage.SetExpr.union, SetLanguage.empty,
+                  archiveLogInsertEffect_with_selected, false_or]
+                constructor
+                · rintro ⟨lo', hi0', hMin', hMax', hOut⟩
+                  rw [hSelMin] at hMin'
+                  rw [hSelMax] at hMax'
+                  cases hMin'; cases hMax'
+                  exact hOut
+                · intro hRow
+                  exact ⟨lo, hi0, hSelMin, hSelMax, hRow⟩
               · -- Delete step
                 sorry
     · -- False branch: empty selected → .skip. Now Fbody(selected=[]) denotes nothing.
