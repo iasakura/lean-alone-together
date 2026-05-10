@@ -49,10 +49,10 @@ theorem globalValid_readCommitted_of_paperObligations
       G I := by
   have hExecStable :
       Logic.stableIsolation R (IsolationSpec.readCommitted Database).exec := by
-    intro _ _ _ _ _ _; exact ⟨trivial, trivial⟩
+    intro _ _ _ _ _ _ _; exact ⟨trivial, trivial⟩
   have hCommitStable :
       Logic.stableIsolation R (IsolationSpec.readCommitted Database).commit := by
-    intro _ _ _ _ _ _; exact ⟨trivial, trivial⟩
+    intro _ _ _ _ _ _ _; exact ⟨trivial, trivial⟩
   have hStableIBi :
       Logic.stableBiAssertion
         (Logic.relyMod R (IsolationSpec.readCommitted Database).exec)
@@ -98,10 +98,10 @@ theorem globalValid_readCommitted_of_paperObligations_post
       G Ipost := by
   have hExecStable :
       Logic.stableIsolation R (IsolationSpec.readCommitted Database).exec := by
-    intro _ _ _ _ _ _; exact ⟨trivial, trivial⟩
+    intro _ _ _ _ _ _ _; exact ⟨trivial, trivial⟩
   have hCommitStable :
       Logic.stableIsolation R (IsolationSpec.readCommitted Database).commit := by
-    intro _ _ _ _ _ _; exact ⟨trivial, trivial⟩
+    intro _ _ _ _ _ _ _; exact ⟨trivial, trivial⟩
   have hStableIBi :
       Logic.stableBiAssertion
         (Logic.relyMod R (IsolationSpec.readCommitted Database).exec)

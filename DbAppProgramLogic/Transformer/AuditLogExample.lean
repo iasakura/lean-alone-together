@@ -174,12 +174,12 @@ theorem paperInfer_globalValid_auditLogPar_example
       Logic.stableIsolation
         (fun db db' => R db db' ∨ auditAppendsOnly db db')
         (IsolationSpec.readCommitted Database).exec := by
-    intro _ _ _ _ _ _; exact ⟨trivial, trivial⟩
+    intro _ _ _ _ _ _ _; exact ⟨trivial, trivial⟩
   have hCommitIsoStable :
       Logic.stableIsolation
         (fun db db' => R db db' ∨ auditAppendsOnly db db')
         (IsolationSpec.readCommitted Database).commit := by
-    intro _ _ _ _ _ _; exact ⟨trivial, trivial⟩
+    intro _ _ _ _ _ _ _; exact ⟨trivial, trivial⟩
   -- The empty-context precondition is just `localDb = [] ∧ I visibleDb`, so its
   -- stability under any rely-mod step reduces to `I`-stability under `R ∨ G`.
   have hStablePre : ∀ (txnId : TxnId),

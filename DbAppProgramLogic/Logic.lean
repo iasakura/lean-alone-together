@@ -128,9 +128,16 @@ def stableAssertion (R : Rely) (P : Assertion) : Prop :=
 def stableBiAssertion (R : LocalRely) (P : BiAssertion) : Prop :=
   ∀ localDb visibleDb visibleDb', P localDb visibleDb → R localDb visibleDb visibleDb' → P localDb visibleDb'
 
-/-- Stability for isolation relations when the environment takes an intermediate rely step. -/
+/-- Stability for isolation relations when the environment takes an intermediate rely step.
+
+The `MultiStep R baseDb midDb` premise restricts attention to intermediate states `midDb`
+that are actually reachable from `baseDb` via rely steps. Without this restriction, the
+single-step universal form would force `R` to be effectively identity for non-trivial
+`I` such as snapshot isolation; the paper's stability argument for `I_ss`
+(p.27:16 of 1710.09844v2) relies implicitly on reachability/monotonicity. -/
 def stableIsolation (R : Rely) (I : Database → Database → Database → Prop) : Prop :=
   ∀ localDb baseDb midDb finalDb,
+    MultiStep R baseDb midDb →
     I localDb baseDb finalDb →
     R midDb finalDb →
     I localDb baseDb midDb ∧ I localDb midDb finalDb
@@ -155,8 +162,10 @@ theorem stableIsolation_of_relySubset {R R' : Rely}
     (hStable : stableIsolation R I)
     (hSub : ∀ db db', R' db db' → R db db') :
     stableIsolation R' I := by
-  intro localDb baseDb midDb finalDb hI hR'
-  exact hStable _ _ _ _ hI (hSub _ _ hR')
+  intro localDb baseDb midDb finalDb hReach hI hR'
+  have hReach' : MultiStep R baseDb midDb :=
+    MultiStep.mono (fun {_ _} h => hSub _ _ h) hReach
+  exact hStable _ _ _ _ hReach' hI (hSub _ _ hR')
 
 /-- Restrict a global rely by the isolation guard currently required by a running transaction. -/
 def relyMod (R : Rely) (I : Database → Database → Database → Prop) : LocalRely :=
@@ -2279,11 +2288,12 @@ theorem execIsolation_of_future_ready {R : Rely} {txnId : TxnId}
     {cfg₁ cfg₂ : GlobalConfig}
     (hPath : MultiStepFwd (globalInterleavedStep R) cfg₁ cfg₂) :
     ∀ localDb snapshot currentDb currentBody,
+      MultiStep R snapshot currentDb →
       cfg₁ = ⟨(.txnRuntime txnId isolation localDb snapshot currentBody : Semantics.Program), currentDb⟩ →
       currentBody ≠ (Command.skip : Semantics.Program) →
       ReadyToFinish cfg₂ →
       isolation.exec localDb snapshot currentDb := by
-  intro localDb snapshot currentDb currentBody hStart hNotSkip hReady
+  intro localDb snapshot currentDb currentBody hReachSnap hStart hNotSkip hReady
   induction hPath generalizing localDb snapshot currentDb currentBody with
   | refl =>
       cases hStart
@@ -2311,10 +2321,11 @@ theorem execIsolation_of_future_ready {R : Rely} {txnId : TxnId}
                     (.txnRuntime txnId isolation localDb snapshot currentBody : Semantics.Program) := by
                 simpa using hProgram
               subst hMidProgram
+              have hReachSnap' : MultiStep R snapshot dbMid := MultiStep.tail hReachSnap hR
               have hMid :
                   isolation.exec localDb snapshot dbMid := by
-                exact ih localDb snapshot dbMid currentBody rfl hNotSkip hReady
-              exact (hExecStable _ _ _ _ hMid hR).1
+                exact ih localDb snapshot dbMid currentBody hReachSnap' rfl hNotSkip hReady
+              exact (hExecStable _ _ _ _ hReachSnap hMid hR).1
 
 theorem commitIsolation_of_future_ready {R : Rely} {txnId : TxnId}
     {isolation : IsolationSpec Database}
@@ -2322,11 +2333,12 @@ theorem commitIsolation_of_future_ready {R : Rely} {txnId : TxnId}
     {cfg₁ cfg₂ : GlobalConfig}
     (hPath : MultiStepFwd (globalInterleavedStep R) cfg₁ cfg₂) :
     ∀ localDb snapshot currentDb,
+      MultiStep R snapshot currentDb →
       cfg₁ = ⟨(.txnRuntime txnId isolation localDb snapshot (Command.skip : Semantics.Program)
         : Semantics.Program), currentDb⟩ →
       ReadyToFinish cfg₂ →
       isolation.commit localDb snapshot currentDb := by
-  intro localDb snapshot currentDb hStart hReady
+  intro localDb snapshot currentDb hReachSnap hStart hReady
   induction hPath generalizing localDb snapshot currentDb with
   | refl =>
       cases hStart
@@ -2353,10 +2365,11 @@ theorem commitIsolation_of_future_ready {R : Rely} {txnId : TxnId}
                       : Semantics.Program) := by
                 simpa using hProgram
               subst hMidProgram
+              have hReachSnap' : MultiStep R snapshot dbMid := MultiStep.tail hReachSnap hR
               have hMid :
                   isolation.commit localDb snapshot dbMid := by
-                exact ih localDb snapshot dbMid rfl hReady
-              exact (hCommitStable _ _ _ _ hMid hR).1
+                exact ih localDb snapshot dbMid hReachSnap' rfl hReady
+              exact (hCommitStable _ _ _ _ hReachSnap hMid hR).1
 
 theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
     {I : Assertion} {isolation : IsolationSpec Database} {body : Semantics.Program}
@@ -2373,6 +2386,7 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
     ∀ {cfg₁ cfg₂ : GlobalConfig},
       MultiStepFwd (globalInterleavedStep R) cfg₁ cfg₂ →
       ∀ localDb snapshot currentDb currentBody,
+        MultiStep R snapshot currentDb →
         cfg₁ =
           ⟨(.txnRuntime txnId isolation localDb snapshot currentBody : Semantics.Program), currentDb⟩ →
         ReadyToFinish cfg₂ →
@@ -2398,7 +2412,7 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
   intro cfg₁ cfg₂ hPath
   induction hPath with
   | refl =>
-      intro localDb snapshot currentDb currentBody hStart hReady hIcurrent hState
+      intro localDb snapshot currentDb currentBody hReachSnap hStart hReady hIcurrent hState
       cases hStart
       rcases hReady with hSkip | ⟨txnId', isolation', localDb', snapshot', hProgram, _⟩
       · cases hSkip
@@ -2407,7 +2421,7 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
         subst hBodySkip
         exact ⟨hIcurrent, by simpa using hState⟩
   | @cons cfgStart cfgMid cfgFinal hStep hRest ih =>
-      intro localDb snapshot currentDb currentBody hStart hReady hIcurrent hState
+      intro localDb snapshot currentDb currentBody hReachSnap hStart hReady hIcurrent hState
       cases hStart
       cases hStep with
       | inl hActual =>
@@ -2430,6 +2444,8 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
                       ⟨body', localDb', currentDb⟩ := by
                   exact MultiStep.tail hLocalPath
                     (localInterleavedStep_of_localStep (relyMod R isolation.exec) txnId hLocal)
+                -- After exec step, snapshot is updated to currentDb, and the new snapshot
+                -- equals the new currentDb (which is still currentDb), so hReachSnap is refl.
                 by_cases hNextSkip : body' = (Command.skip : Semantics.Program)
                 · have hStartP : P [] startDb := by
                     exact (hPre [] startDb).2 ⟨rfl, hStartI⟩
@@ -2440,9 +2456,9 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
                       hStartP
                       hLocalPath'
                       rfl
-                  exact ih localDb' currentDb currentDb (Command.skip : Semantics.Program) rfl
-                    hReady hIcurrent (by simpa using hQ')
-                · exact ih localDb' currentDb currentDb body' rfl hReady hIcurrent
+                  exact ih localDb' currentDb currentDb (Command.skip : Semantics.Program)
+                    MultiStep.refl rfl hReady hIcurrent (by simpa using hQ')
+                · exact ih localDb' currentDb currentDb body' MultiStep.refl rfl hReady hIcurrent
                     (by simpa [hNextSkip] using hLocalPath')
           · rcases hCommit with ⟨hBodySkip, hProgram, hDbEq, _hCommitGuard⟩
             cases cfgMid with
@@ -2468,21 +2484,23 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
               subst hEqProgram
               have hIcurrent' : I dbMid := by
                 exact hStableI _ _ hIcurrent hR
+              have hReachSnap' : MultiStep R snapshot dbMid := MultiStep.tail hReachSnap hR
               by_cases hBodySkip : currentBody = (Command.skip : Semantics.Program)
               · have hQ : Q localDb currentDb := by
                   simpa [hBodySkip] using hState
                 subst hBodySkip
                 have hCommitMid : isolation.commit localDb snapshot dbMid := by
-                  exact commitIsolation_of_future_ready hCommitStable hRest localDb snapshot dbMid rfl hReady
+                  exact commitIsolation_of_future_ready hCommitStable hRest localDb snapshot dbMid
+                    hReachSnap' rfl hReady
                 have hCommitCurrent : isolation.commit localDb snapshot currentDb := by
-                  exact (hCommitStable _ _ _ _ hCommitMid hR).1
+                  exact (hCommitStable _ _ _ _ hReachSnap hCommitMid hR).1
                 have hCommitRely :
                     relyMod R isolation.commit localDb currentDb dbMid := by
                   exact ⟨snapshot, hR, hCommitCurrent, hCommitMid⟩
                 have hQ' : Q localDb dbMid := by
                   exact hQStable _ _ _ hQ hCommitRely
-                exact ih localDb snapshot dbMid (Command.skip : Semantics.Program) rfl hReady hIcurrent'
-                  (by simpa using hQ')
+                exact ih localDb snapshot dbMid (Command.skip : Semantics.Program) hReachSnap' rfl
+                  hReady hIcurrent' (by simpa using hQ')
               · have hLocalPath :
                     LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                       ⟨body, [], startDb⟩
@@ -2490,9 +2508,9 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
                   simpa [hBodySkip] using hState
                 have hExecMid : isolation.exec localDb snapshot dbMid := by
                   exact execIsolation_of_future_ready hExecStable hRest
-                    localDb snapshot dbMid currentBody rfl hBodySkip hReady
+                    localDb snapshot dbMid currentBody hReachSnap' rfl hBodySkip hReady
                 have hExecCurrent : isolation.exec localDb snapshot currentDb := by
-                  exact (hExecStable _ _ _ _ hExecMid hR).1
+                  exact (hExecStable _ _ _ _ hReachSnap hExecMid hR).1
                 have hExecRely :
                     relyMod R isolation.exec localDb currentDb dbMid := by
                   exact ⟨snapshot, hR, hExecCurrent, hExecMid⟩
@@ -2501,7 +2519,7 @@ theorem txnRuntimeFwd_sound {R : Rely} {txnId : TxnId}
                       ⟨body, [], startDb⟩
                       ⟨currentBody, localDb, dbMid⟩ := by
                   exact MultiStep.tail hLocalPath (Or.inr ⟨rfl, rfl, hBodySkip, hExecRely⟩)
-                exact ih localDb snapshot dbMid currentBody rfl hReady hIcurrent'
+                exact ih localDb snapshot dbMid currentBody hReachSnap' rfl hReady hIcurrent'
                   (by simpa [hBodySkip] using hLocalPath')
 
 theorem txnProgramFwd_sound {R : Rely} {txnId : TxnId}
@@ -2561,7 +2579,8 @@ theorem txnProgramFwd_sound {R : Rely} {txnId : TxnId}
                 have hRun :=
                   txnRuntimeFwd_sound hStableI hExecStable hPre hBody hCommitStable
                     hCommitIsoStable hGuarantee hPreserve hI
-                    hRest [] currentDb currentDb (Command.skip : Semantics.Program) rfl hReady hI
+                    hRest [] currentDb currentDb (Command.skip : Semantics.Program)
+                    MultiStep.refl rfl hReady hI
                     (by simpa using hQ)
                 cases hFinalProgram : cfgFinal.program with
                 | txnRuntime txnId' isolation' localDb snapshot body' =>
@@ -2596,7 +2615,7 @@ theorem txnProgramFwd_sound {R : Rely} {txnId : TxnId}
               · have hRun :=
                   txnRuntimeFwd_sound hStableI hExecStable hPre hBody hCommitStable
                     hCommitIsoStable hGuarantee hPreserve hI
-                    hRest [] currentDb currentDb body rfl hReady hI
+                    hRest [] currentDb currentDb body MultiStep.refl rfl hReady hI
                     (by simpa [hBodySkip] using (MultiStep.refl :
                       LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                         ⟨body, [], currentDb⟩
@@ -2659,6 +2678,7 @@ theorem txnRuntimeFwd_sound_post {R : Rely} {txnId : TxnId}
     ∀ {cfg₁ cfg₂ : GlobalConfig},
       MultiStepFwd (globalInterleavedStep R) cfg₁ cfg₂ →
       ∀ localDb snapshot currentDb currentBody,
+        MultiStep R snapshot currentDb →
         cfg₁ =
           ⟨(.txnRuntime txnId isolation localDb snapshot currentBody : Semantics.Program), currentDb⟩ →
         ReadyToFinish cfg₂ →
@@ -2684,7 +2704,7 @@ theorem txnRuntimeFwd_sound_post {R : Rely} {txnId : TxnId}
   intro cfg₁ cfg₂ hPath
   induction hPath with
   | refl =>
-      intro localDb snapshot currentDb currentBody hStart hReady hIcurrent hState
+      intro localDb snapshot currentDb currentBody hReachSnap hStart hReady hIcurrent hState
       cases hStart
       rcases hReady with hSkip | ⟨txnId', isolation', localDb', snapshot', hProgram, _⟩
       · cases hSkip
@@ -2693,7 +2713,7 @@ theorem txnRuntimeFwd_sound_post {R : Rely} {txnId : TxnId}
         subst hBodySkip
         exact ⟨hIcurrent, by simpa using hState⟩
   | @cons cfgStart cfgMid cfgFinal hStep hRest ih =>
-      intro localDb snapshot currentDb currentBody hStart hReady hIcurrent hState
+      intro localDb snapshot currentDb currentBody hReachSnap hStart hReady hIcurrent hState
       cases hStart
       cases hStep with
       | inl hActual =>
@@ -2726,9 +2746,9 @@ theorem txnRuntimeFwd_sound_post {R : Rely} {txnId : TxnId}
                       hStartP
                       hLocalPath'
                       rfl
-                  exact ih localDb' currentDb currentDb (Command.skip : Semantics.Program) rfl
-                    hReady hIcurrent (by simpa using hQ')
-                · exact ih localDb' currentDb currentDb body' rfl hReady hIcurrent
+                  exact ih localDb' currentDb currentDb (Command.skip : Semantics.Program)
+                    MultiStep.refl rfl hReady hIcurrent (by simpa using hQ')
+                · exact ih localDb' currentDb currentDb body' MultiStep.refl rfl hReady hIcurrent
                     (by simpa [hNextSkip] using hLocalPath')
           · rcases hCommit with ⟨hBodySkip, hProgram, hDbEq, _hCommitGuard⟩
             cases cfgMid with
@@ -2755,21 +2775,23 @@ theorem txnRuntimeFwd_sound_post {R : Rely} {txnId : TxnId}
               subst hEqProgram
               have hIcurrent' : Ipre dbMid := by
                 exact hStableIpre _ _ hIcurrent hR
+              have hReachSnap' : MultiStep R snapshot dbMid := MultiStep.tail hReachSnap hR
               by_cases hBodySkip : currentBody = (Command.skip : Semantics.Program)
               · have hQ : Q localDb currentDb := by
                   simpa [hBodySkip] using hState
                 subst hBodySkip
                 have hCommitMid : isolation.commit localDb snapshot dbMid := by
-                  exact commitIsolation_of_future_ready hCommitStable hRest localDb snapshot dbMid rfl hReady
+                  exact commitIsolation_of_future_ready hCommitStable hRest localDb snapshot dbMid
+                    hReachSnap' rfl hReady
                 have hCommitCurrent : isolation.commit localDb snapshot currentDb := by
-                  exact (hCommitStable _ _ _ _ hCommitMid hR).1
+                  exact (hCommitStable _ _ _ _ hReachSnap hCommitMid hR).1
                 have hCommitRely :
                     relyMod R isolation.commit localDb currentDb dbMid := by
                   exact ⟨snapshot, hR, hCommitCurrent, hCommitMid⟩
                 have hQ' : Q localDb dbMid := by
                   exact hQStable _ _ _ hQ hCommitRely
-                exact ih localDb snapshot dbMid (Command.skip : Semantics.Program) rfl hReady hIcurrent'
-                  (by simpa using hQ')
+                exact ih localDb snapshot dbMid (Command.skip : Semantics.Program) hReachSnap' rfl
+                  hReady hIcurrent' (by simpa using hQ')
               · have hLocalPath :
                     LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                       ⟨body, [], startDb⟩
@@ -2777,9 +2799,9 @@ theorem txnRuntimeFwd_sound_post {R : Rely} {txnId : TxnId}
                   simpa [hBodySkip] using hState
                 have hExecMid : isolation.exec localDb snapshot dbMid := by
                   exact execIsolation_of_future_ready hExecStable hRest
-                    localDb snapshot dbMid currentBody rfl hBodySkip hReady
+                    localDb snapshot dbMid currentBody hReachSnap' rfl hBodySkip hReady
                 have hExecCurrent : isolation.exec localDb snapshot currentDb := by
-                  exact (hExecStable _ _ _ _ hExecMid hR).1
+                  exact (hExecStable _ _ _ _ hReachSnap hExecMid hR).1
                 have hExecRely :
                     relyMod R isolation.exec localDb currentDb dbMid := by
                   exact ⟨snapshot, hR, hExecCurrent, hExecMid⟩
@@ -2788,7 +2810,7 @@ theorem txnRuntimeFwd_sound_post {R : Rely} {txnId : TxnId}
                       ⟨body, [], startDb⟩
                       ⟨currentBody, localDb, dbMid⟩ := by
                   exact MultiStep.tail hLocalPath (Or.inr ⟨rfl, rfl, hBodySkip, hExecRely⟩)
-                exact ih localDb snapshot dbMid currentBody rfl hReady hIcurrent'
+                exact ih localDb snapshot dbMid currentBody hReachSnap' rfl hReady hIcurrent'
                   (by simpa [hBodySkip] using hLocalPath')
 
 theorem txnProgramFwd_sound_post {R : Rely} {txnId : TxnId}
@@ -2850,7 +2872,8 @@ theorem txnProgramFwd_sound_post {R : Rely} {txnId : TxnId}
                 have hRun :=
                   txnRuntimeFwd_sound_post hStableIpre hStableIpost hExecStable hPre hBody
                     hCommitStable hCommitIsoStable hCommitPost hI
-                    hRest [] currentDb currentDb (Command.skip : Semantics.Program) rfl hReady hI
+                    hRest [] currentDb currentDb (Command.skip : Semantics.Program)
+                    MultiStep.refl rfl hReady hI
                     (by simpa using hQ)
                 cases hFinalProgram : cfgFinal.program with
                 | txnRuntime txnId' isolation' localDb snapshot body' =>
@@ -2885,7 +2908,7 @@ theorem txnProgramFwd_sound_post {R : Rely} {txnId : TxnId}
               · have hRun :=
                   txnRuntimeFwd_sound_post hStableIpre hStableIpost hExecStable hPre hBody
                     hCommitStable hCommitIsoStable hCommitPost hI
-                    hRest [] currentDb currentDb body rfl hReady hI
+                    hRest [] currentDb currentDb body MultiStep.refl rfl hReady hI
                     (by simpa [hBodySkip] using (MultiStep.refl :
                       LocalMultiStep (relyMod R isolation.exec) txnId (IsolationSpec Database)
                         ⟨body, [], currentDb⟩
@@ -3341,7 +3364,7 @@ theorem stableBiAssertion_false (P : BiAssertion) :
 
 theorem stableIsolation_false (I : Database → Database → Database → Prop) :
     stableIsolation (fun _ _ => False) I := by
-  intro localDb baseDb midDb finalDb hI hFalse
+  intro localDb baseDb midDb finalDb _hReach hI hFalse
   exact False.elim hFalse
 
 end Logic

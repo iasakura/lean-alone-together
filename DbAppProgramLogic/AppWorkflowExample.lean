@@ -321,11 +321,11 @@ theorem creditInterest_handlerRefines :
     creditInterestBody
     ledgerInvariant_stable_creditInterestRely
     (by
-      intro localDb baseDb midDb finalDb _ _hR
+      intro localDb baseDb midDb finalDb _ _ _hR
       constructor <;> simp [IsolationSpec.readCommitted])
     creditInterest_localValid
     (by
-      intro localDb baseDb midDb finalDb _ _hR
+      intro localDb baseDb midDb finalDb _ _ _hR
       constructor <;> simp [IsolationSpec.readCommitted])
     creditInterest_commitStable
     creditInterest_guarantee_ok
@@ -342,11 +342,11 @@ theorem recordWithdrawal_handlerRefines :
     recordWithdrawalBody
     ledgerInvariant_stable_recordWithdrawalRely
     (by
-      intro localDb baseDb midDb finalDb _ _hR
+      intro localDb baseDb midDb finalDb _ _ _hR
       constructor <;> simp [IsolationSpec.readCommitted])
     recordWithdrawal_localValid
     (by
-      intro localDb baseDb midDb finalDb _ _hR
+      intro localDb baseDb midDb finalDb _ _ _hR
       constructor <;> simp [IsolationSpec.readCommitted])
     recordWithdrawal_commitStable
     recordWithdrawal_guarantee_ok
