@@ -137,11 +137,23 @@ inductive PaperInfer (R : LocalRely) (txnId : TxnId) (I : Assertion) :
   effect existentially quantifies `selected` against the runtime
   globalDb. This avoids the universal-quantification mismatch caused by
   baking `selected` into the body via `Command.subst` while the outer
-  `F` still recomputes the aggregate from globalDb. -/
+  `F` still recomputes the aggregate from globalDb.
+
+  `hFbodyInvariant` accommodates the gap between the paper's
+  `Database`-indexed state transformer and our `SetDenotation`-indexed
+  `SetExpr`: since `globalDb : Row → Prop` loses list order and
+  multiplicity, the existential `∃ visibleDb` lets multiple set-equivalent
+  list witnesses — and hence `collectSelected` results that differ as
+  `SetLit`s but agree as sets. We require `Fbody` to depend only on the
+  set of records in `selected` (not order/multiplicity). -/
   | selectLazy
       {Fctxt : SetExpr} {Fbody : SetLit → SetExpr} {env : SymEnv}
       {binder source : VarName} {predicate : Expr} {body : Semantics.Program}
       (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+      (hFbodyInvariant :
+        ∀ s₁ s₂ : SetLit,
+          (∀ r, r ∈ s₁ ↔ r ∈ s₂) →
+          Fbody s₁ = Fbody s₂)
       (hBody :
         ∀ selected,
           PaperInfer R txnId I Fctxt
