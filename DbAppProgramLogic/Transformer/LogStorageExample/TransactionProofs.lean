@@ -998,8 +998,22 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
       | none =>
           exact localValid_letE_none_false (archiveTxnId i) _ _ loVar _ _ hMinEval
       | some loVal =>
-          -- loVal = .scalar (.int lo). Apply localValid_let_false then recurse.
-          sorry
+          -- loVal = .scalar (.int lo). Apply localValid_let_false then recurse to hi0Var.
+          refine Logic.localValid_let_false (archiveTxnId i) _ _ loVar _ _ loVal hMinEval ?_
+          -- Now goal has Command.subst loVar loVal.toExpr (inner letE).
+          cases hMaxEval :
+              Expr.eval (.setMaxField (Expr.lit (Literal.set selected)) idField) with
+          | none =>
+              -- Substituted body is `.letE hi0Var (.setMaxField ...) ...`. Eval is hMaxEval.
+              -- But wait — Command.subst loVar loVal.toExpr replaces loVar in the body, not the
+              -- expr of inner letE which references hi0Var. So the inner letE's expr is unchanged
+              -- (setMaxField doesn't reference loVar).
+              exact localValid_letE_none_false (archiveTxnId i) _ _ hi0Var _ _ hMaxEval
+          | some hi0Val =>
+              refine Logic.localValid_let_false (archiveTxnId i) _ _ hi0Var _ _ hi0Val hMaxEval ?_
+              -- Now goal: LocalValid for the .seq (insert; delete) (after both substs).
+              -- localValid_seq_false → insert + delete.
+              sorry
     · -- False branch: empty selected → .skip. Now Fbody(selected=[]) denotes nothing.
       intro hEvalFalse
       have hSelectedEmpty : selected = [] := by
