@@ -26,35 +26,38 @@ RC and wants to retry RC in a separate session.
 
 ## What's still needed for the SI bridge
 
-1. **Prove `relyNoUndo R_archive`** (and `relyNoUndo (R_select q)` if
-   the select pivot is desired).
+1. **Resolve the list-equality vs content-equality gap for
+   `relyNoUndo`.**
 
-   Sketch for `R_archive = G_insert ∨ ∃ q, G_select q`: under any
-   `R_archive` step, `next` is non-decreasing (G_insert strictly
-   advances; G_select preserves via `sameStorageShape`). Result rows
-   for any q can only grow under R_archive (G_select adds, G_insert
-   preserves via `sameResultRows`). With both directions multistepping,
-   `next` and result rows must be equal at both ends, forcing all
-   intermediate steps to be no-op. Then `db = db'` follows from the
-   record-set equality on storage + result tables.
+   `relyNoUndo R := ∀ A B, MultiStep R A B → MultiStep R B A → A = B`
+   uses *list* equality on `Database = List Row`. R_archive's
+   guarantees `G_insert` and `G_select q` are stated as shape
+   predicates over rows (storageShape, sameResultRowsExcept, etc.)
+   that do *not* pin down list structure. In particular,
+   `G_select q (A, A.permute)` holds with `k = 0` for any
+   permutation, so `relyNoUndo R_archive` is **false in general**:
+   take any non-trivial permutation pair.
 
-   Note `R_select q = G_insert ∨ G_archive`: G_archive is *not*
-   monotonic in row-set (it adds delete markers; flush would remove
-   logs, but that's at commit). For SI purposes, G_archive's effect
-   on visible during another worker's body run is the post-flush
-   state, which removes log rows. So `R_select` may NOT satisfy
-   `relyNoUndo`. SI for select probably requires a separate
-   argument or accepting it can't be done.
+   Resolutions, in order of likely tractability:
+
+   1. **Tighten `G_insert` / `G_select`** to require list-structural
+      properties (e.g., "newDb is oldDb ++ [logRow]" for G_insert;
+      "newDb is oldDb ++ [resultRows]" for G_select). This still
+      doesn't capture flush's clobber semantics for the counter
+      row in insert, so it may need to be even more specific
+      ("newDb is oldDb minus old counter + [newCounter, logRow]").
+   2. **Weaken `IsolationSpec.snapshot.exec` from `prev = curr` to
+      content equality**, then weaken `relyNoUndo` accordingly.
+      `IsolationSpec` lives in `Semantics.lean` so this is a more
+      upstream change.
+   3. **Bypass `stableIsolation` for SI** entirely: write a custom
+      `txnGlobalValid_of_localValid_post_si` that takes a different
+      stability hypothesis. Largest refactor of the three.
 
 2. **Build `globalValid_snapshot_of_paperObligations_post`** (and
-   `_pre` variant) using the new stability lemmas.
-
-   Pattern after `globalValid_readCommitted_of_paperObligations_post`
-   (`TransactionProofs.lean:83`); replace
-   `IsolationSpec.readCommitted Database` with `IsolationSpec.snapshot`,
-   replace the trivial `stableIsolation` proofs with applications of
-   `stableIsolation_snapshot_exec_of_noUndo` /
-   `stableIsolation_snapshot_commit_of_noUndo` fed by step (1).
+   `_pre` variant) using the new stability lemmas. **Done in this
+   session** (commit `13e2b8d`); takes `relyNoUndo R` as a hypothesis
+   and produces `Logic.GlobalValid Ipre R (.txn txnId IsolationSpec.snapshot body) G Ipost`.
 
 3. **Switch `archiveLogIndexedTxnSpec` (and possibly
    `selectAllLogTxnSpec`) to `IsolationSpec.snapshot`** in
