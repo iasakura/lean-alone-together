@@ -414,6 +414,34 @@ private theorem satisfiesPredicate_archiveDelete_iff (src : Row) (lo hi0 : Int) 
               simp [hLo, hHi]
           · simp [hTab]
 
+/-- Under `collectSelected vd "row" isLogExpr = some selected` and
+wellFormedness, membership in `selected` corresponds to log rows in `vd`. -/
+private theorem mem_selected_iff_log_row
+    {vd : Database} {selected : SetLit}
+    (hSelect : Semantics.collectSelected vd rowVar (isLogExpr rowVar) = some selected)
+    (hWF : wellFormedTableFields vd) (rec : RecordLit) :
+    rec ∈ selected ↔
+      ∃ row, row ∈ vd ∧ (∃ n : Int, row.key? = some (logTable, n)) ∧
+        row.visible = rec := by
+  rw [Semantics.mem_collectSelected_iff hSelect]
+  constructor
+  · rintro ⟨sr, hSrMem, hSat, hVis⟩
+    have hTab : rowFieldInt? sr tableField = some logTable :=
+      (satisfiesPredicate_isTableExpr_iff sr logTable).mp hSat
+    have hKey : ∃ n, sr.key? = some (logTable, n) := by
+      rcases hWF sr hSrMem with ⟨t, n, hSrKey, hSrTab⟩
+      rw [hSrTab] at hTab
+      have hTEq : t = logTable := Option.some.inj hTab
+      exact ⟨n, hTEq ▸ hSrKey⟩
+    exact ⟨sr, hSrMem, hKey, hVis⟩
+  · rintro ⟨sr, hSrMem, ⟨n, hKey⟩, hVis⟩
+    have hTab : rowFieldInt? sr tableField = some logTable :=
+      rowFieldInt?_tableField_of_key_wellFormed hWF hSrMem hKey
+    have hSat : Semantics.satisfiesPredicate rowVar (isLogExpr rowVar) sr.visible =
+        some true :=
+      (satisfiesPredicate_isTableExpr_iff sr logTable).mpr hTab
+    exact ⟨sr, hSrMem, hSat, hVis⟩
+
 def archiveLogInsertEffect_with_selected
     (txnId : TxnId) (i : Nat) (selected : SetLit) : SetLanguage.SetExpr :=
   fun _localDb _globalDb out =>
