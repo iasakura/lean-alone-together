@@ -835,7 +835,30 @@ theorem paperInfer_insertLogBody_indexed_final (i : Nat) :
 
 /-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
 (which forces `visibleDb = visibleDb'`). The strengthening lets the guarantee
-bridge know archive-id `i` is fresh in the visible database. -/
+bridge know archive-id `i` is fresh in the visible database.
+
+Proof structure (skeleton):
+
+  refine PaperInfer.viaLocalValid ?_
+  apply Logic.localValid_of_stutterRely _ relyMod_snapshot_exec_silent
+  -- LocalValid (False rely) ... archiveLogBody (transformerPost empty F)
+
+Body decomposition:
+
+  archiveLogBody i = .select logsVar rowVar (isLogExpr rowVar)
+                       (.ite (.setNonempty (.var logsVar))
+                          (archiveCompactBody i) .skip)
+
+Under False rely, env doesn't fire. After `.select`, `selected` is V_start's
+log rows (V_end = V_start since no env interference). Then `.ite` branches:
+
+  * non-empty: `archiveCompactBody[logsVar→selected]` runs, producing
+    archiveRow + log delete markers. F's denotation at V_start matches.
+  * empty: `.skip`, no writes. F's denotation at V_start is empty
+    (selectedLogMin/Max existentials fail).
+
+The full proof requires composing `localValid_*_false` rules through the
+nested structure. That is the remaining substantial work for this sorry. -/
 theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
     PaperInfer
       (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
@@ -843,14 +866,20 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
       (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
       SetLanguage.empty (archiveLogBody i)
       (archiveLogEffect (archiveTxnId i) i) := by
+  refine PaperInfer.viaLocalValid ?_
+  refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
   sorry
 
-/-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely. -/
+/-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely.
+Same skeleton as archive's: `viaLocalValid + localValid_of_stutterRely`,
+then compose `localValid_*_false` through `.select`/`.foreach`/`.ite`/`.insert`. -/
 theorem paperInfer_selectAllLogBody_final (q : Nat) :
     PaperInfer
       (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
       (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
       (selectAllLogEffect (selectTxnId q) q) := by
+  refine PaperInfer.viaLocalValid ?_
+  refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
   sorry
 
 /-- Commit-stability for the indexed insert effect. -/
