@@ -15,12 +15,16 @@ local and global databases, rather than as a separate deep AST.
 abbrev SetDenotation := Row → Prop
 
 /-- Runtime environment retained for formula evaluation and the first-order bridge. The symbolic
-set language itself only reads the distinguished local/global databases via `denote`. -/
+set language itself only reads the distinguished local/global databases via `denote`.
+
+The local and global databases are stored as `Database` (= `List Row`) — paper Fig.8 ST-SELECT
+requires order-and-multiplicity information at evaluation time so that operations like
+`collectSelected` produce a deterministic result. -/
 structure Env where
   elemVars : List (VarName × Row) := []
-  setVars : List (VarName × SetDenotation) := []
-  localDb : SetDenotation := fun _ => False
-  globalDb : SetDenotation := fun _ => False
+  setVars : List (VarName × Database) := []
+  localDb : Database := []
+  globalDb : Database := []
 
 namespace Env
 
@@ -28,25 +32,24 @@ def lookupElemList? : List (VarName × Row) → VarName → Option Row
   | [], _ => none
   | (y, row) :: rest, x => if y = x then some row else lookupElemList? rest x
 
-def lookupSetList? : List (VarName × SetDenotation) → VarName → Option SetDenotation
+def lookupSetList? : List (VarName × Database) → VarName → Option Database
   | [], _ => none
   | (y, rows) :: rest, x => if y = x then some rows else lookupSetList? rest x
 
 def lookupElem? (ρ : Env) (x : VarName) : Option Row :=
   lookupElemList? ρ.elemVars x
 
-def lookupSet? (ρ : Env) (x : VarName) : Option SetDenotation :=
+def lookupSet? (ρ : Env) (x : VarName) : Option Database :=
   lookupSetList? ρ.setVars x
 
 def bindElem (ρ : Env) (x : VarName) (row : Row) : Env :=
   { ρ with elemVars := (x, row) :: ρ.elemVars }
 
-def bindSet (ρ : Env) (x : VarName) (rows : SetDenotation) : Env :=
+def bindSet (ρ : Env) (x : VarName) (rows : Database) : Env :=
   { ρ with setVars := (x, rows) :: ρ.setVars }
 
 def ofDatabases (localDb globalDb : Database) : Env :=
-  { localDb := fun row => row ∈ localDb
-    globalDb := fun row => row ∈ globalDb }
+  { localDb := localDb, globalDb := globalDb }
 
 @[simp] theorem lookupElem_bindElem_eq (ρ : Env) (x : VarName) (row : Row) :
     (ρ.bindElem x row).lookupElem? x = some row := by
@@ -56,42 +59,43 @@ def ofDatabases (localDb globalDb : Database) : Env :=
     (ρ.bindElem x row).lookupElem? y = ρ.lookupElem? y := by
   simp [lookupElem?, bindElem, lookupElemList?, hxy]
 
-@[simp] theorem lookupSet_bindSet_eq (ρ : Env) (x : VarName) (rows : SetDenotation) :
+@[simp] theorem lookupSet_bindSet_eq (ρ : Env) (x : VarName) (rows : Database) :
     (ρ.bindSet x rows).lookupSet? x = some rows := by
   simp [lookupSet?, bindSet, lookupSetList?]
 
-@[simp] theorem lookupSet_bindSet_ne (ρ : Env) (x y : VarName) (rows : SetDenotation) (hxy : x ≠ y) :
+@[simp] theorem lookupSet_bindSet_ne (ρ : Env) (x y : VarName) (rows : Database) (hxy : x ≠ y) :
     (ρ.bindSet x rows).lookupSet? y = ρ.lookupSet? y := by
   simp [lookupSet?, bindSet, lookupSetList?, hxy]
 
 end Env
 
-abbrev Formula0 := SetDenotation → SetDenotation → Prop
-abbrev Formula1 := SetDenotation → Prop
+abbrev Formula0 := Database → Database → Prop
+abbrev Formula1 := Database → Prop
 
 /--
 Closed denotation of a symbolic set effect. The two arguments are the current local and global
-databases, represented extensionally as sets of rows.
+databases (`Database = List Row`) — list structure is preserved so that order- and multiplicity-
+sensitive operations such as `collectSelected` evaluate deterministically.
 -/
-abbrev SetExpr := SetDenotation → SetDenotation → SetDenotation
+abbrev SetExpr := Database → Database → SetDenotation
 
 namespace SetExpr
 
 def localDb : SetExpr :=
-  fun localDb _globalDb => localDb
+  fun localDb _globalDb row => row ∈ localDb
 
 def globalDb : SetExpr :=
-  fun _localDb globalDb => globalDb
+  fun _localDb globalDb row => row ∈ globalDb
 
-def comprehension (body : Row → SetDenotation → SetDenotation → Prop) : SetExpr :=
-  fun (localDb globalDb : SetDenotation) (row : Row) => body row localDb globalDb
+def comprehension (body : Row → Database → Database → Prop) : SetExpr :=
+  fun (localDb globalDb : Database) (row : Row) => body row localDb globalDb
 
 def bind (source : SetExpr) (body : Row → SetExpr) : SetExpr :=
-  fun (localDb globalDb : SetDenotation) (row : Row) =>
+  fun (localDb globalDb : Database) (row : Row) =>
     ∃ mid, source localDb globalDb mid ∧ body mid localDb globalDb row
 
 def ite (cond : Formula0) (s₁ s₂ : SetExpr) : SetExpr :=
-  fun (localDb globalDb : SetDenotation) (row : Row) =>
+  fun (localDb globalDb : Database) (row : Row) =>
     by
       classical
       exact if cond localDb globalDb then
@@ -100,7 +104,7 @@ def ite (cond : Formula0) (s₁ s₂ : SetExpr) : SetExpr :=
         s₂ localDb globalDb row
 
 def union (s₁ s₂ : SetExpr) : SetExpr :=
-  fun (localDb globalDb : SetDenotation) (row : Row) =>
+  fun (localDb globalDb : Database) (row : Row) =>
     s₁ localDb globalDb row ∨ s₂ localDb globalDb row
 
 end SetExpr
@@ -110,7 +114,7 @@ def abstractGlobal (_x : VarName) (s : SetExpr) : SetExpr :=
 
 /-- Replace the global database parameter by an existential witness that satisfies the invariant. -/
 def weakenToInvariant (_x : VarName) (I : Formula1) (s : SetExpr) : SetExpr :=
-  fun (localDb _globalDb : SetDenotation) (row : Row) =>
+  fun (localDb _globalDb : Database) (row : Row) =>
     ∃ rows, I rows ∧ s localDb rows row
 
 /-- Denotational semantics for symbolic set expressions. -/
@@ -118,13 +122,13 @@ def denote (ρ : Env) (s : SetExpr) : SetDenotation :=
   s ρ.localDb ρ.globalDb
 
 def ofRows (rows : Database) : SetExpr :=
-  fun (_localDb _globalDb : SetDenotation) (row : Row) => row ∈ rows
+  fun (_localDb _globalDb : Database) (row : Row) => row ∈ rows
 
 def empty : SetExpr :=
-  fun (_localDb _globalDb : SetDenotation) (_row : Row) => False
+  fun (_localDb _globalDb : Database) (_row : Row) => False
 
 def singleton (row₀ : Row) : SetExpr :=
-  fun (_localDb _globalDb : SetDenotation) (row : Row) => row = row₀
+  fun (_localDb _globalDb : Database) (row : Row) => row = row₀
 
 @[simp] theorem abstractGlobal_ite (x : VarName) (φ : Formula0) (s₁ s₂ : SetExpr) :
     abstractGlobal x (.ite φ s₁ s₂) = .ite φ (abstractGlobal x s₁) (abstractGlobal x s₂) := rfl
@@ -132,7 +136,7 @@ def singleton (row₀ : Row) : SetExpr :=
 @[simp] theorem abstractGlobal_union (x : VarName) (s₁ s₂ : SetExpr) :
     abstractGlobal x (.union s₁ s₂) = .union (abstractGlobal x s₁) (abstractGlobal x s₂) := rfl
 
-@[simp] theorem denote_comprehension (ρ : Env) (body : Row → SetDenotation → SetDenotation → Prop)
+@[simp] theorem denote_comprehension (ρ : Env) (body : Row → Database → Database → Prop)
     (row : Row) :
     denote ρ (.comprehension body) row ↔ body row ρ.localDb ρ.globalDb := Iff.rfl
 
@@ -168,10 +172,12 @@ theorem denote_ite_false (ρ : Env) (φ : Formula0) (s₁ s₂ : SetExpr)
     denote ρ (singleton row₀) row ↔ row = row₀ := Iff.rfl
 
 @[simp] theorem denote_localDb_ofDatabases (localDb globalDb : Database) (row : Row) :
-    denote (Env.ofDatabases localDb globalDb) .localDb row ↔ row ∈ localDb := Iff.rfl
+    denote (Env.ofDatabases localDb globalDb) .localDb row ↔ row ∈ localDb := by
+  simp [denote, Env.ofDatabases, SetExpr.localDb]
 
 @[simp] theorem denote_globalDb_ofDatabases (localDb globalDb : Database) (row : Row) :
-    denote (Env.ofDatabases localDb globalDb) .globalDb row ↔ row ∈ globalDb := Iff.rfl
+    denote (Env.ofDatabases localDb globalDb) .globalDb row ↔ row ∈ globalDb := by
+  simp [denote, Env.ofDatabases, SetExpr.globalDb]
 
 end SetLanguage
 

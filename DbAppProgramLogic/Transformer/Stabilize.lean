@@ -23,19 +23,18 @@ soundness (Theorem C.18) lives in `Transformer/InferenceSoundness.lean`.
 open SetLanguage
 
 /-- A `SetExpr` is `(R, I)`-stable when its denotation depends only on the local database, as long
-as the global database is interpreted from a `Database` satisfying `I` and modified by `R`-steps
-that preserve `I`. -/
+as the global database is an `I`-satisfying `Database` modified by `R`-steps that preserve `I`. -/
 def StableSetExpr (R : Rely) (I : Assertion) (F : SetExpr) : Prop :=
-  ∀ (localDb : SetDenotation) (db db' : Database),
+  ∀ (localDb : Database) (db db' : Database),
     I db → R db db' → I db' →
     ∀ row,
-      F localDb (fun r => r ∈ db) row ↔ F localDb (fun r => r ∈ db') row
+      F localDb db row ↔ F localDb db' row
 
 /-- The stabilization operator on `SetExpr`. The result is independent of the current global
 database: it is the union of `F(Δ')` over all Δ' satisfying the invariant `I`. -/
 def stabilize (_R : Rely) (I : Assertion) (F : SetExpr) : SetExpr :=
   fun localDb _globalDb row =>
-    ∃ db' : Database, I db' ∧ F localDb (fun r => r ∈ db') row
+    ∃ db' : Database, I db' ∧ F localDb db' row
 
 /-- The stabilization is always `(R, I)`-stable. Its denotation does not depend on the global
 database at all, so any rely step is tolerated. -/
@@ -45,11 +44,10 @@ theorem stableSetExpr_stabilize (R : Rely) (I : Assertion) (F : SetExpr) :
   rfl
 
 /-- Inclusion direction: every concrete denotation lies inside the stabilized form, provided the
-current global database matches an `I`-satisfying `Database`. -/
+current global database satisfies `I`. -/
 theorem subset_stabilize (R : Rely) (I : Assertion) (F : SetExpr)
-    {localDb : SetDenotation} {db : Database} (hI : I db) :
-    ∀ row, F localDb (fun r => r ∈ db) row →
-      stabilize R I F localDb (fun r => r ∈ db) row := by
+    {localDb : Database} {db : Database} (hI : I db) :
+    ∀ row, F localDb db row → stabilize R I F localDb db row := by
   intro row hRow
   exact ⟨db, hI, hRow⟩
 

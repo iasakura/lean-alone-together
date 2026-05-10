@@ -1216,8 +1216,8 @@ theorem addInterest_updateMembershipFO_holds :
     addInterestUpdatePredicate, interestBaseRow, interestBaseRecord, interestUpdatedRow,
     interestUpdatedRecord, Row.fromInsert, Row.overwrite, RecordLit.lookup?]
   refine ⟨interestBaseRow, ?_, interestUpdatedRecord, ?_, ?_⟩
-  · simp [SetLanguage.Env.ofDatabases]
-    rfl
+  · simp [SetLanguage.Env.ofDatabases, SetLanguage.SetExpr.globalDb, interestBaseRow,
+      interestBaseRecord, Row.fromInsert]
   · native_decide
   · native_decide
 

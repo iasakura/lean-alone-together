@@ -134,26 +134,12 @@ inductive PaperInfer (R : LocalRely) (txnId : TxnId) (I : Assertion) :
   /-- Lazy SELECT rule following the paper's Fig. 8 ST-SELECT formulation
   (`λ(∆). [F'(∆)/y] F(∆)`). The body's `F` is parameterized over the
   collected `selected` (i.e. the y binding), and the resulting top-level
-  effect existentially quantifies `selected` against the runtime
-  globalDb. This avoids the universal-quantification mismatch caused by
-  baking `selected` into the body via `Command.subst` while the outer
-  `F` still recomputes the aggregate from globalDb.
-
-  `hFbodyInvariant` accommodates the gap between the paper's
-  `Database`-indexed state transformer and our `SetDenotation`-indexed
-  `SetExpr`: since `globalDb : Row → Prop` loses list order and
-  multiplicity, the existential `∃ visibleDb` lets multiple set-equivalent
-  list witnesses — and hence `collectSelected` results that differ as
-  `SetLit`s but agree as sets. We require `Fbody` to depend only on the
-  set of records in `selected` (not order/multiplicity). -/
+  effect computes `selected` from the runtime `globalDb : Database`
+  deterministically via `collectSelected`. -/
   | selectLazy
       {Fctxt : SetExpr} {Fbody : SetLit → SetExpr} {env : SymEnv}
       {binder source : VarName} {predicate : Expr} {body : Semantics.Program}
       (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
-      (hFbodyInvariant :
-        ∀ s₁ s₂ : SetLit,
-          (∀ r, r ∈ s₁ ↔ r ∈ s₂) →
-          Fbody s₁ = Fbody s₂)
       (hBody :
         ∀ selected,
           PaperInfer R txnId I Fctxt
@@ -161,9 +147,8 @@ inductive PaperInfer (R : LocalRely) (txnId : TxnId) (I : Assertion) :
       PaperInfer R txnId I Fctxt
         (.select binder source (instantiateSymExpr env [source] predicate) body)
         (fun localDb globalDb out =>
-          ∃ selected, ∃ visibleDb,
-            (∀ row, globalDb row ↔ row ∈ visibleDb) ∧
-            Semantics.collectSelected visibleDb source
+          ∃ selected,
+            Semantics.collectSelected globalDb source
                 (instantiateSymExpr env [source] predicate) = some selected ∧
             Fbody selected localDb globalDb out)
   /-- Escape hatch: an external local-soundness witness. Kept for extensibility and for program

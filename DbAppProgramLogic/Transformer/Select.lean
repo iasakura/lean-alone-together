@@ -49,17 +49,15 @@ theorem paperInferenceSound_selectLazy (R : LocalRely) (txnId : TxnId)
           (Command.subst binder (.lit (.set selected)) body)
           (transformerPost Fctxt
             (fun localDb' globalDb' out =>
-              ∃ selected', ∃ visibleDb',
-                (∀ row, globalDb' row ↔ row ∈ visibleDb') ∧
-                Semantics.collectSelected visibleDb' source
+              ∃ selected',
+                Semantics.collectSelected globalDb' source
                     (instantiateSymExpr env [source] predicate) = some selected' ∧
                 Fbody selected' localDb' globalDb' out))) :
     paperInferenceSound R txnId I Fctxt
       (.select binder source (instantiateSymExpr env [source] predicate) body)
       (fun localDb globalDb out =>
-        ∃ selected, ∃ visibleDb,
-          (∀ row, globalDb row ↔ row ∈ visibleDb) ∧
-          Semantics.collectSelected visibleDb source
+        ∃ selected,
+          Semantics.collectSelected globalDb source
               (instantiateSymExpr env [source] predicate) = some selected ∧
           Fbody selected localDb globalDb out) := by
   refine Logic.localValid_select R txnId _ _ binder source

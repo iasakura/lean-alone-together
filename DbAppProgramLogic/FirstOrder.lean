@@ -179,15 +179,15 @@ def denoteMembership (ρ : SetLanguage.Env) : MembershipFormula → Prop
   | .bot => False
   | .inVar elemVar setVar =>
       match ρ.lookupElem? elemVar, ρ.lookupSet? setVar with
-      | some row, some rows => rows row
+      | some row, some rows => row ∈ rows
       | _, _ => False
   | .inLocalDb elemVar =>
       match ρ.lookupElem? elemVar with
-      | some row => ρ.localDb row
+      | some row => row ∈ ρ.localDb
       | none => False
   | .inGlobalDb elemVar =>
       match ρ.lookupElem? elemVar with
-      | some row => ρ.globalDb row
+      | some row => row ∈ ρ.globalDb
       | none => False
   | .eqConst elemVar row₀ =>
       match ρ.lookupElem? elemVar with
@@ -215,7 +215,7 @@ def denoteMembership (ρ : SetLanguage.Env) : MembershipFormula → Prop
   | .imp φ ψ => denoteMembership ρ φ → denoteMembership ρ ψ
   | .not φ => ¬ denoteMembership ρ φ
   | .existsElem x φ => ∃ row : Row, denoteMembership (ρ.bindElem x row) φ
-  | .existsSet x φ => ∃ rows : SetLanguage.SetDenotation, denoteMembership (ρ.bindSet x rows) φ
+  | .existsSet x φ => ∃ rows : Database, denoteMembership (ρ.bindSet x rows) φ
 
 def encodeOfRowsMembership (elemVar : VarName) : Database → MembershipFormula
   | [] => .bot
@@ -306,7 +306,7 @@ def encodeSetExprMembership (elemVar : VarName) : SetLanguage.SetExpr → Option
 
 @[simp] theorem denoteMembership_inVar (ρ : SetLanguage.Env) (elemVar setVar : VarName) :
     denoteMembership ρ (.inVar elemVar setVar) ↔
-      ∃ row rows, ρ.lookupElem? elemVar = some row ∧ ρ.lookupSet? setVar = some rows ∧ rows row := by
+      ∃ row rows, ρ.lookupElem? elemVar = some row ∧ ρ.lookupSet? setVar = some rows ∧ row ∈ rows := by
   cases hElem : ρ.lookupElem? elemVar <;> cases hSet : ρ.lookupSet? setVar <;> simp [denoteMembership, hElem, hSet]
 
 @[simp] theorem denoteMembership_or (ρ : SetLanguage.Env) (φ ψ : MembershipFormula) :
@@ -357,12 +357,12 @@ def encodeSetExprMembership (elemVar : VarName) : SetLanguage.SetExpr → Option
   simp [SetLanguage.Env.lookupSet?, SetLanguage.Env.bindElem]
 
 @[simp] theorem denoteMembership_inLocalDb_bindElem (ρ : SetLanguage.Env) (x : VarName) (row : Row) :
-    denoteMembership (ρ.bindElem x row) (.inLocalDb x) ↔ ρ.localDb row := by
+    denoteMembership (ρ.bindElem x row) (.inLocalDb x) ↔ row ∈ ρ.localDb := by
   unfold denoteMembership
   simp [SetLanguage.Env.lookupElem?, SetLanguage.Env.lookupElemList?, SetLanguage.Env.bindElem]
 
 @[simp] theorem denoteMembership_inGlobalDb_bindElem (ρ : SetLanguage.Env) (x : VarName) (row : Row) :
-    denoteMembership (ρ.bindElem x row) (.inGlobalDb x) ↔ ρ.globalDb row := by
+    denoteMembership (ρ.bindElem x row) (.inGlobalDb x) ↔ row ∈ ρ.globalDb := by
   unfold denoteMembership
   simp [SetLanguage.Env.lookupElem?, SetLanguage.Env.lookupElemList?, SetLanguage.Env.bindElem]
 

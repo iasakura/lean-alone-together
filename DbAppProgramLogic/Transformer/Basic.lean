@@ -186,14 +186,14 @@ def evalExprInSetEnv (env : SymEnv) (ρ : SetLanguage.Env) (expr : Expr) : Optio
 
 /-- Interpret a boolean expression as a shallow `SetLanguage` formula. -/
 def formulaOfExpr (env : SymEnv) (expr : Expr) : SetLanguage.Formula0 :=
-  fun (_localDb _globalDb : SetLanguage.SetDenotation) =>
+  fun (_localDb _globalDb : Database) =>
     Expr.eval (instantiateSymExpr env [] expr) = some (.scalar (.bool true))
 
 def evalSymExprAtRow (env : SymEnv) (x : VarName) (row : Row) (expr : Expr) : Option Value :=
   Expr.eval (Semantics.instantiateRecord x row.visible (instantiateSymExpr env [x] expr))
 
 def insertedRowSet (txnId : TxnId) (env : SymEnv) (expr : Expr) : SetLanguage.SetExpr :=
-  fun (_localDb _globalDb : SetLanguage.SetDenotation) (row : Row) =>
+  fun (_localDb _globalDb : Database) (row : Row) =>
     match Expr.eval (instantiateSymExpr env [] expr) with
     | some (.record record) => row = Row.fromInsert txnId record
     | _ => False
@@ -203,7 +203,7 @@ def deletedRowSet (txnId : TxnId) (src : Row) : SetLanguage.SetExpr :=
 
 def updatedRowSet (txnId : TxnId) (env : SymEnv) (x : VarName) (src : Row) (updateExpr : Expr) :
     SetLanguage.SetExpr :=
-  fun (_localDb _globalDb : SetLanguage.SetDenotation) (row : Row) =>
+  fun (_localDb _globalDb : Database) (row : Row) =>
     match evalSymExprAtRow env x src updateExpr with
     | some (.record updated) => row = src.overwrite txnId updated
     | _ => False
@@ -220,7 +220,7 @@ def sourceSetExpr (env : SymEnv) (source : Expr) : Option SetLanguage.SetExpr :=
   match instantiateSymExpr env [] source with
   | .var x => env.lookupSet? x
   | .lit (.set rows) =>
-      some (fun (_localDb _globalDb : SetLanguage.SetDenotation) (row : Row) => row.visible ∈ rows)
+      some (fun (_localDb _globalDb : Database) (row : Row) => row.visible ∈ rows)
   | _ => none
 
 /-- Materialize a symbolic row-set against the current visible database by keeping the visible
@@ -763,10 +763,9 @@ def overapproximatesRows (ρ : SetLanguage.Env) (s : SetLanguage.SetExpr) (rows 
   ∀ row, row ∈ rows → SetLanguage.denote ρ s row
 
 def assertionFormula (I : Assertion) : SetLanguage.Formula1 :=
-  fun rows => ∃ db : Database, I db ∧ ∀ row, rows row ↔ row ∈ db
+  fun rows => ∃ db : Database, I db ∧ ∀ row, row ∈ rows ↔ row ∈ db
 
-def currentGlobalBinding (db : Database) : SetLanguage.SetDenotation :=
-  fun row => row ∈ db
+def currentGlobalBinding (db : Database) : Database := db
 
 def setEnvOfDatabase (x : VarName) (db : Database) : SetLanguage.Env :=
   SetLanguage.Env.ofDatabases [] db
@@ -849,7 +848,7 @@ def updateSetExprWith (outVar : VarName) (txnId : TxnId) (env : Env) (source : V
     by
       classical
       exact if rowPredicateFormula env source predicate src then
-        (fun (_localDb _globalDb : SetLanguage.SetDenotation) (out : Row) =>
+        (fun (_localDb _globalDb : Database) (out : Row) =>
           ∃ updated,
             Expr.eval (Semantics.instantiateRecord source src.visible
               (instantiateExpr env [source] updateExpr)) = some (.record updated) ∧

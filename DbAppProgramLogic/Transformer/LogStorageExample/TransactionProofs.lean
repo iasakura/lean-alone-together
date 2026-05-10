@@ -288,14 +288,14 @@ def insertLogEffect (txnId : TxnId) (i : Nat) : SetLanguage.SetExpr :=
     (insertedRowSet txnId emptySymEnv (logRecordExpr (.int i)))
     (updateSetExpr txnId [] rowVar (insertCounterUpdateExpr i) (isCounterExpr rowVar))
 
-def selectedLogRow (globalDb : SetLanguage.SetDenotation) (row : Row) (n : Int) : Prop :=
-  globalDb row ∧ row.key? = some (logTable, n)
+def selectedLogRow (globalDb : Database) (row : Row) (n : Int) : Prop :=
+  row ∈ globalDb ∧ row.key? = some (logTable, n)
 
-def selectedLogMin (globalDb : SetLanguage.SetDenotation) (lo : Int) : Prop :=
+def selectedLogMin (globalDb : Database) (lo : Int) : Prop :=
   (∃ row, selectedLogRow globalDb row lo) ∧
     ∀ row n, selectedLogRow globalDb row n → lo ≤ n
 
-def selectedLogMax (globalDb : SetLanguage.SetDenotation) (hi : Int) : Prop :=
+def selectedLogMax (globalDb : Database) (hi : Int) : Prop :=
   (∃ row, selectedLogRow globalDb row hi) ∧
     ∀ row n, selectedLogRow globalDb row n → n ≤ hi
 
@@ -352,7 +352,7 @@ def archiveLogDeleteEffect_with_selected
     ∃ src n lo hi0,
       selectedLitMin selected = some lo ∧
       selectedLitMax selected = some hi0 ∧
-      globalDb src ∧ src.key? = some (logTable, n) ∧
+      src ∈ globalDb ∧ src.key? = some (logTable, n) ∧
       lo ≤ n ∧ n ≤ hi0 ∧
       out = src.markDeleted txnId
 
@@ -960,22 +960,17 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
       (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
       SetLanguage.empty (archiveLogBody i)
       (fun localDb globalDb out =>
-        ∃ selected, ∃ visibleDb,
-          (∀ row, globalDb row ↔ row ∈ visibleDb) ∧
-          Semantics.collectSelected visibleDb rowVar
+        ∃ selected,
+          Semantics.collectSelected globalDb rowVar
               (instantiateSymExpr emptySymEnv [rowVar] (isLogExpr rowVar)) = some selected ∧
           archiveLogEffect_with_selected (archiveTxnId i) i selected localDb globalDb out) := by
   unfold archiveLogBody
   refine PaperInfer.selectLazy
     (env := emptySymEnv)
     (Fbody := archiveLogEffect_with_selected (archiveTxnId i) i)
-    ?_ ?_ ?_
+    ?_ ?_
   · -- stability of transformerPre under SI's local rely (silent → trivial)
     exact transformerPre_stable_relyMod_snapshot _ _
-  · -- Fbody permutation invariance: archiveLogEffect_with_selected only uses
-    -- selectedLitMin/Max which depend on the SET of int values in idField,
-    -- not the order or multiplicity of selected.
-    sorry
   · -- per-`selected` body PaperInfer
     -- Fbody is parameterised by selected; archiveCompactBody[logsVar→selected]
     -- has its writes pinned to `selected` (lo/hi from selectedLitMin/Max),
