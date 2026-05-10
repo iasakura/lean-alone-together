@@ -364,6 +364,56 @@ private theorem setMaxField_lit_eval_int {selected : SetLit} {field : FieldName}
     · simp [hVals, hMax] at h
       exact ⟨m, h.symm⟩
 
+/-- The archive-delete predicate (after substitution of `lo`/`hi0`) holds on a
+row iff its visible record has table = `logTable` and id in `[lo, hi0]`. -/
+private theorem satisfiesPredicate_archiveDelete_iff (src : Row) (lo hi0 : Int) :
+    Semantics.satisfiesPredicate rowVar
+        (Expr.binop BinOp.and
+          (Expr.binop BinOp.eq ((Expr.var rowVar).proj tableField)
+            (Expr.lit (.scalar (.int logTable))))
+          (Expr.binop BinOp.and
+            (Expr.binop BinOp.le (Expr.lit (.scalar (.int lo)))
+              ((Expr.var rowVar).proj idField))
+            (Expr.binop BinOp.le ((Expr.var rowVar).proj idField)
+              (Expr.lit (.scalar (.int hi0))))))
+        src.visible = some true ↔
+      rowFieldInt? src tableField = some logTable ∧
+        ∃ n, rowFieldInt? src idField = some n ∧ lo ≤ n ∧ n ≤ hi0 := by
+  simp only [Semantics.satisfiesPredicate, Semantics.instantiateRecord,
+    Expr.subst, Expr.subst_lit, Expr.eval, Literal.toValue,
+    rowFieldInt?, tableField, idField, rowVar, ↓reduceIte]
+  cases hT : src.visible.lookup? "table" with
+  | none => simp [hT]
+  | some tlit =>
+    cases tlit with
+    | bool _ => simp [hT]
+    | int tableVal =>
+      cases hI : src.visible.lookup? "id" with
+      | none =>
+        simp [hT, hI]
+        intro h
+        split at h <;> simp_all
+      | some ilit =>
+        cases ilit with
+        | bool b =>
+          simp [hT, hI]
+          intro h
+          split at h <;> simp_all
+        | int idVal =>
+          simp [hT, hI]
+          by_cases hTab : tableVal = logTable
+          · subst hTab
+            simp
+            constructor
+            · intro h
+              by_cases hLo : lo ≤ idVal
+              · simp [hLo] at h
+                exact ⟨hLo, h⟩
+              · simp [hLo] at h
+            · rintro ⟨hLo, hHi⟩
+              simp [hLo, hHi]
+          · simp [hTab]
+
 def archiveLogInsertEffect_with_selected
     (txnId : TxnId) (i : Nat) (selected : SetLit) : SetLanguage.SetExpr :=
   fun _localDb _globalDb out =>
@@ -1060,18 +1110,23 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
               have hSelMax : selectedLitMax selected = some hi0 := by
                 simp [selectedLitMax, hMaxEval]
               -- Decompose seq into insert step + delete step.
-              -- Intermediate post: insert produces archiveRow only.
+              -- Intermediate post: insert produces archiveRow only AND vd still
+              -- satisfies the invariant (which gives wellFormedTableFields for
+              -- the delete-step predicate-evaluation reasoning).
               refine Logic.localValid_seq_false (archiveTxnId i)
                 (transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
-                (transformerPost SetLanguage.empty
-                  (archiveLogInsertEffect_with_selected (archiveTxnId i) i selected))
+                (fun ld vd =>
+                  transformerPost SetLanguage.empty
+                      (archiveLogInsertEffect_with_selected (archiveTxnId i) i selected) ld vd ∧
+                    logSystemInv vd ∧ archiveKeysFreshFrom i vd)
                 (transformerPost SetLanguage.empty
                   (archiveLogEffect_with_selected (archiveTxnId i) i selected))
                 _ _ ?_ ?_
               · -- Insert step
                 refine Logic.localValid_insert_false (archiveTxnId i) _ _ _ ?_
                 intro ld vd record hPre hEval _hFresh
-                rcases hPre with ⟨hLocal, _hInv⟩
+                rcases hPre with ⟨hLocal, hInv⟩
+                refine ⟨?_, hInv⟩
                 -- ld = [] from transformerPre on empty
                 have hLdEmpty : ld = [] := by
                   cases ld with
@@ -1104,7 +1159,57 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
                 · intro hRow
                   exact ⟨lo, hi0, hSelMin, hSelMax, hRow⟩
               · -- Delete step
-                sorry
+                refine Logic.localValid_delete_false (archiveTxnId i) _ _ _ _ ?_
+                intro ld vd removed hPre' hCollect _hDisjoint
+                rcases hPre' with ⟨hPre, hInv, _hKeysFresh⟩
+                have hWF : wellFormedTableFields vd := by
+                  rcases hInv with ⟨_, _, _, _, hWF⟩
+                  exact hWF
+                -- hPre says ld denotes insertEffect at vd (membership). Combine with
+                -- mem_collectDeleted_iff for `removed`, then show union iff for the post.
+                simp only [transformerPost, SetLanguage.denote,
+                  SetLanguage.SetExpr.union, SetLanguage.empty,
+                  archiveLogInsertEffect_with_selected, archiveLogDeleteEffect_with_selected,
+                  archiveLogEffect_with_selected, false_or] at hPre ⊢
+                intro row
+                -- Goal: row matches insertEffect ∨ deleteEffect at vd ↔ row ∈ ld ++ removed
+                rw [List.mem_append]
+                constructor
+                · rintro (hIns | hDel)
+                  · -- row matches insert: row = archiveRow lo (hi0+1)
+                    rcases hIns with ⟨lo', hi0', hMin', hMax', hOut⟩
+                    rw [hSelMin] at hMin'; rw [hSelMax] at hMax'
+                    cases hMin'; cases hMax'
+                    -- archiveRow ∈ ld via hPre
+                    left
+                    exact (hPre row).mp ⟨lo, hi0, hSelMin, hSelMax, hOut⟩
+                  · -- row matches delete: row = src.markDeleted with src ∈ vd, etc.
+                    rcases hDel with ⟨src, n, lo', hi0', hMin', hMax', hSrc, hKey, hLo, hHi, hOut⟩
+                    rw [hSelMin] at hMin'; rw [hSelMax] at hMax'
+                    cases hMin'; cases hMax'
+                    right
+                    rw [Semantics.mem_collectDeleted_iff hCollect]
+                    refine ⟨src, hSrc, ?_, hOut⟩
+                    have hTab : rowFieldInt? src tableField = some logTable :=
+                      rowFieldInt?_tableField_of_key_wellFormed hWF hSrc hKey
+                    have hSat :=
+                      (satisfiesPredicate_archiveDelete_iff src lo hi0).mpr
+                        ⟨hTab, n, rowFieldInt?_idField_of_key hKey, hLo, hHi⟩
+                    exact hSat
+                · rintro (hLd | hRem)
+                  · -- row ∈ ld → matches insertEffect at vd
+                    left
+                    have := (hPre row).mpr hLd
+                    exact this
+                  · -- row ∈ removed → matches deleteEffect
+                    right
+                    rw [Semantics.mem_collectDeleted_iff hCollect] at hRem
+                    rcases hRem with ⟨src, hSrc, hSat, hOut⟩
+                    have hSat' := (satisfiesPredicate_archiveDelete_iff src lo hi0).mp hSat
+                    rcases hSat' with ⟨hTab, n, hId, hLo, hHi⟩
+                    have hKey : src.key? = some (logTable, n) :=
+                      rowKey?_of_table_id_fields hTab hId
+                    exact ⟨src, n, lo, hi0, hSelMin, hSelMax, hSrc, hKey, hLo, hHi, hOut⟩
     · -- False branch: empty selected → .skip. Now Fbody(selected=[]) denotes nothing.
       intro hEvalFalse
       have hSelectedEmpty : selected = [] := by
