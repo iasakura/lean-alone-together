@@ -868,6 +868,13 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
       (archiveLogEffect (archiveTxnId i) i) := by
   refine PaperInfer.viaLocalValid ?_
   refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
+  unfold archiveLogBody
+  refine Logic.localValid_select_false (archiveTxnId i) _ _ logsVar rowVar _ _ ?_
+  intro localDb visibleDb selected hPre _hSelect
+  -- Substituted ite body. `Command.subst logsVar (.lit (.set selected))` is
+  -- propagated through the ite/letE structure; .var logsVar references
+  -- become .lit (.set selected), but rowVar/loVar/hi0Var aren't logsVar so
+  -- those occurrences are untouched (modulo what subst does to nested .var).
   sorry
 
 /-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely.
