@@ -581,6 +581,80 @@ private theorem foldl_min_mem (init : Int) (l : List Int) :
   · rw [hEq]; exact List.mem_cons_self
   · rw [hyEq]; exact List.mem_cons_of_mem _ hyMem
 
+/-! Max analogues. -/
+
+private theorem foldl_max_ge_init (init : Int) (l : List Int) :
+    init ≤ l.foldl max init := by
+  induction l generalizing init with
+  | nil => exact Int.le_refl _
+  | cons x xs ih =>
+      simp only [List.foldl]
+      have h₁ := ih (max init x)
+      have h₂ : init ≤ max init x := Int.le_max_left _ _
+      omega
+
+private theorem foldl_max_ge_mem : ∀ (init : Int) (l : List Int) (y : Int), y ∈ l →
+    y ≤ l.foldl max init
+  | _, [], _, hMem => absurd hMem List.not_mem_nil
+  | init, x :: xs, y, hMem => by
+      simp only [List.foldl]
+      rcases List.mem_cons.mp hMem with rfl | hy
+      · have h₁ := foldl_max_ge_init (max init y) xs
+        have h₂ : y ≤ max init y := Int.le_max_right _ _
+        omega
+      · exact foldl_max_ge_mem (max init x) xs y hy
+
+private theorem foldl_max_eq_init_or_mem : ∀ (init : Int) (l : List Int),
+    l.foldl max init = init ∨ ∃ y ∈ l, l.foldl max init = y
+  | _, [] => Or.inl rfl
+  | init, x :: xs => by
+      simp only [List.foldl]
+      rcases foldl_max_eq_init_or_mem (max init x) xs with hEq | ⟨y, hyMem, hyEq⟩
+      · by_cases h : x ≤ init
+        · have hMax : max init x = init := Int.max_eq_left h
+          left; rw [hEq, hMax]
+        · have h' : init ≤ x := by omega
+          have hMax : max init x = x := Int.max_eq_right h'
+          right
+          refine ⟨x, List.mem_cons_self, ?_⟩
+          rw [hEq, hMax]
+      · right
+        exact ⟨y, List.mem_cons_of_mem _ hyMem, hyEq⟩
+
+private theorem foldl_max_mem (init : Int) (l : List Int) :
+    l.foldl max init ∈ init :: l := by
+  rcases foldl_max_eq_init_or_mem init l with hEq | ⟨y, hyMem, hyEq⟩
+  · rw [hEq]; exact List.mem_cons_self
+  · rw [hyEq]; exact List.mem_cons_of_mem _ hyMem
+
+private theorem maxInt?_eq_some_iff (values : List Int) (hi : Int) :
+    Expr.maxInt? values = some hi ↔
+      hi ∈ values ∧ ∀ v ∈ values, v ≤ hi := by
+  cases values with
+  | nil => simp [Expr.maxInt?]
+  | cons head tail =>
+      simp [Expr.maxInt?]
+      constructor
+      · rintro rfl
+        refine ⟨?_, ?_, ?_⟩
+        · rcases foldl_max_eq_init_or_mem head tail with hEq | ⟨y, hyMem, hyEq⟩
+          · left; exact hEq
+          · right; rw [hyEq]; exact hyMem
+        · exact foldl_max_ge_init _ _
+        · intro v hMem
+          exact foldl_max_ge_mem _ _ _ hMem
+      · rintro ⟨hMem, hUB_head, hUB_tail⟩
+        have hMax_eq_or_mem := foldl_max_eq_init_or_mem head tail
+        have hMax_ge_hi : hi ≤ tail.foldl max head := by
+          rcases hMem with rfl | hMem
+          · exact foldl_max_ge_init _ _
+          · exact foldl_max_ge_mem _ _ _ hMem
+        have hMax_le_hi : tail.foldl max head ≤ hi := by
+          rcases hMax_eq_or_mem with hEq | ⟨y, hyMem, hyEq⟩
+          · rw [hEq]; exact hUB_head
+          · rw [hyEq]; exact hUB_tail _ hyMem
+        omega
+
 /-- `Expr.minInt?` characterization: the returned value is a member, and a
 lower bound for every member. -/
 private theorem minInt?_eq_some_iff (values : List Int) (lo : Int) :
@@ -687,8 +761,61 @@ private theorem selectedLitMax_iff_selectedLogMax
     (hSelect : Semantics.collectSelected vd rowVar (isLogExpr rowVar) = some selected)
     (hWF : wellFormedTableFields vd) :
     selectedLitMax selected = some hi ↔ selectedLogMax vd hi := by
-  -- Same structure as selectedLitMin_iff_selectedLogMin with `min` → `max` everywhere.
-  sorry
+  rcases collectIntFieldValues_log_succeeds hSelect hWF with ⟨values, hValues⟩
+  have hLitMax_iff : selectedLitMax selected = some hi ↔
+      Expr.maxInt? values = some hi := by
+    unfold selectedLitMax
+    simp only [Expr.eval, Literal.toValue, hValues, Bind.bind, Option.bind, Option.some_bind]
+    cases hMax : Expr.maxInt? values with
+    | none => simp [hMax]
+    | some m => simp [hMax]
+  rw [hLitMax_iff, maxInt?_eq_some_iff]
+  unfold selectedLogMax selectedLogRow
+  constructor
+  · rintro ⟨hMem, hUB⟩
+    rcases exists_mem_selected_of_mem_values hValues hMem with ⟨rec, hRecMem, hRecField⟩
+    rcases (mem_selected_iff_log_row hSelect hWF rec).mp hRecMem with
+      ⟨row, hRowMem, ⟨n, hKey⟩, hVis⟩
+    have hN : n = hi := by
+      have hHas := intField?_idField_of_log_row hKey
+      rw [hVis] at hHas
+      rw [hHas] at hRecField
+      exact Option.some.inj hRecField
+    subst hN
+    refine ⟨⟨row, hRowMem, hKey⟩, ?_⟩
+    intro row' n' ⟨hRow'Mem, hKey'⟩
+    have hRecMem' : row'.visible ∈ selected :=
+      (mem_selected_iff_log_row hSelect hWF row'.visible).mpr
+        ⟨row', hRow'Mem, ⟨n', hKey'⟩, rfl⟩
+    rcases mem_collectIntFieldValues_of_mem hValues hRecMem' with ⟨n'', hN''Field, hN''Mem⟩
+    have hN''_eq : n'' = n' := by
+      have hHas := intField?_idField_of_log_row hKey'
+      rw [hHas] at hN''Field
+      exact (Option.some.inj hN''Field).symm
+    subst hN''_eq
+    exact hUB _ hN''Mem
+  · rintro ⟨⟨row, hRowMem, hKey⟩, hMax⟩
+    have hVisMem : row.visible ∈ selected :=
+      (mem_selected_iff_log_row hSelect hWF row.visible).mpr
+        ⟨row, hRowMem, ⟨hi, hKey⟩, rfl⟩
+    rcases mem_collectIntFieldValues_of_mem hValues hVisMem with ⟨n, hNField, hNMem⟩
+    have hN_eq_hi : n = hi := by
+      have hHas := intField?_idField_of_log_row hKey
+      rw [hHas] at hNField
+      exact (Option.some.inj hNField).symm
+    subst hN_eq_hi
+    refine ⟨hNMem, ?_⟩
+    intro v hVMem
+    rcases exists_mem_selected_of_mem_values hValues hVMem with ⟨rec', hRecMem', hRecField'⟩
+    rcases (mem_selected_iff_log_row hSelect hWF rec').mp hRecMem' with
+      ⟨row', hRow'Mem, ⟨n', hKey'⟩, hVis'⟩
+    have hN'_eq_v : n' = v := by
+      have hHas := intField?_idField_of_log_row hKey'
+      rw [hVis'] at hHas
+      rw [hHas] at hRecField'
+      exact Option.some.inj hRecField'
+    subst hN'_eq_v
+    exact hMax row' n' ⟨hRow'Mem, hKey'⟩
 
 def archiveLogInsertEffect_with_selected
     (txnId : TxnId) (i : Nat) (selected : SetLit) : SetLanguage.SetExpr :=
