@@ -131,6 +131,29 @@ inductive PaperInfer (R : LocalRely) (txnId : TxnId) (I : Assertion) :
             (.foreachRuntime (Expr.setLit []) (Expr.setLit records) doneVar elemVar body) F) :
       PaperInfer R txnId I Fctxt
         (.foreach (instantiateSymExpr env [] source) doneVar elemVar body) F
+  /-- Lazy SELECT rule following the paper's Fig. 8 ST-SELECT formulation
+  (`λ(∆). [F'(∆)/y] F(∆)`). The body's `F` is parameterized over the
+  collected `selected` (i.e. the y binding), and the resulting top-level
+  effect existentially quantifies `selected` against the runtime
+  globalDb. This avoids the universal-quantification mismatch caused by
+  baking `selected` into the body via `Command.subst` while the outer
+  `F` still recomputes the aggregate from globalDb. -/
+  | selectLazy
+      {Fctxt : SetExpr} {Fbody : SetLit → SetExpr} {env : SymEnv}
+      {binder source : VarName} {predicate : Expr} {body : Semantics.Program}
+      (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+      (hBody :
+        ∀ selected,
+          PaperInfer R txnId I Fctxt
+            (Command.subst binder (.lit (.set selected)) body) (Fbody selected)) :
+      PaperInfer R txnId I Fctxt
+        (.select binder source (instantiateSymExpr env [source] predicate) body)
+        (fun localDb globalDb out =>
+          ∃ selected, ∃ visibleDb,
+            (∀ row, globalDb row ↔ row ∈ visibleDb) ∧
+            Semantics.collectSelected visibleDb source
+                (instantiateSymExpr env [source] predicate) = some selected ∧
+            Fbody selected localDb globalDb out)
   /-- Escape hatch: an external local-soundness witness. Kept for extensibility and for program
   shapes not yet covered by dedicated constructors. -/
   | viaLocalValid

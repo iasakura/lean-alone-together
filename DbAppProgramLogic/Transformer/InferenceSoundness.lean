@@ -238,6 +238,11 @@ theorem PaperInfer.sound_with_invariant
           hStable hBody'
       exact LocalValid.augment_invariant hStableI
         (transformerPre_implies_invariant I Fctxt) hForeachSound
+  | @selectLazy Fctxt Fbody env binder source predicate body hStable _hBody _ihBody =>
+      -- TODO: prove soundness of the lazy SELECT rule (Fig.8 [F'(∆)/y] form).
+      -- Stubbed for prototyping; the lazy rule's soundness should follow from
+      -- a runtime-substitution argument analogous to paperInferenceSound_select.
+      sorry
   | @viaLocalValid Fctxt F body hSound =>
       exact LocalValid.augment_invariant hStableI
         (transformerPre_implies_invariant I Fctxt) hSound
