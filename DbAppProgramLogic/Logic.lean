@@ -1945,6 +1945,43 @@ theorem localValid_select_false (txnId : TxnId) (P Q : BiAssertion)
       | inr hRely =>
           exact False.elim hRely.2.2.2
 
+/-- Variant of `localValid_select_false` whose body hypothesis exposes the
+ambient `visibleDb` to the body's `LocalValid` precondition: the body proof
+can leverage `vd = visibleDb` and any side info bound to that specific
+visibleDb (e.g. the outer `collectSelected visibleDb ...` witness). The
+strengthening goes through because the wrapper's outer step pins
+`visibleDb' = visibleDb` under False rely, so when we invoke the body
+LocalValid we always have `vd = visibleDb` available. -/
+theorem localValid_select_false_pinVd (txnId : TxnId) (P Q : BiAssertion)
+    (binder source : VarName) (predicate : Expr) (body : Command ι Database)
+    (hBody :
+      ∀ localDb visibleDb selected,
+        P localDb visibleDb →
+        Semantics.collectSelected visibleDb source predicate = some selected →
+        LocalValid (fun _ _ _ => False) txnId
+          (fun ld vd => P ld vd ∧ vd = visibleDb)
+          (Command.subst binder (.lit (.set selected)) body) Q) :
+    LocalValid (fun _ _ _ => False) txnId P (.select binder source predicate body) Q := by
+  intro localDb visibleDb finalCfg hP hMulti hSkip
+  have hHead := MultiStep.head hMulti
+  cases hHead with
+  | inl hEq =>
+      cases hEq
+      cases hSkip
+  | inr hHead =>
+      rcases hHead with ⟨⟨cmd', localDb', visibleDb'⟩, hStep, hRest⟩
+      cases hStep with
+      | inl hLocal =>
+          rcases hLocal with ⟨hLocal, hVisibleEq⟩
+          subst hVisibleEq
+          cases hLocal with
+          | select hSelect =>
+              have hBodyValid :=
+                hBody localDb visibleDb' _ hP hSelect
+              exact hBodyValid localDb visibleDb' finalCfg ⟨hP, rfl⟩ hRest hSkip
+      | inr hRely =>
+          exact False.elim hRely.2.2.2
+
 theorem localValid_insert_false {ι : Type} (txnId : TxnId) (P Q : BiAssertion)
     (expr : Expr)
     (hPost :
