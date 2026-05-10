@@ -385,6 +385,38 @@ theorem relyNoUndo_R_archive : relyNoUndo R_archive := by
 theorem relyNoUndo_R_select (q : Nat) : relyNoUndo (R_select q) := by
   sorry
 
+/-- Under SI's local rely, env steps are silent on visible: `v = v'`. -/
+theorem relyMod_snapshot_exec_silent {R : Rely} :
+    ∀ localDb v v',
+      Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec localDb v v' →
+        v' = v := by
+  intro _ v v' hStep
+  rcases hStep with ⟨baseDb, _hR, hI, hI'⟩
+  -- hI : baseDb = v ; hI' : baseDb = v'
+  exact hI'.symm.trans hI
+
+/-- transformerPre is trivially stable under SI's silent local rely. -/
+theorem transformerPre_stable_relyMod_snapshot {R : Rely}
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr) :
+    Logic.stableBiAssertion
+      (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
+      (transformerPre I Fctxt) := by
+  intro localDb v v' hPre hStep
+  have hEq := relyMod_snapshot_exec_silent localDb v v' hStep
+  rw [hEq]
+  exact hPre
+
+/-- transformerPost is trivially stable under SI's silent local rely. -/
+theorem transformerPost_stable_relyMod_snapshot {R : Rely}
+    (Fctxt F : SetLanguage.SetExpr) :
+    Logic.stableBiAssertion
+      (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
+      (transformerPost Fctxt F) := by
+  intro localDb v v' hPost hStep
+  have hEq := relyMod_snapshot_exec_silent localDb v v' hStep
+  rw [hEq]
+  exact hPost
+
 theorem archiveLogTxnSpec_of_paperObligations (i : Nat)
     (hObligations : ArchiveLogPaperObligations i) :
     archiveLogTxnSpec i := by
