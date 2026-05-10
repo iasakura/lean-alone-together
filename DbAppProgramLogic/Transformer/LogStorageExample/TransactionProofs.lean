@@ -173,6 +173,95 @@ theorem stableIsolation_snapshot_commit_of_noUndo
   have hMidEq : baseDb = midDb := hNoUndo baseDb midDb hReach hReachBack
   exact ⟨hMidEq, hMidEq.symm⟩
 
+/-- Snapshot-isolation variant of `globalValid_readCommitted_of_paperObligations_post`.
+Requires `relyNoUndo R` (no round-trips under R) which discharges the
+isolation-stability conditions for `IsolationSpec.snapshot`. -/
+theorem globalValid_snapshot_of_paperObligations_post
+    {R : Rely} {Iinfer Ipre Ipost : Assertion} {G : Guarantee}
+    {txnId : TxnId} {body : Semantics.Program}
+    (hNoUndo : relyNoUndo R)
+    (_hStableInfer : Logic.stableAssertion R Iinfer)
+    (hStablePre : Logic.stableAssertion R Ipre)
+    (hStablePost : Logic.stableAssertion R Ipost)
+    (hPreToInfer : ∀ db, Ipre db → Iinfer db)
+    (hObligations : TxnPaperObligations R Iinfer G txnId body)
+    (hCommitPost :
+      ∀ localDb visibleDb,
+        Ipre visibleDb →
+          txnSnapshotPost Iinfer R hObligations.effect localDb visibleDb →
+            Ipost (Database.flush localDb visibleDb)) :
+    Logic.GlobalValid Ipre R
+      (.txn txnId IsolationSpec.snapshot body)
+      G Ipost := by
+  have hExecStable :
+      Logic.stableIsolation R (IsolationSpec.snapshot (σ := Database)).exec :=
+    stableIsolation_snapshot_exec_of_noUndo hNoUndo
+  have hCommitStable :
+      Logic.stableIsolation R (IsolationSpec.snapshot (σ := Database)).commit :=
+    stableIsolation_snapshot_commit_of_noUndo hNoUndo
+  have hStableIBi :
+      Logic.stableBiAssertion
+        (Logic.relyMod R (IsolationSpec.readCommitted Database).exec)
+        (fun _ visibleDb => Iinfer visibleDb) :=
+    stableBiAssertion_relyMod_of_stableAssertion
+      (IsolationSpec.readCommitted Database) _hStableInfer
+  -- PaperInfer.sound_with_invariant gives a LocalValid under RC's local rely.
+  have hLocalRC :
+      Logic.LocalValid
+        (Logic.relyMod R (IsolationSpec.readCommitted Database).exec)
+        txnId (transformerPre Iinfer SetLanguage.empty) body
+        (transformerPostI Iinfer SetLanguage.empty hObligations.effect) :=
+    PaperInfer.sound_with_invariant hStableIBi hObligations.infer
+  -- Under SI, the local rely is more restrictive: it forces visibleDb = visibleDb'.
+  -- So SI's local rely is a subset of RC's local rely, and LocalValid lifts.
+  have hRelySubset :
+      ∀ localDb v v',
+        Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec localDb v v' →
+          Logic.relyMod R (IsolationSpec.readCommitted Database).exec localDb v v' := by
+    intro localDb v v' hStep
+    rcases hStep with ⟨baseDb, hR, _hI, _hI'⟩
+    exact ⟨baseDb, hR, trivial, trivial⟩
+  have hLocalSI :
+      Logic.LocalValid
+        (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
+        txnId (transformerPre Iinfer SetLanguage.empty) body
+        (transformerPostI Iinfer SetLanguage.empty hObligations.effect) :=
+    Logic.localValid_of_relySubset hLocalRC hRelySubset
+  -- Convert post to txnSnapshotPost
+  have hLocalInfer :
+      Logic.LocalValid
+        (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
+        txnId (fun localDb visibleDb => localDb = [] ∧ Iinfer visibleDb) body
+        (txnSnapshotPost Iinfer R hObligations.effect) :=
+    Logic.localValid_conseq
+      (fun localDb visibleDb hPre =>
+        (transformerPre_empty_iff Iinfer localDb visibleDb).mpr hPre)
+      hLocalSI
+      (transformerPostI_to_txnSnapshotPost Iinfer R hObligations.effect)
+  have hLocal :
+      Logic.LocalValid
+        (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
+        txnId (fun localDb visibleDb => localDb = [] ∧ Ipre visibleDb) body
+        (txnSnapshotPost Iinfer R hObligations.effect) :=
+    Logic.localValid_conseq
+      (fun localDb visibleDb hPre =>
+        ⟨hPre.1, hPreToInfer visibleDb hPre.2⟩)
+      hLocalInfer
+      (fun _ _ hPost => hPost)
+  -- qstable for txnSnapshotPost was given for RC.commit; need SI.commit version.
+  -- SI.commit's relyMod is also a subset of RC.commit's, so qstable lifts.
+  have hQstableSI :
+      Logic.stableBiAssertion
+        (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).commit)
+        (txnSnapshotPost Iinfer R hObligations.effect) := by
+    intro localDb v v' hPost hStep
+    rcases hStep with ⟨baseDb, hR, _hI, _hI'⟩
+    exact hObligations.qstable _ _ _ hPost ⟨baseDb, hR, trivial, trivial⟩
+  exact Logic.txnGlobalValid_of_localValid_post
+    hStablePre hStablePost hExecStable hCommitStable
+    (fun _ _ => Iff.rfl)
+    hLocal hQstableSI hObligations.guarantee hCommitPost
+
 abbrev InsertLogPaperObligations (i : Nat) :=
   TxnPaperObligations R_insert (logSystemInvAtNext i) G_insert
     (insertTxnId i) (insertLogBody i)
