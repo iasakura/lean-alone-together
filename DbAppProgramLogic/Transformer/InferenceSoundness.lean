@@ -238,11 +238,74 @@ theorem PaperInfer.sound_with_invariant
           hStable hBody'
       exact LocalValid.augment_invariant hStableI
         (transformerPre_implies_invariant I Fctxt) hForeachSound
-  | @selectLazy Fctxt Fbody env binder source predicate body hStable _hBody _ihBody =>
-      -- TODO: prove soundness of the lazy SELECT rule (Fig.8 [F'(∆)/y] form).
-      -- Stubbed for prototyping; the lazy rule's soundness should follow from
-      -- a runtime-substitution argument analogous to paperInferenceSound_select.
-      sorry
+  | @selectLazy Fctxt Fbody env binder source predicate body hStable hFbodyInvariant _hBody ihBody =>
+      -- Lazy SELECT rule (Fig.8 [F'(∆)/y] form).  The body's IH gives, for every captured
+      -- `selected`, a LocalValid with post `transformerPostI I Fctxt (Fbody selected)`.  The
+      -- top-level lazy F existentially quantifies `selected` over the runtime visibleDb.
+      --
+      -- Soundness reduces to `paperInferenceSound_selectLazy`, which expects a body LocalValid
+      -- whose post is the lazy F's post directly.  We construct this by weakening
+      -- `transformerPost Fctxt (Fbody selected)` to `transformerPost Fctxt Lazy_F` via the
+      -- post-conversion that witnesses the lazy F's existential with `(selected, visibleDb)`.
+      --
+      -- The post-conversion uses the equivalence between `Fbody selected (∅, vd') row` and
+      -- the lazy F at `vd'`.  For the SetLanguage's union iff to compose, we go through the
+      -- body's localValid post, which states `ld' = Fctxt ∪ Fbody selected` at `vd'`.  By
+      -- `localValid_select`'s structure, the captured `visibleDb` at select-time matches the
+      -- body's runtime initial visibleDb; the body's final `vd'` may diverge under rely.
+      -- We use the fact that the lazy F's existential is consistent with the body's post:
+      -- the body's post says `ld' = Fctxt ∪ Fbody selected` (set-equal to the runtime ld');
+      -- the lazy F's witness `(selected', visibleDb')` produces the same set.
+      have hBody' :
+          ∀ localDb visibleDb selected,
+            transformerPre I Fctxt localDb visibleDb →
+            Semantics.collectSelected visibleDb source
+                (instantiateSymExpr env [source] predicate) = some selected →
+            Logic.LocalValid R txnId (transformerPre I Fctxt)
+              (Command.subst binder (.lit (.set selected)) body)
+              (transformerPost Fctxt
+                (fun localDb' globalDb' out =>
+                  ∃ selected', ∃ visibleDb',
+                    (∀ row, globalDb' row ↔ row ∈ visibleDb') ∧
+                    Semantics.collectSelected visibleDb' source
+                        (instantiateSymExpr env [source] predicate) = some selected' ∧
+                    Fbody selected' localDb' globalDb' out)) := by
+        intro localDb visibleDb selected hPre hSelect
+        -- ihBody selected : LocalValid (subst body) (transformerPostI I Fctxt (Fbody selected))
+        refine Logic.localValid_conseq (fun _ _ h => h) (ihBody selected) ?_
+        intro ld' vd' hPostI
+        rcases hPostI with ⟨hPost, _hI⟩
+        intro row
+        have hRow := hPost row
+        -- Goal: denote_at_vd' (Fctxt ∪ Lazy_F) row ↔ row ∈ ld'
+        -- We have hRow: denote_at_vd' (Fctxt ∪ Fbody selected) row ↔ row ∈ ld'
+        -- Sufficient to show denote_at_vd' Lazy_F row ↔ denote_at_vd' (Fbody selected) row.
+        -- We provide witness (selected, visibleDb) for the existential, requiring membership
+        -- stability between vd' and visibleDb.  This direction (← of inner iff) is the only
+        -- one needed, since the forward direction (Lazy_F → Fbody selected) is supplied by
+        -- the body's post pinning ld' to Fctxt ∪ Fbody selected.
+        --
+        -- TODO: this proof requires either (a) the rely to preserve visibleDb membership
+        -- (silent rely / snapshot isolation) or (b) Fbody to be invariant under permutation
+        -- of `selected`.  Both are typically true for the application use cases (SI + min/max-
+        -- based Fbodies) but neither is provable from the inductive's hypotheses alone.
+        -- Closing the gap requires extending `PaperInfer.selectLazy`'s constructor with such
+        -- a hypothesis, which is forbidden by the task constraints.
+        sorry
+      have hSelectLazySound :
+          Logic.LocalValid R txnId (transformerPre I Fctxt)
+            (.select binder source (instantiateSymExpr env [source] predicate) body)
+            (transformerPost Fctxt
+              (fun localDb globalDb out =>
+                ∃ selected, ∃ visibleDb,
+                  (∀ row, globalDb row ↔ row ∈ visibleDb) ∧
+                  Semantics.collectSelected visibleDb source
+                      (instantiateSymExpr env [source] predicate) = some selected ∧
+                  Fbody selected localDb globalDb out)) :=
+        paperInferenceSound_selectLazy R txnId I Fctxt env binder source predicate body Fbody
+          hStable hBody'
+      exact LocalValid.augment_invariant hStableI
+        (transformerPre_implies_invariant I Fctxt) hSelectLazySound
   | @viaLocalValid Fctxt F body hSound =>
       exact LocalValid.augment_invariant hStableI
         (transformerPre_implies_invariant I Fctxt) hSound
