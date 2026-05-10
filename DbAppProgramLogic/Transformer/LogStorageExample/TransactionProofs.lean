@@ -1285,7 +1285,7 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
   refine PaperInfer.viaLocalValid ?_
   refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
   unfold archiveLogBody
-  refine Logic.localValid_select_false (archiveTxnId i) _ _ logsVar rowVar _ _ ?_
+  refine Logic.localValid_select_false_pinVd (archiveTxnId i) _ _ logsVar rowVar _ _ ?_
   intro localDb visibleDb selected hPre _hSelect
   -- Substituted body: `.ite (.setNonempty (.lit (.set selected)))
   --   (archiveCompactBody[logsVar→selected]) .skip`
@@ -1336,18 +1336,40 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
         collectSelected_empty_no_match hSelectEmpty row hMem
       rw [hSat] at hNoMatch
       cases hNoMatch
-    -- Now use localValid_skip_false + conseq.
+    -- Use localValid_skip_false + conseq with the strengthened Pre' = Pre ∧ vd = visibleDb.
+    -- The key bridge: vd = visibleDb gives us hNoLogs to discharge archiveLogEffect at vd.
     refine Logic.localValid_conseq
-      (P := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
-      (P' := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
-      (Q' := transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db) SetLanguage.empty)
+      (P := fun ld vd =>
+        transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+            SetLanguage.empty ld vd ∧ vd = visibleDb)
+      (P' := fun ld vd =>
+        transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+            SetLanguage.empty ld vd ∧ vd = visibleDb)
+      (Q' := fun ld vd =>
+        transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+            SetLanguage.empty ld vd ∧ vd = visibleDb)
       (fun _ _ h => h)
       (Logic.localValid_skip_false (archiveTxnId i) _) ?_
     intro localDb' visibleDb' hPre'
-    simp [transformerPost, transformerPre] at hPre' |-
-    -- hPre' : transformerPre Iinfer empty localDb' visibleDb'
-    -- Goal: transformerPost empty F localDb' visibleDb'
-    sorry
+    rcases hPre' with ⟨hPreOnly, hVdEq⟩
+    subst hVdEq
+    rcases hPreOnly with ⟨hLocal, _hInv⟩
+    have hLocalEmpty : localDb' = [] := by
+      cases localDb' with
+      | nil => rfl
+      | cons row rest =>
+          have := (hLocal row).mpr List.mem_cons_self
+          simp [SetLanguage.denote, SetLanguage.empty] at this
+    subst hLocalEmpty
+    intro row
+    simp only [transformerPost, SetLanguage.denote, SetLanguage.SetExpr.union,
+      SetLanguage.empty, archiveLogEffect, archiveLogInsertEffect,
+      archiveLogDeleteEffect, false_or, List.not_mem_nil, iff_false]
+    rintro (⟨lo, hi0, hMin, _hMax, _hOut⟩ | ⟨src, n, lo, hi0, _hMin, _hMax, hSel, _hLo, _hHi, _hOut⟩)
+    · rcases hMin with ⟨⟨witLo, hWitMem, hWitKey⟩, _hMinUB⟩
+      exact hNoLogs witLo hWitMem _ hWitKey
+    · rcases hSel with ⟨hSrcMem, hSrcKey⟩
+      exact hNoLogs src hSrcMem _ hSrcKey
 
 /-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely.
 Same skeleton as archive's: `viaLocalValid + localValid_of_stutterRely`,
