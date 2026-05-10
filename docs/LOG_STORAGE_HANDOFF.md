@@ -23,6 +23,23 @@ RC and wants to retry RC in a separate session.
   proves `stableIsolation R IsolationSpec.snapshot.{exec,commit}` under
   it. This matches the precise form of the paper's `stable(R, I_ss)`
   argument (p.27:16).
+* **`globalValid_snapshot_of_paperObligations_post`** bridge (commit `13e2b8d`,
+  refined in `3346ab0` to take the SI-typed obligations directly).
+* **TxnPaperObligationsSI structure** (commit `3346ab0`): like
+  `TxnPaperObligations` but `infer`/`qstable` are over SI's local rely. The
+  abbrevs `ArchiveLogPaperObligations` and `SelectAllLogPaperObligations` now
+  resolve to this SI form.
+* **archive/select TxnSpecs switched to SI** (commits `bb506b8`, `3346ab0`):
+  `Spec.lean` and `Model.lean` use `IsolationSpec.snapshot` for archive and
+  select; `archiveLogTxnSpec_of_paperObligations` /
+  `archiveLogIndexedTxnSpec_of_{paperObligations,indexedPaperObligations}` /
+  `selectAllLogTxnSpec_of_paperObligations` route through the SI bridge.
+* **`txnSnapshotPost_stable_snapshot`** (commit `3346ab0` in
+  `SnapshotPost.lean`): mirrors the RC stability lemma for SI's commit
+  isolation. The `*_qstable_final` theorems were retyped to SI accordingly.
+
+`insertLog` stays under RC (its body has no body-snapshot dependence; the
+existing RC bridge works fine for it).
 
 ## What's still needed for the SI bridge
 
@@ -55,28 +72,33 @@ RC and wants to retry RC in a separate session.
       stability hypothesis. Largest refactor of the three.
 
 2. **Build `globalValid_snapshot_of_paperObligations_post`** (and
-   `_pre` variant) using the new stability lemmas. **Done in this
-   session** (commit `13e2b8d`); takes `relyNoUndo R` as a hypothesis
-   and produces `Logic.GlobalValid Ipre R (.txn txnId IsolationSpec.snapshot body) G Ipost`.
+   `_pre` variant) using the new stability lemmas. **Done.**
 
 3. **Switch `archiveLogIndexedTxnSpec` (and possibly
-   `selectAllLogTxnSpec`) to `IsolationSpec.snapshot`** in
-   `Spec.lean:142-152` and `Model.lean:399-403`. Update
-   `archiveLogTxnSpec_of_paperObligations` /
-   `archiveLogIndexedTxnSpec_of_indexedPaperObligations` to call the
-   new snapshot bridges.
+   `selectAllLogTxnSpec`) to `IsolationSpec.snapshot`**. **Done.**
 
 4. **Prove `paperInfer_archiveLogBody_indexed_final`** under the SI
-   rely. Under SI, `relyMod R IsolationSpec.snapshot.exec` forces
-   `visibleDb = visibleDb'` for any rely step seen by the body, so
-   the body sees a frozen visibleDb. The
-   `localValid_*` composition (or direct PaperInfer constructors)
-   should now go through with strict F definitions because
-   `selectedLogMin/Max` at body-end visibleDb agree with what the
-   body computed at select-time.
+   rely. Body sorry remains. Under SI, `relyMod R IsolationSpec.snapshot.exec`
+   forces `visibleDb = visibleDb'` for any rely step seen by the body, so
+   stability premises in the PaperInfer constructors are trivial. The
+   structure of the proof:
 
-5. **Same for `paperInfer_selectAllLogBody_final`** (subject to step (1)
-   working out for `R_select q`).
+   * Use `PaperInfer.viaLocalValid` with a `LocalValid` proof under SI's
+     local rely (which is silent on visible).
+   * `localValid_of_stutterRely` (`Logic.lean:305`) lifts a `LocalValid`
+     under the `False` rely to one under any silent rely. So we can prove
+     the body's behaviour assuming no env interference at all.
+   * Under no env interference, V_start = V_end. The body's writes
+     deterministically depend on V_start, and F's denotation at V_start
+     matches them by construction (`selectedLogMin/Max` at V_start equal
+     `loVar`/`hi0Var`).
+   * Composition via `localValid_select` / `localValid_ite` /
+     `localValid_letE` / `localValid_seq` / `localValid_insert` /
+     `localValid_delete` gives the body proof piecewise.
+
+5. **Same for `paperInfer_selectAllLogBody_final`**: use the same
+   structure, `R_select q`'s `relyNoUndo` instead of `R_archive`'s.
+   Body uses nested `.foreach` so use `localValid_foreach{,Start,Done,Next}`.
 
 ## The architectural problem (why naive RC fails here)
 
