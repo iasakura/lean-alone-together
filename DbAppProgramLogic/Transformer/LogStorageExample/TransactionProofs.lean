@@ -2114,14 +2114,33 @@ private theorem selectAllLogBody_foreach_invariant
             ∀ row, row ∈ ld ↔ selectAllLogBody_doneContrib q visibleDb (done ++ [head]) row)
           _ _ _ ?_ ?_
         · -- Body for head: subst doneVar (lit done) (subst entryVar (lit (record head)) <body>)
-          -- Subst doneVar is identity (body has no "done"). Subst entryVar replaces entry.
-          -- After substs, the ITE's condition `isLogExpr entry` becomes
-          -- `eqExpr (proj (lit (record head)) tableField) (int logTable)`.
-          -- Evaluation: head's tableField has either logTable or archiveTable (from hHeadKey).
-          -- Length: ~150 lines for both ITE branches (log + archive) including the
-          -- inner foreach for archive case and the doneContrib increment proof.
-          -- Skeleton in place; full transcription is mechanical from this point.
-          sorry
+          -- Simp the substitutions: doneVar identity, entryVar replaces.
+          simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
+            Expr.substFieldExprs_nil, Expr.subst_lit,
+            doneVar, entryVar, rangeDoneVar, rangeElemVar,
+            idField, loField, hiField, tableField,
+            show ("entry" : VarName) ≠ "rangeDone" from by decide,
+            show ("entry" : VarName) ≠ "num" from by decide,
+            show ("done" : VarName) ≠ "entry" from by decide,
+            show ("done" : VarName) ≠ "rangeDone" from by decide,
+            show ("done" : VarName) ≠ "num" from by decide,
+            if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
+            dite_eq_left_iff, dite_eq_right_iff]
+          -- Case-split on head's key type via hHeadKey
+          rcases hHeadKey with ⟨n, hLogKey⟩ | ⟨n, hArchKey⟩
+          · -- Log head: head's tableField = logTable, ITE takes true branch
+            -- Body becomes: insert (resultRecordExpr q (head's idField))
+            -- Need: localValid_ite_false where the cond evaluates to true
+            -- Then localValid_insert_false produces ld' = ld ++ [resultRowLit q n]
+            -- Membership invariant: ld' satisfies doneContrib (done ++ [head])
+            -- ~80 lines
+            sorry
+          · -- Archive head: ITE takes false branch, inner foreach over rangeRows
+            -- Body becomes: foreach (rangeRows idField head.lo head.hi) ... insert resultRow
+            -- Need: localValid_ite_false with cond false; then localValid_foreach
+            -- + inner induction over rangeRows. Result rows for each n ∈ [lo, hi)
+            -- ~120 lines
+            sorry
         · -- Recursive call via ih
           exact ih (done ++ [head]) hSplit'
 
