@@ -2010,10 +2010,9 @@ private theorem selectAllLogBody_foreach_invariant
     (hSelect : Semantics.collectSelected visibleDb rowVar
         (isStorageEntryExpr rowVar) = some selected) :
     ∀ (done rest : SetLit), done ++ rest = selected →
-    ∀ (ld_init : Database),
-      (∀ row, row ∈ ld_init ↔ selectAllLogBody_doneContrib q visibleDb done row) →
       Logic.LocalValid (ι := IsolationSpec Database) (fun _ _ _ => False) (selectTxnId q)
-        (fun ld vd => ld = ld_init ∧ vd = visibleDb)
+        (fun ld vd => vd = visibleDb ∧
+          ∀ row, row ∈ ld ↔ selectAllLogBody_doneContrib q visibleDb done row)
         (Command.foreachRuntime (Expr.setLit done) (Expr.setLit rest) doneVar entryVar
           (Command.ite (isLogExpr entryVar)
              (Command.insert (resultRecordExpr q (fieldExpr entryVar idField)))
@@ -2024,8 +2023,8 @@ private theorem selectAllLogBody_foreach_invariant
                 (Command.insert
                   (resultRecordExpr q (fieldExpr rangeElemVar idField))))))
         (transformerPost SetLanguage.empty (selectAllLogEffect (selectTxnId q) q)) := by
-  intro done rest hSplit ld_init hLdInit
-  induction rest generalizing done ld_init with
+  intro done rest hSplit
+  induction rest generalizing done with
   | nil =>
       -- Base case: rest = [], so done = selected. Apply foreachDone.
       have hDoneSel : done = selected := by simpa using hSplit
@@ -2036,16 +2035,16 @@ private theorem selectAllLogBody_foreach_invariant
         exact False.elim hR
       · -- Pre → Post conversion
         intro ld vd hPre
-        rcases hPre with ⟨hLd, hVd⟩
-        rw [hLd, hVd]
-        -- Goal: transformerPost empty (selectAllLogEffect q) ld_init visibleDb
+        rcases hPre with ⟨hVd, hLdMem⟩
+        rw [hVd]
+        -- Goal: transformerPost empty (selectAllLogEffect q) ld visibleDb
         have hWF : wellFormedTableFields visibleDb := by
           rcases hVisInv with ⟨_, _, _, _, hWF⟩
           exact hWF
         intro row
         simp only [transformerPost, SetLanguage.denote_union, SetLanguage.denote_empty,
           false_or]
-        rw [hLdInit row]
+        rw [hLdMem row]
         -- denote(selectAllLogEffect q) at visibleDb row ↔ doneContrib q visibleDb done row
         unfold selectAllLogBody_doneContrib selectAllLogEffect
         rw [SetLanguage.denote_bind]
@@ -2088,10 +2087,40 @@ private theorem selectAllLogBody_foreach_invariant
             have : srcRow.key? = some (archiveTable, n) := hSrcKeyEqRow'.trans hArch
             exact rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem this
   | cons head tail ih =>
-      -- Step case: foreachNext peels off head. Body subst entryVar (lit head) runs
-      -- ITE on isLog head. For log: insert resultRow. For archive: inner foreach.
-      -- After body, ld grows by head's contribution. Recurse with done ++ [head] and tail.
-      sorry
+      -- Step case: foreachNext peels off head, recursion handles tail.
+      -- head's contribution depends on its table (log vs archive).
+      have hSplit' : (done ++ [head]) ++ tail = selected := by
+        rw [List.append_assoc]
+        simpa using hSplit
+      have hWF : wellFormedTableFields visibleDb := by
+        rcases hVisInv with ⟨_, _, _, _, hWF⟩
+        exact hWF
+      -- head ∈ selected (from hSplit, head is in done ++ head :: tail = selected)
+      have hHeadInSel : head ∈ selected := by
+        rw [← hSplit]
+        simp
+      -- Bridge: head corresponds to some row in visibleDb with storage key
+      have hHeadRow := (mem_selected_iff_storage_entry hSelect hWF head).mp hHeadInSel
+      rcases hHeadRow with ⟨headRow, hHeadRowMem, hHeadKey, hHeadVis⟩
+      -- Apply localValid_foreachNext
+      apply Logic.localValid_foreachNext (fun _ _ _ => False) (selectTxnId q)
+      · -- stable Pre under False rely (trivial)
+        intro _ _ _ _ hR
+        exact False.elim hR
+      · -- seq body: <body for head>; foreachRuntime continued
+        -- We use localValid_seq_false with intermediate Pre' for (done ++ [head]).
+        refine Logic.localValid_seq_false (selectTxnId q) _
+          (fun ld vd => vd = visibleDb ∧
+            ∀ row, row ∈ ld ↔ selectAllLogBody_doneContrib q visibleDb (done ++ [head]) row)
+          _ _ _ ?_ ?_
+        · -- Body for head: subst doneVar (lit done) (subst entryVar (lit (record head)) <body>)
+          -- After subst, doneVar is identity (body doesn't use done). Entry → record head.
+          -- Then ITE branches on isLogExpr (record head). For log: insert. For archive:
+          -- inner foreach over rangeRows.
+          -- The body's effect grows ld by head's contribution.
+          sorry
+        · -- Recursive call via ih
+          exact ih (done ++ [head]) hSplit'
 
 /-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely.
 Same skeleton as archive's: `viaLocalValid + localValid_of_stutterRely`,
