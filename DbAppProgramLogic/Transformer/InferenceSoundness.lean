@@ -255,6 +255,84 @@ theorem PaperInfer.sound
     (sound_with_invariant hStableI h)
     (fun _ _ hPostI => hPostI.1)
 
+/-! ## Wrap soundness — Fig. 8's `⟦Fctxt[F]⟧⟨R,I⟩` stabilization
+
+The wrap operator from Fig. 8 produces an `(R, I)`-stable effect by either passing through `F`
+(when the joint `Fctxt ∪ F` is already stable) or weakening to `λΔ. ∃Δ'. I(Δ') ∧ F(Δ')`.
+
+Since the weakened branch ranges over all `I`-satisfying `Δ'`, it may include rows not actually
+written by the body. We therefore weaken the post-condition from the iff-style equality
+`localDb = Fctxt(Δ) ∪ F(Δ)` (`transformerPost`) to the subset-style upper bound
+`localDb ⊆ Fctxt(Δ) ∪ wrap(F)(Δ)` (`transformerPostSub`). This is a sound over-approximation: any
+row produced by the body is in the original `F(Δ)`, hence trivially in the larger `wrap(F)(Δ)`.
+
+The resulting `LocalValid` (with `transformerPostSub`) is suitable for the terminal hand-off to
+`Logic.txnGlobalValid_of_localValid`. -/
+
+/-- Stability of `transformerPostSub Fctxt F` under `R`, given:
+
+* `Fctxt` is `StableSetExprBi`-stable under `R`, and
+* `F` is `StableSetExprBi`-stable under `R`.
+
+This is the wrap's payoff: when `F = stabilizeWrap R I Fctxt F_raw`, `F` is always
+`StableSetExprBi`-stable (because the wrap's two branches both produce stable expressions),
+hence the joint subset post is stable. -/
+theorem transformerPostSub_stable
+    (R : LocalRely) (Fctxt F : SetExpr)
+    (hStableFctxt : StableSetExprBi R Fctxt)
+    (hStableF : StableSetExprBi R F) :
+    Logic.stableBiAssertion R (transformerPostSub Fctxt F) := by
+  intro localDb visibleDb visibleDb' hPost hR row hMem
+  have hRow := hPost row hMem
+  simp only [transformerPostSub, SetLanguage.denote_union, SetLanguage.denote,
+    SetLanguage.Env.ofDatabases] at hRow ⊢
+  rcases hRow with hCtx | hNew
+  · exact Or.inl ((hStableFctxt _ _ _ hR row).mp hCtx)
+  · exact Or.inr ((hStableF _ _ _ hR row).mp hNew)
+
+/-- Stability of `transformerPostSubI I Fctxt F` (the augmented subset post). -/
+theorem transformerPostSubI_stable
+    (R : LocalRely) (I : Assertion) (Fctxt F : SetExpr)
+    (hStableFctxt : StableSetExprBi R Fctxt)
+    (hStableF : StableSetExprBi R F)
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb)) :
+    Logic.stableBiAssertion R (transformerPostSubI I Fctxt F) := by
+  intro localDb visibleDb visibleDb' hPost hR
+  rcases hPost with ⟨hSub, hI⟩
+  refine ⟨?_, ?_⟩
+  · exact transformerPostSub_stable R Fctxt F hStableFctxt hStableF _ _ _ hSub hR
+  · exact hStableI _ _ _ hI hR
+
+/-- **Wrap-step soundness** for a `PaperInfer` derivation. Given any derivation producing `F`,
+together with a `StableSetExprBi`-stability witness for `Fctxt`, we obtain a `LocalValid` whose
+post-condition is the subset-style bound `transformerPostSubI I Fctxt (stabilizeWrap R I Fctxt F)`.
+
+This post-condition is stable under `R`, making it suitable for use with
+`Logic.txnGlobalValid_of_localValid`. -/
+theorem PaperInfer.sound_wrapped
+    {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
+    {Fctxt F : SetExpr} {body : Semantics.Program}
+    (h : PaperInfer R txnId I Fctxt body F) :
+    Logic.LocalValid R txnId (transformerPre I Fctxt) body
+      (transformerPostSubI I Fctxt (stabilizeWrap R I Fctxt F)) := by
+  have hSound : Logic.LocalValid R txnId (transformerPre I Fctxt) body (transformerPostI I Fctxt F) :=
+    sound_with_invariant hStableI h
+  refine Logic.localValid_conseq (fun _ _ hPre => hPre) hSound ?_
+  intro localDb visibleDb hPostI
+  refine ⟨?_, hPostI.2⟩
+  intro row hMem
+  have hEq := hPostI.1 row
+  simp only [transformerPost, SetLanguage.denote_union] at hEq
+  have hDenote := hEq.mpr hMem
+  rcases hDenote with hCtx | hF
+  · -- Row in Fctxt — stays in Fctxt under the wrap
+    exact (SetLanguage.denote_union _ Fctxt _ row).mpr (Or.inl hCtx)
+  · -- Row in F — use the inclusion F → stabilizeWrap R I Fctxt F at the current visibleDb
+    refine (SetLanguage.denote_union _ Fctxt _ row).mpr (Or.inr ?_)
+    have hI : I visibleDb := hPostI.2
+    exact subset_stabilizeWrap R I Fctxt F hI row hF
+
 end Transformer
 
 end DbAppProgramLogic

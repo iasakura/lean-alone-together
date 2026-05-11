@@ -6,19 +6,22 @@ namespace DbAppProgramLogic
 namespace Transformer
 
 /-!
-Paper-style inference judgment from Fig. 13 of `1710.09844v2.pdf`.
+Paper-style inference judgment from Fig. 8 (state-transformer rules) of `1710.09844v2.pdf`.
 
-Each constructor mirrors one rule of the appendix. Side-conditions that the paper writes inside
+Each constructor mirrors one rule of the paper. Side-conditions that the paper writes inside
 boxes (e.g. `stable(R, Fctxt)`) become explicit hypotheses on the constructor.
 
-The accompanying soundness theorem (Theorem C.18 in the appendix) is proved in
+The accompanying soundness theorem (Theorem 5.1) is proved in
 `Transformer/InferenceSoundness.lean` by induction on this judgment, reusing the per-rule
 soundness lemmas in `Transformer/Paper.lean`.
 
-This file deliberately covers the rules already proved sound in `Paper.lean`: SKIP, INSERT,
-DELETE, UPDATE, LET, SEQ, IF. The remaining rules (SELECT, FOREACH) are listed at the bottom as
-stub constructors taking explicit local soundness witnesses; they will be turned into syntactic
-constructors once `Select.lean` and `Foreach.lean` provide the full proof scaffolding.
+The constructors include the original Fig. 13 (textual inference) rules SKIP, INSERT, DELETE,
+UPDATE, LET, SEQ, IF, SELECT, FOREACH. The paper's Fig. 8 `⟦Fctxt[F]⟧⟨R,I⟩` stabilization is
+provided separately as a post-processing operation (`PaperInfer.localValid_subset_of_wrap` in
+`InferenceSoundness.lean`), turning a complete derivation's iff-style post-condition into a
+subset-style post-condition with a stability-friendly wrapped effect. This is the mechanism that
+fixes the rely-stability gap motivating earlier workarounds (`localValid_select_false_pinVd`,
+`selectLazy` with sorry).
 -/
 
 open SetLanguage
@@ -102,9 +105,9 @@ inductive PaperInfer (R : LocalRely) (txnId : TxnId) (I : Assertion) :
         (.ite (instantiateSymExpr env [] cond) thenBranch elseBranch)
         (.ite (formulaOfExpr { env with scalarVars := [] } (instantiateSymExpr env [] cond))
           FThen FElse)
-  /-- SELECT rule (Fig. 13): the body is verified for each possible selected-set obtained from the
+  /-- SELECT rule: the body is verified for each possible selected-set obtained from the
   predicate on the current visible database, via a recursive `PaperInfer` sub-derivation on the
-  substituted body. -/
+  substituted body. The produced effect `F` is uniform across all possible `selected`. -/
   | select
       {Fctxt F : SetExpr} {env : SymEnv}
       {binder source : VarName} {predicate : Expr} {body : Semantics.Program}
@@ -118,7 +121,7 @@ inductive PaperInfer (R : LocalRely) (txnId : TxnId) (I : Assertion) :
             (Command.subst binder (.lit (.set selected)) body) F) :
       PaperInfer R txnId I Fctxt
         (.select binder source (instantiateSymExpr env [source] predicate) body) F
-  /-- FOREACH rule (Fig. 13): the runtime body is verified against every possible evaluation of the
+  /-- FOREACH rule: the runtime body is verified against every possible evaluation of the
   source expression, via a recursive `PaperInfer` sub-derivation on the runtime-expanded body. -/
   | foreach
       {Fctxt F : SetExpr} {env : SymEnv}
@@ -138,6 +141,33 @@ inductive PaperInfer (R : LocalRely) (txnId : TxnId) (I : Assertion) :
       (hSound :
         Logic.LocalValid R txnId (transformerPre I Fctxt) body (transformerPost Fctxt F)) :
       PaperInfer R txnId I Fctxt body F
+
+/-! ## Paper-faithful subset post-condition for the wrap step
+
+The wrap operator `⟦Fctxt[F]⟧⟨R,I⟩` weakens an effect into an `(R,I)`-stable form. Since the
+weakened form is generally a *superset* of the original effect (it ranges over all `I`-satisfying
+global databases), the resulting post-condition is a subset assertion `localDb ⊆ wrap(Fctxt ∪ F)`
+rather than an equality. We define this here. -/
+
+/-- Subset-direction post-condition: the local database is *contained in* the denotation of
+`Fctxt ∪ F` evaluated against the visible database. Stable under wrap. -/
+def transformerPostSub (Fctxt F : SetExpr) : BiAssertion :=
+  fun localDb visibleDb =>
+    ∀ row, row ∈ localDb →
+      SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb) (.union Fctxt F) row
+
+/-- Weak post-condition with the visible-database invariant attached (for compositional use). -/
+def transformerPostSubI (I : Assertion) (Fctxt F : SetExpr) : BiAssertion :=
+  fun localDb visibleDb =>
+    transformerPostSub Fctxt F localDb visibleDb ∧ I visibleDb
+
+/-- The iff post implies the subset post (forward direction of the iff). -/
+theorem transformerPost_implies_transformerPostSub
+    (Fctxt F : SetExpr) (localDb visibleDb : Database)
+    (h : transformerPost Fctxt F localDb visibleDb) :
+    transformerPostSub Fctxt F localDb visibleDb := by
+  intro row hMem
+  exact (h row).mpr hMem
 
 end Transformer
 

@@ -102,6 +102,86 @@ theorem paperInfer_globalValid_zeroBalanceInsert_example
   exact PaperInfer.globalValid_txn hStableI hExecStable hCommitIsoStable
     hInfer hQstable hGuarantee hPreserve
 
+/-! ## Wrap-flavoured INSERT example
+
+A variant of the above that uses `PaperInfer.globalValid_txn_wrapped`. The user no longer has
+to provide an unwrapped `hQstable`; instead the wrapped subset-post is auto-stable thanks to
+`StableSetExprBi`-stability of the unwrapped INSERT effect (`stableSetExprBi_insertedRowSet`).
+-/
+
+/-- The wrap-flavoured capstone for the zero-balance INSERT example. The user supplies a
+wrapped-post guarantee (`hGuarantee`) and an auto-derived stability witness for the wrapped post
+(`hQstable`); everything else is shared with the original example. -/
+theorem paperInfer_globalValid_zeroBalanceInsert_example_wrapped
+    (R : Rely) (I : Assertion) (txnId : TxnId)
+    (isolation : IsolationSpec Database) (G : Guarantee)
+    (hStableI : Logic.stableAssertion R I)
+    (hExecStable : Logic.stableIsolation R isolation.exec)
+    (hCommitIsoStable : Logic.stableIsolation R isolation.commit)
+    (hStablePre :
+      Logic.stableBiAssertion (Logic.relyMod R isolation.exec)
+        (transformerPre I SetLanguage.empty))
+    (hFresh :
+      ∀ localDb visibleDb,
+        transformerPre I SetLanguage.empty localDb visibleDb →
+        Semantics.insertFresh visibleDb localDb exampleRecord)
+    (hGuarantee :
+      ∀ localDb visibleDb,
+        transformerPostSubI I SetLanguage.empty
+            (stabilizeWrap (Logic.relyMod R isolation.exec) I SetLanguage.empty
+              (exampleInsertedRowSet txnId))
+            localDb visibleDb →
+          G visibleDb (Database.flush localDb visibleDb))
+    (hPreserve : ∀ db db', I db → G db db' → I db') :
+    Logic.GlobalValid I R (.txn txnId isolation exampleInsertBody) G I := by
+  have hInfer :
+      PaperInfer (Logic.relyMod R isolation.exec) txnId I SetLanguage.empty
+        exampleInsertBody (exampleInsertedRowSet txnId) := by
+    refine PaperInfer.insert (env := { scalarVars := [], setVars := [] })
+      (expr := .record [("id", Expr.int 1), ("bal", Expr.int 0)])
+      hStablePre ?hClosed ?hFresh
+    · intro visibleDb row
+      rfl
+    · intro localDb visibleDb record hPre hEval
+      have hEq : record = exampleRecord := by
+        have hEvalLit :
+            Expr.eval
+                (instantiateSymExpr ({ scalarVars := [], setVars := [] } : SymEnv) []
+                  (.record [("id", Expr.int 1), ("bal", Expr.int 0)])) =
+              some (.record exampleRecord) := by
+          simpa [instantiateSymExpr_noScalars] using exampleRecord_eval
+        have := hEval.symm.trans hEvalLit
+        simpa using this
+      subst hEq
+      exact hFresh localDb visibleDb hPre
+  -- `hQstable` follows automatically from the wrap's stability properties.
+  have hStableICommit :
+      Logic.stableBiAssertion (Logic.relyMod R isolation.commit)
+        (fun (_ : Database) visibleDb => I visibleDb) := by
+    intro localDb visibleDb visibleDb' hI hStep
+    rcases hStep with ⟨_baseDb, hR, _, _⟩
+    exact hStableI _ _ hI hR
+  have hQstableAuto :
+      Logic.stableBiAssertion (Logic.relyMod R isolation.commit)
+        (transformerPostSubI I SetLanguage.empty
+          (stabilizeWrap (Logic.relyMod R isolation.exec) I SetLanguage.empty
+            (exampleInsertedRowSet txnId))) := by
+    refine transformerPostSubI_stable (Logic.relyMod R isolation.commit) I SetLanguage.empty
+      _ (stableSetExprBi_empty _) ?_ hStableICommit
+    -- The wrap result is stable under any rely because the unwrapped `insertedRowSet` is
+    -- itself stable under any rely.
+    classical
+    unfold stabilizeWrap
+    by_cases hStable :
+        Logic.stableBiAssertion (Logic.relyMod R isolation.exec)
+          (transformerPost SetLanguage.empty (exampleInsertedRowSet txnId))
+    · simp [hStable]
+      exact stableSetExprBi_insertedRowSet _ _ _ _
+    · simp [hStable]
+      exact stableSetExprBi_weakenF _ I _
+  exact PaperInfer.globalValid_txn_wrapped hStableI hExecStable hCommitIsoStable
+    hInfer hQstableAuto hGuarantee hPreserve
+
 /-! ## Parallel INSERT example -/
 
 /-- The second concrete record literal for the parallel example (distinct id). -/

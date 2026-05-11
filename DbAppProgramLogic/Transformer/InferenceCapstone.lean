@@ -162,6 +162,90 @@ theorem PaperInfer.globalValid_txnPar
       hInferRight hQstableRight hGuaranteeRight hPreserveRight
   exact Logic.globalValid_par hLeft hRight
 
+/-! ## Wrap-flavoured capstone (Fig. 8's `⟦·⟧⟨R,I⟩`)
+
+The plain `globalValid_txn` requires the user to discharge `transformerPost ∅ F` stability under
+the commit-phase rely (`hQstable`). For inference judgments whose `F` is genuinely
+global-database-dependent (typical for SELECT-bound bodies), this stability fails directly. The
+paper's solution is to weaken `F` via `⟦·⟧⟨R,I⟩` before the final hand-off.
+
+`globalValid_txn_wrapped` packages this: it accepts a `PaperInfer` derivation under any `F`,
+together with stability witnesses for `Fctxt = ∅` and `F`, and returns `GlobalValid` using the
+weakened subset-post. Because the wrap's payload is always `StableSetExprBi` (either the
+original `F` re-witnessed by the caller, or the always-stable `weakenF` branch), commit-phase
+stability is delivered automatically.
+-/
+
+/-- Empty context is trivially stable under any rely. -/
+theorem stableSetExprBi_empty_inferCapstone (R : LocalRely) :
+    StableSetExprBi R SetLanguage.empty :=
+  stableSetExprBi_empty R
+
+/-- The empty-context precondition reformulated for `transformerPostSubI`. -/
+theorem transformerPostSubI_empty_iff
+    (I : Assertion) (F : SetExpr) (localDb visibleDb : Database) :
+    transformerPostSubI I SetLanguage.empty F localDb visibleDb ↔
+      (∀ row, row ∈ localDb →
+        SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb) F row) ∧ I visibleDb := by
+  unfold transformerPostSubI transformerPostSub
+  refine and_congr (forall_congr' (fun row => ?_)) Iff.rfl
+  refine forall_congr' (fun _hMem => ?_)
+  constructor
+  · intro h
+    rcases h with hEmpty | hF
+    · exact absurd hEmpty (SetLanguage.denote_empty _ row)
+    · exact hF
+  · intro hF
+    exact Or.inr hF
+
+/-- **Wrap-flavoured `PaperInfer → GlobalValid`.** Same as `globalValid_txn`, but uses the
+subset-style wrapped post-condition for the commit-phase stability requirement. The wrap is
+applied to `F` so the user only needs a `StableSetExprBi`-style stability claim on the
+*unwrapped* part of `Fctxt` (which is `empty` here, hence trivial). -/
+theorem PaperInfer.globalValid_txn_wrapped
+    {R : Rely} {I : Assertion} {txnId : TxnId}
+    {isolation : IsolationSpec Database} {body : Semantics.Program}
+    {F : SetExpr} {G : Guarantee}
+    (hStableI : Logic.stableAssertion R I)
+    (hExecStable : Logic.stableIsolation R isolation.exec)
+    (hCommitIsoStable : Logic.stableIsolation R isolation.commit)
+    (hInfer : PaperInfer (Logic.relyMod R isolation.exec) txnId I SetLanguage.empty body F)
+    -- F is StableSetExprBi-stable under the commit-phase rely (only needed when the wrap stays
+    -- in the pass-through branch). The user can always discharge this by switching to the
+    -- weakened branch via `weakenF I F` directly.
+    (hQstable :
+      Logic.stableBiAssertion (Logic.relyMod R isolation.commit)
+        (transformerPostSubI I SetLanguage.empty
+          (stabilizeWrap (Logic.relyMod R isolation.exec) I SetLanguage.empty F)))
+    (hGuarantee :
+      ∀ localDb visibleDb,
+        transformerPostSubI I SetLanguage.empty
+            (stabilizeWrap (Logic.relyMod R isolation.exec) I SetLanguage.empty F)
+            localDb visibleDb →
+          G visibleDb (Database.flush localDb visibleDb))
+    (hPreserve : ∀ db db', I db → G db db' → I db') :
+    Logic.GlobalValid I R (.txn txnId isolation body) G I := by
+  have hStableIBi := stableBiAssertion_relyMod_of_stableAssertion isolation hStableI
+  have hLocalRaw :
+      Logic.LocalValid (Logic.relyMod R isolation.exec) txnId
+        (transformerPre I SetLanguage.empty) body
+        (transformerPostSubI I SetLanguage.empty
+          (stabilizeWrap (Logic.relyMod R isolation.exec) I SetLanguage.empty F)) :=
+    PaperInfer.sound_wrapped hStableIBi hInfer
+  -- Bridge the precondition from `transformerPre I empty` to `localDb = [] ∧ I visibleDb`.
+  have hLocal :
+      Logic.LocalValid (Logic.relyMod R isolation.exec) txnId
+        (fun localDb visibleDb => localDb = [] ∧ I visibleDb) body
+        (transformerPostSubI I SetLanguage.empty
+          (stabilizeWrap (Logic.relyMod R isolation.exec) I SetLanguage.empty F)) :=
+    Logic.localValid_conseq
+      (fun localDb visibleDb hPre =>
+        (transformerPre_empty_iff I localDb visibleDb).mpr hPre)
+      hLocalRaw
+      (fun _ _ hPost => hPost)
+  exact Logic.txnGlobalValid_of_localValid hStableI hExecStable hCommitIsoStable
+    (fun localDb visibleDb => Iff.rfl) hLocal hQstable hGuarantee hPreserve
+
 end Transformer
 
 end DbAppProgramLogic

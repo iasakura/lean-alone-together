@@ -15,7 +15,8 @@ longer the surface API.
 | Fig. 13 inference judgment `Fctxt ⊢ c ⟹⟨i,R,I⟩ F` | Formalized as `PaperInfer` | `DbAppProgramLogic/Transformer/Inference.lean` |
 | Theorem C.18 (paper inference soundness) | Proved as `PaperInfer.sound` | `DbAppProgramLogic/Transformer/InferenceSoundness.lean` |
 | C.18 with `I` carried in the post | Proved as `PaperInfer.sound_with_invariant` | same |
-| Stabilization operator `⌊·⌋⟨R,I⟩` | Defined; `subset_stabilize` proved | `DbAppProgramLogic/Transformer/Stabilize.lean` |
+| Wrap-flavoured post-processing | `PaperInfer.sound_wrapped`, `globalValid_txn_wrapped` | `InferenceSoundness.lean`, `InferenceCapstone.lean` |
+| Stabilization operator `⟦·⟧⟨R,I⟩` (Fig. 8) | Defined as `stabilizeWrap`; key inclusion and stability lemmas proved | `DbAppProgramLogic/Transformer/Stabilize.lean` |
 | Per-rule local soundness lemmas | `paperInferenceSound_{skip,insert,delete,update,let,seq,ite}` | `DbAppProgramLogic/Transformer/Paper.lean` |
 | `SELECT` and `FOREACH` constructors | First-class constructors of `PaperInfer`, plumbed through soundness | `Inference.lean`, `InferenceSoundness.lean`, `Select.lean`, `Foreach.lean` |
 | Standard-axiom hygiene | `PaperInfer.sound` and `PaperInfer.sound_with_invariant` depend only on `[propext, Classical.choice, Quot.sound]` | verified via `#print axioms` |
@@ -48,7 +49,12 @@ that each need `I` at the mid-point.
 - `DbAppProgramLogic/Transformer/InferenceSoundness.lean`
   - `PaperInfer.sound` (Theorem C.18) and `PaperInfer.sound_with_invariant`.
 - `DbAppProgramLogic/Transformer/Stabilize.lean`
-  - `stabilize`, `StableSetExpr`, `stableSetExpr_stabilize`, `subset_stabilize`.
+  - `stabilizeWrap` (Fig. 8's `⟦Fctxt[F]⟧⟨R,I⟩`), `weakenF`, `StableSetExprBi`,
+    `subset_stabilizeWrap`, `stableSetExprBi_stabilizeWrap`,
+    `stableBiAssertion_transformerPost_stabilizeWrap`, and per-shape stability lemmas
+    (`stableSetExprBi_empty`/`union`/`singleton`/`insertedRowSet`).
+  - Companion subset-style post `transformerPostSub`/`transformerPostSubI` lives in
+    `Transformer/Inference.lean` and is what `sound_wrapped`/`globalValid_txn_wrapped` produce.
 - `DbAppProgramLogic/Transformer/Paper.lean`
   - Per-rule local soundness lemmas listed above.
 - `DbAppProgramLogic/Transformer/Select.lean`
