@@ -442,6 +442,45 @@ private theorem mem_selected_iff_log_row
       (satisfiesPredicate_isTableExpr_iff sr logTable).mpr hTab
     exact ⟨sr, hSrMem, hSat, hVis⟩
 
+/-- Storage-entry analogue of `mem_selected_iff_log_row`: under wellFormedness,
+`rec ∈ selected` (where selected comes from `collectSelected` over
+`isStorageEntryExpr`) iff `rec = row.visible` for some `row ∈ vd` with key
+in {logTable, archiveTable}. -/
+private theorem mem_selected_iff_storage_entry
+    {vd : Database} {selected : SetLit}
+    (hSelect : Semantics.collectSelected vd rowVar (isStorageEntryExpr rowVar) = some selected)
+    (hWF : wellFormedTableFields vd) (rec : RecordLit) :
+    rec ∈ selected ↔
+      ∃ row, row ∈ vd ∧
+        ((∃ n : Int, row.key? = some (logTable, n)) ∨
+          (∃ n : Int, row.key? = some (archiveTable, n))) ∧
+        row.visible = rec := by
+  rw [Semantics.mem_collectSelected_iff hSelect]
+  constructor
+  · rintro ⟨sr, hSrMem, hSat, hVis⟩
+    have hTabOr := (satisfiesPredicate_isStorageEntryExpr_iff sr).mp hSat
+    have hKey : (∃ n, sr.key? = some (logTable, n)) ∨
+        (∃ n, sr.key? = some (archiveTable, n)) := by
+      rcases hWF sr hSrMem with ⟨t, n, hSrKey, hSrTab⟩
+      rcases hTabOr with hLog | hArch
+      · rw [hSrTab] at hLog
+        have hTEq : t = logTable := Option.some.inj hLog
+        exact Or.inl ⟨n, hTEq ▸ hSrKey⟩
+      · rw [hSrTab] at hArch
+        have hTEq : t = archiveTable := Option.some.inj hArch
+        exact Or.inr ⟨n, hTEq ▸ hSrKey⟩
+    exact ⟨sr, hSrMem, hKey, hVis⟩
+  · rintro ⟨sr, hSrMem, hKey, hVis⟩
+    have hTabOr : rowFieldInt? sr tableField = some logTable ∨
+        rowFieldInt? sr tableField = some archiveTable := by
+      rcases hKey with ⟨n, hLog⟩ | ⟨n, hArch⟩
+      · exact Or.inl (rowFieldInt?_tableField_of_key_wellFormed hWF hSrMem hLog)
+      · exact Or.inr (rowFieldInt?_tableField_of_key_wellFormed hWF hSrMem hArch)
+    have hSat : Semantics.satisfiesPredicate rowVar (isStorageEntryExpr rowVar) sr.visible =
+        some true :=
+      (satisfiesPredicate_isStorageEntryExpr_iff sr).mpr hTabOr
+    exact ⟨sr, hSrMem, hSat, hVis⟩
+
 /-- For a log row, its visible record's `intField? idField` equals the
 log id from its key. -/
 private theorem intField?_idField_of_log_row {row : Row} {n : Int}
@@ -2002,14 +2041,29 @@ theorem paperInfer_selectAllLogBody_final (q : Nat) :
       exact hEval.symm
     subst hRecordsEq
     -- Now goal: LocalValid (False) txnId Pre (foreachRuntime [] selected ...) Post.
-    -- Induct on `selected` via `localValid_foreachDone` (rest=[])
-    -- and `localValid_foreachNext` (rest=cons). The loop invariant is:
-    --   at (done, rest) with selected = done ++ rest,
-    --   ld_curr = denote(bind done (selectEntryResultEffect q)) at vd_curr.
-    -- Substantial induction (~150 lines): each iteration runs ITE
-    -- (log entry → insert one resultRow; archive entry → inner foreach over
-    -- rangeRows, each inserting a resultRow). Post matches when rest = [] and
-    -- done = full selected.
+    -- We prove a generalized form: for any (done, rest) with done ++ rest = selected,
+    -- the foreachRuntime produces ld that matches "bind selected (selectEntryResultEffect q)"
+    -- at visibleDb. The loop invariant captures the accumulated state.
+    --
+    -- Key observation: under pinVd (vd = visibleDb in Pre') and False rely,
+    -- the body executes at visibleDb throughout. The accumulated ld is determined
+    -- by which entries from `done` have been processed.
+    --
+    -- Generalize: introduce the loop invariant as a Pre' that captures
+    -- "ld matches contributions from `done` entries, where done is the
+    -- already-processed prefix of selected".
+    --
+    -- For each entry rec ∈ selected: rec = row.visible for some row ∈ visibleDb
+    -- matching isStorageEntry (via mem_selected_iff for storage). The body
+    -- inserts result rows for that row.
+    --
+    -- The full closure of this induction requires careful bookkeeping
+    -- (Row vs RecordLit bridge, ITE-foreach decomposition for log/archive cases,
+    -- inner foreach for archive's range). Deferred as future work — the existing
+    -- structural lemmas (selectAllLogEffect_resultRowLit_iff_expanded,
+    -- selectedStorageEntriesSet_denote_iff, mem_collectSelected_iff) provide
+    -- the building blocks but threading them through the foreach loop invariant
+    -- is ~150 lines of careful structural induction.
     sorry
 
 /-- Commit-stability for the indexed insert effect. -/
