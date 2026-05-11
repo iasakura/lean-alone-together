@@ -2223,12 +2223,26 @@ theorem paperInfer_selectAllLogBody_final (q : Nat) :
     -- Length estimate: ~250 lines fully written out. Each iteration's effect
     -- decomposition (ITE → insert / nested foreach) is the bulk.
     --
-    -- Since the lemma's statement and proof are mechanically derivable from
-    -- the paper's Appendix C FOREACH proof transcribed to Lean's specific
-    -- combinators, this is left as a single-session focused task. The
-    -- supporting infrastructure (helpers, simp lemmas, bridges) is now all
-    -- in place to make the transcription mechanical.
-    sorry
+    -- Apply the foreach loop invariant with done = [], rest = records (= selected).
+    refine Logic.localValid_conseq ?_
+      (selectAllLogBody_foreach_invariant q visibleDb hPre.2 records _hSelect
+        [] records (List.nil_append _)) ?_
+    · -- Pre-conversion: (transformerPre logSystemInv empty ld vd ∧ vd = visibleDb) →
+      --                 (vd = visibleDb ∧ ∀ row, row ∈ ld ↔ doneContrib q visibleDb [] row)
+      intro ld vd hPre'
+      rcases hPre' with ⟨hPre1, hVd⟩
+      refine ⟨hVd, ?_⟩
+      intro row
+      constructor
+      · intro hRow
+        have : SetLanguage.denote (SetLanguage.Env.ofDatabases [] vd)
+            SetLanguage.empty row := (hPre1.1 row).mpr hRow
+        simp [SetLanguage.denote_empty] at this
+      · rintro ⟨rec, hRec, _⟩
+        cases hRec
+    · -- Post-conversion: identity.
+      intros _ _ hPost
+      exact hPost
 
 /-- Commit-stability for the indexed insert effect. -/
 theorem insertLogIndexedEffect_qstable_final (i : Nat) :
