@@ -1973,10 +1973,23 @@ theorem paperInfer_selectAllLogBody_final (q : Nat) :
   refine Logic.localValid_select_false_pinVd (selectTxnId q) _ _ entriesVar rowVar _ _ ?_
   intro localDb visibleDb selected hPre _hSelect
   -- Substituted body: foreach (lit (set selected)) doneVar entryVar (ite ...)
-  simp only [Command.subst, Expr.subst]
+  simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
+    Expr.substFieldExprs_nil, Expr.subst_lit, Value.subst_toExpr,
+    entriesVar, doneVar, entryVar, rangeDoneVar, rangeElemVar, rowVar,
+    idField, loField, hiField, tableField,
+    show ("entries" : VarName) ≠ "done" from by decide,
+    show ("entries" : VarName) ≠ "entry" from by decide,
+    show ("entries" : VarName) ≠ "rangeDone" from by decide,
+    show ("entries" : VarName) ≠ "num" from by decide,
+    show ("entries" : VarName) ≠ "row" from by decide,
+    if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
+    dite_eq_left_iff, dite_eq_right_iff, or_self, dite_false]
   -- The foreach iterates over `selected`. Each iteration runs the ite body.
   -- The accumulated ld should match `bind selected (selectEntryResultEffect q)`.
   -- Substantial induction on selected required (foreach loop invariant).
+  -- TODO(pending VCG refactor): replace this False-rely + foreachRuntime
+  -- induction approach with the paper-Fig.8 wrapped-F derivation (subagent
+  -- working in worktree).
   sorry
 
 /-- Commit-stability for the indexed insert effect. -/
