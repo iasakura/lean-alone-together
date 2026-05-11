@@ -1447,9 +1447,14 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
   refine PaperInfer.selectLazy
     (env := emptySymEnv)
     (Fbody := archiveLogEffect_with_selected (archiveTxnId i) i)
-    ?_ ?_
+    ?_ ?_ ?_
   · -- stability of transformerPre under SI's local rely (silent → trivial)
     exact transformerPre_stable_relyMod_snapshot _ _
+  · -- hCollectStable: under SI silent rely, R doesn't change vd, so
+    -- collectSelected is trivially preserved.
+    intro localDb visibleDb visibleDb' hR
+    have := relyMod_snapshot_exec_silent localDb visibleDb visibleDb' hR
+    rw [this]
   · -- per-`selected` body PaperInfer
     -- Fbody is parameterised by selected; archiveCompactBody[logsVar→selected]
     -- has its writes pinned to `selected` (lo/hi from selectedLitMin/Max),

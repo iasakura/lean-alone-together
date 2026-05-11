@@ -140,6 +140,13 @@ inductive PaperInfer (R : LocalRely) (txnId : TxnId) (I : Assertion) :
       {Fctxt : SetExpr} {Fbody : SetLit → SetExpr} {env : SymEnv}
       {binder source : VarName} {predicate : Expr} {body : Semantics.Program}
       (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+      (hCollectStable :
+        ∀ localDb visibleDb visibleDb',
+          R localDb visibleDb visibleDb' →
+          Semantics.collectSelected visibleDb' source
+              (instantiateSymExpr env [source] predicate) =
+            Semantics.collectSelected visibleDb source
+              (instantiateSymExpr env [source] predicate))
       (hBody :
         ∀ selected,
           PaperInfer R txnId I Fctxt
