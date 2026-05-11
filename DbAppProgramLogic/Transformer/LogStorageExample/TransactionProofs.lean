@@ -149,6 +149,14 @@ when `R` admits no round-trips: if `MultiStep R A B` and
 `MultiStep R B A`, then `A = B`. This is the form in which the paper's
 `stable(R, I_ss)` argument actually holds (p.27:16). -/
 
+/-- Note: `relyNoUndo R_archive` and `relyNoUndo R_select` as stated below are
+unprovable. `G_insert/G_archive/G_select` are implications conditional on
+`logSystemInv oldDb`, so from non-invariant states `R_*` is vacuously true and
+arbitrary round-trips become possible. A provable variant would be
+`∀ A B, I A → I B → MultiStep R A B → MultiStep R B A → A = B` (assuming
+`I = logSystemInv`); migrating to this stronger signature requires updating
+`stableIsolation_*_of_noUndo` and the `globalValid_snapshot_*` capstones to
+thread the invariant. Left as design TODO. -/
 def relyNoUndo (R : Rely) : Prop :=
   ∀ A B, Logic.MultiStep R A B → Logic.MultiStep R B A → A = B
 
