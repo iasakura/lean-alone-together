@@ -2114,10 +2114,13 @@ private theorem selectAllLogBody_foreach_invariant
             ∀ row, row ∈ ld ↔ selectAllLogBody_doneContrib q visibleDb (done ++ [head]) row)
           _ _ _ ?_ ?_
         · -- Body for head: subst doneVar (lit done) (subst entryVar (lit (record head)) <body>)
-          -- After subst, doneVar is identity (body doesn't use done). Entry → record head.
-          -- Then ITE branches on isLogExpr (record head). For log: insert. For archive:
-          -- inner foreach over rangeRows.
-          -- The body's effect grows ld by head's contribution.
+          -- Subst doneVar is identity (body has no "done"). Subst entryVar replaces entry.
+          -- After substs, the ITE's condition `isLogExpr entry` becomes
+          -- `eqExpr (proj (lit (record head)) tableField) (int logTable)`.
+          -- Evaluation: head's tableField has either logTable or archiveTable (from hHeadKey).
+          -- Length: ~150 lines for both ITE branches (log + archive) including the
+          -- inner foreach for archive case and the doneContrib increment proof.
+          -- Skeleton in place; full transcription is mechanical from this point.
           sorry
         · -- Recursive call via ih
           exact ih (done ++ [head]) hSplit'
