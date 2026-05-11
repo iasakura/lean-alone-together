@@ -539,11 +539,53 @@ def transformerPost (Fctxt F : SetLanguage.SetExpr) : BiAssertion :=
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb) (.union Fctxt F) row ↔
         row ∈ localDb
 
-/-- Paper-style local soundness statement corresponding to Theorem 5.1. -/
+/-- Paper Fig.8's `⟦Fctxt[F]⟧⟨R,I⟩` stability wrap, encoded uniformly as an
+existential over an `I`-witnessing `vd'` together with an implication that
+pins `vd' = vd` when `transformerPost Fctxt F` is `R`-stable.
+
+Reading:
+- **stable branch**: `stableBiAssertion R (transformerPost Fctxt F)` is `True`, so
+  the implication forces `vd' = vd` and the post collapses to the iff at the
+  operational `vd` (paper's identity branch).
+- **unstable branch**: the stability is `False`, the implication is vacuous,
+  `vd'` is free — only required to satisfy `I` and the iff at that `vd'`
+  (paper's `weakenF` branch, Skolem-style).
+
+In both branches, soundness picks `vd' := vd` as the existential witness
+(using `I vd` from the precondition), producing a uniform proof obligation
+regardless of stability. -/
+def transformerPostWrapped
+    (R : LocalRely) (I : Assertion) (Fctxt F : SetLanguage.SetExpr) : BiAssertion :=
+  fun localDb visibleDb =>
+    ∃ vd',
+      (Logic.stableBiAssertion R (transformerPost Fctxt F) → vd' = visibleDb) ∧
+        I vd' ∧
+        transformerPost Fctxt F localDb vd'
+
+/-- Paper-style local soundness statement corresponding to Theorem 5.1.
+Iff-form post (`transformerPost Fctxt F`). -/
 def paperInferenceSound (R : LocalRely) (txnId : TxnId)
     (I : Assertion) (Fctxt : SetLanguage.SetExpr)
     (body : Semantics.Program) (F : SetLanguage.SetExpr) : Prop :=
   Logic.LocalValid R txnId (transformerPre I Fctxt) body (transformerPost Fctxt F)
+
+/-- Paper Fig.8 wrap-aware soundness, using `transformerPostWrapped`. -/
+def paperInferenceSoundWrapped (R : LocalRely) (txnId : TxnId)
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr)
+    (body : Semantics.Program) (F : SetLanguage.SetExpr) : Prop :=
+  Logic.LocalValid R txnId (transformerPre I Fctxt) body
+    (transformerPostWrapped R I Fctxt F)
+
+/-- Bridge: an iff post implies the wrapped post, using `I vd` from the
+precondition's invariant. Universal witness choice `vd' := vd` works in both
+stable and unstable branches of the wrap. -/
+theorem transformerPostWrapped_of_transformerPost
+    {R : LocalRely} {I : Assertion} {Fctxt F : SetLanguage.SetExpr}
+    {localDb visibleDb : Database}
+    (hI : I visibleDb)
+    (hPost : transformerPost Fctxt F localDb visibleDb) :
+    transformerPostWrapped R I Fctxt F localDb visibleDb :=
+  ⟨visibleDb, fun _ => rfl, hI, hPost⟩
 
 /-- Variant of `paperInferenceSound` that keeps the symbolic environment explicit. The command is
 materialized against the current visible database before the `LocalValid` judgment is stated. This

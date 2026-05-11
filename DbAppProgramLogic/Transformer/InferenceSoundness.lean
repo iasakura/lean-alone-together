@@ -300,6 +300,29 @@ theorem PaperInfer.sound
     (sound_with_invariant hStableI h)
     (fun _ _ hPostI => hPostI.1)
 
+/-- Paper Fig.8 wrap-aware soundness. The iff post from `PaperInfer.sound`
+is lifted to the existential-wrapped post via `vd' := vd` witness, using `I vd`
+preserved through `R` (via `localMultiStep_preserves_invariant`).
+
+In the stable branch of `transformerPostWrapped`, the wrap forces `vd' = vd`
+and the iff post is recovered exactly. In the unstable branch, `vd'` is free
+and `vd' := vd` discharges the existential trivially. -/
+theorem PaperInfer.sound_wrapped
+    {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
+    {Fctxt F : SetExpr} {body : Semantics.Program}
+    (h : PaperInfer R txnId I Fctxt body F) :
+    paperInferenceSoundWrapped R txnId I Fctxt body F := by
+  intro localDb visibleDb finalCfg hPre hMulti hSkip
+  have hPost := PaperInfer.sound hStableI h localDb visibleDb finalCfg hPre hMulti hSkip
+  have hIInit : I visibleDb := hPre.2
+  have hIFinal : I finalCfg.visibleDb :=
+    localMultiStep_preserves_invariant
+      (cfg := ⟨body, localDb, visibleDb⟩)
+      (cfg' := finalCfg)
+      hStableI hMulti hIInit
+  exact transformerPostWrapped_of_transformerPost hIFinal hPost
+
 end Transformer
 
 end DbAppProgramLogic
