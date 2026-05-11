@@ -149,14 +149,6 @@ when `R` admits no round-trips: if `MultiStep R A B` and
 `MultiStep R B A`, then `A = B`. This is the form in which the paper's
 `stable(R, I_ss)` argument actually holds (p.27:16). -/
 
-/-- Note: `relyNoUndo R_archive` and `relyNoUndo R_select` as stated below are
-unprovable. `G_insert/G_archive/G_select` are implications conditional on
-`logSystemInv oldDb`, so from non-invariant states `R_*` is vacuously true and
-arbitrary round-trips become possible. A provable variant would be
-`∀ A B, I A → I B → MultiStep R A B → MultiStep R B A → A = B` (assuming
-`I = logSystemInv`); migrating to this stronger signature requires updating
-`stableIsolation_*_of_noUndo` and the `globalValid_snapshot_*` capstones to
-thread the invariant. Left as design TODO. -/
 def relyNoUndo (R : Rely) : Prop :=
   ∀ A B, Logic.MultiStep R A B → Logic.MultiStep R B A → A = B
 
@@ -2317,7 +2309,7 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
       txnSnapshotPost (logSystemInvAtNext i) R_insert
           (insertLogEffect (insertTxnId i) i) localDb visibleDb →
         G_insert visibleDb (Database.flush localDb visibleDb) := by
-  intro localDb visibleDb hPost _hVisInv
+  intro localDb visibleDb hPost
   -- Snapshot info
   rcases hPost with ⟨snapshotDb, hSnap, hReach, hRows⟩
   -- Visible satisfies logSystemInvAtNext i by stability under R_insert
@@ -2818,7 +2810,7 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
       txnSnapshotPost (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
           R_archive (archiveLogEffect (archiveTxnId i) i) localDb visibleDb →
         G_archive visibleDb (Database.flush localDb visibleDb) := by
-  intro localDb visibleDb hPost hVisInv
+  intro localDb visibleDb hPost
   -- Snapshot info
   rcases hPost with ⟨snapshotDb, hSnapBoth, hReach, hRows⟩
   have hSnapLogInvFull : logSystemInv snapshotDb := hSnapBoth.1
@@ -2829,7 +2821,8 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
   -- Visible's storage shape via stability lemma
   rcases R_archive_multiStep_storageShape hReach hSnapLogInv hSnapShape with
     ⟨visNext, hSnapNextLeVis, hVisShape⟩
-  have hVisLogInv : logSystemInv visibleDb := hVisInv
+  have hVisLogInv : logSystemInv visibleDb :=
+    logSystemInv_stable_multiStep logSystemInv_stable_R_archive hReach hSnapLogInv
   -- Visible has archive-id freshness
   have hVisFresh : archiveKeysFreshFrom i visibleDb :=
     archiveKeysFreshFrom_visible_of_indexedSnapshotPost i localDb visibleDb
@@ -3625,8 +3618,14 @@ theorem selectAllLogEffect_guarantee_final (q : Nat) :
       txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
           localDb visibleDb →
         G_select q visibleDb (Database.flush localDb visibleDb) := by
-  intro localDb visibleDb hPost hVisInv
-  exact selectAllLogEffect_guaranteeCore_final q localDb visibleDb hVisInv hPost
+  intro localDb visibleDb hPost
+  -- G_select is now unconditional (= G_selectCore). Derive logSystemInv visibleDb
+  -- from txnSnapshotPost + stability under R_select.
+  rcases hPost with ⟨snapshotDb, hSnapInv, hReach, _hRows⟩
+  have hVisInv : logSystemInv visibleDb :=
+    logSystemInv_stable_multiStep (logSystemInv_stable_R_select q) hReach hSnapInv
+  exact selectAllLogEffect_guaranteeCore_final q localDb visibleDb hVisInv
+    ⟨snapshotDb, hSnapInv, hReach, _hRows⟩
 
 /-! ## Indexed archive leaf
 
