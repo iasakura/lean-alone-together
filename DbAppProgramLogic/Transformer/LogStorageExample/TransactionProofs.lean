@@ -1997,13 +1997,28 @@ theorem paperInfer_selectAllLogBody_final (q : Nat) :
     show ("entries" : VarName) ≠ "row" from by decide,
     if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
     dite_eq_left_iff, dite_eq_right_iff, or_self, dite_false]
-  -- The foreach iterates over `selected`. Each iteration runs the ite body.
-  -- The accumulated ld should match `bind selected (selectEntryResultEffect q)`.
-  -- Substantial induction on selected required (foreach loop invariant).
-  -- TODO(pending VCG refactor): replace this False-rely + foreachRuntime
-  -- induction approach with the paper-Fig.8 wrapped-F derivation (subagent
-  -- working in worktree).
-  sorry
+  -- Convert eval-form foreach to runtime form via `localValid_foreach`.
+  refine Logic.localValid_foreach (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?_ ?_
+  · -- stableBiAssertion under False rely is trivial
+    intro _ _ _ _ hR
+    exact False.elim hR
+  · -- For each records satisfying eval, prove LocalValid for the runtime form
+    intro records hEval
+    -- records = selected (from eval of `lit (set selected)`)
+    have hRecordsEq : records = selected := by
+      simp [Expr.eval, Literal.toValue] at hEval
+      exact hEval.symm
+    subst hRecordsEq
+    -- Now goal: LocalValid (False) txnId Pre (foreachRuntime [] selected ...) Post.
+    -- Induct on `selected` via `localValid_foreachDone` (rest=[])
+    -- and `localValid_foreachNext` (rest=cons). The loop invariant is:
+    --   at (done, rest) with selected = done ++ rest,
+    --   ld_curr = denote(bind done (selectEntryResultEffect q)) at vd_curr.
+    -- Substantial induction (~150 lines): each iteration runs ITE
+    -- (log entry → insert one resultRow; archive entry → inner foreach over
+    -- rangeRows, each inserting a resultRow). Post matches when rest = [] and
+    -- done = full selected.
+    sorry
 
 /-- Commit-stability for the indexed insert effect. -/
 theorem insertLogIndexedEffect_qstable_final (i : Nat) :
