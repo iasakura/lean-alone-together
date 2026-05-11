@@ -1985,6 +1985,114 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
     · rcases hSel with ⟨hSrcMem, hSrcKey⟩
       exact hNoLogs src hSrcMem _ hSrcKey
 
+/-- Per-rec accumulator predicate used by the `selectAllLogBody` foreach loop
+invariant. It says `row` is in the local DB iff it is the result of running
+`selectEntryResultEffect` against some entry whose `visible` record was already
+processed (i.e., lies in `done`). -/
+private def selectAllLogBody_doneContrib
+    (q : Nat) (visibleDb : Database) (done : SetLit) (row : Row) : Prop :=
+  ∃ rec, rec ∈ done ∧
+    ∃ srcRow, srcRow ∈ visibleDb ∧ srcRow.visible = rec ∧
+      SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
+        (selectEntryResultEffect (selectTxnId q) q srcRow) row
+
+/-- `selectAllLogBody`'s foreach loop invariant under `(done, rest)` parameters
+with `done ++ rest = selected`. Lifting from foreach's empty-accumulator
+start (done = [], rest = selected) to fully-processed (done = selected,
+rest = []) yields the post `transformerPost empty (selectAllLogEffect q)`.
+
+Paper Appendix C FOREACH case (p.46) reified to Lean's `foreachRuntime`
+runtime form. -/
+private theorem selectAllLogBody_foreach_invariant
+    (q : Nat) (visibleDb : Database)
+    (hVisInv : logSystemInv visibleDb)
+    (selected : SetLit)
+    (hSelect : Semantics.collectSelected visibleDb rowVar
+        (isStorageEntryExpr rowVar) = some selected) :
+    ∀ (done rest : SetLit), done ++ rest = selected →
+    ∀ (ld_init : Database),
+      (∀ row, row ∈ ld_init ↔ selectAllLogBody_doneContrib q visibleDb done row) →
+      Logic.LocalValid (ι := IsolationSpec Database) (fun _ _ _ => False) (selectTxnId q)
+        (fun ld vd => ld = ld_init ∧ vd = visibleDb)
+        (Command.foreachRuntime (Expr.setLit done) (Expr.setLit rest) doneVar entryVar
+          (Command.ite (isLogExpr entryVar)
+             (Command.insert (resultRecordExpr q (fieldExpr entryVar idField)))
+             (Command.foreach
+                (Expr.rangeRows idField
+                  (fieldExpr entryVar loField) (fieldExpr entryVar hiField))
+                rangeDoneVar rangeElemVar
+                (Command.insert
+                  (resultRecordExpr q (fieldExpr rangeElemVar idField))))))
+        (transformerPost SetLanguage.empty (selectAllLogEffect (selectTxnId q) q)) := by
+  intro done rest hSplit ld_init hLdInit
+  induction rest generalizing done ld_init with
+  | nil =>
+      -- Base case: rest = [], so done = selected. Apply foreachDone.
+      have hDoneSel : done = selected := by simpa using hSplit
+      subst hDoneSel
+      refine Logic.localValid_foreachDone (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?_ ?_
+      · -- stable Pre under False rely (trivial)
+        intro _ _ _ _ hR
+        exact False.elim hR
+      · -- Pre → Post conversion
+        intro ld vd hPre
+        rcases hPre with ⟨hLd, hVd⟩
+        rw [hLd, hVd]
+        -- Goal: transformerPost empty (selectAllLogEffect q) ld_init visibleDb
+        have hWF : wellFormedTableFields visibleDb := by
+          rcases hVisInv with ⟨_, _, _, _, hWF⟩
+          exact hWF
+        intro row
+        simp only [transformerPost, SetLanguage.denote_union, SetLanguage.denote_empty,
+          false_or]
+        rw [hLdInit row]
+        -- denote(selectAllLogEffect q) at visibleDb row ↔ doneContrib q visibleDb done row
+        unfold selectAllLogBody_doneContrib selectAllLogEffect
+        rw [SetLanguage.denote_bind]
+        constructor
+        · -- mp: denote → doneContrib
+          rintro ⟨entry, hEntryDenote, hOut⟩
+          rw [selectedStorageEntriesSet_denote_iff] at hEntryDenote
+          rcases hEntryDenote with ⟨hEntryMem, hTabOr⟩
+          -- Build doneContrib with rec = entry.visible, srcRow = entry.
+          refine ⟨entry.visible, ?_, entry, hEntryMem, rfl, hOut⟩
+          -- Need: entry.visible ∈ done. Via mem_selected_iff_storage_entry.
+          refine (mem_selected_iff_storage_entry hSelect hWF entry.visible).mpr ?_
+          refine ⟨entry, hEntryMem, ?_, rfl⟩
+          rcases hTabOr with hLog | hArch
+          · left
+            rcases hWF entry hEntryMem with ⟨t, n, hEKey, hETab⟩
+            rw [hETab] at hLog
+            have : t = logTable := Option.some.inj hLog
+            exact ⟨n, this ▸ hEKey⟩
+          · right
+            rcases hWF entry hEntryMem with ⟨t, n, hEKey, hETab⟩
+            rw [hETab] at hArch
+            have : t = archiveTable := Option.some.inj hArch
+            exact ⟨n, this ▸ hEKey⟩
+        · -- mpr: doneContrib → denote
+          rintro ⟨rec, hRecMem, srcRow, hSrcMem, hSrcVis, hOut⟩
+          refine ⟨srcRow, ?_, hOut⟩
+          rw [selectedStorageEntriesSet_denote_iff]
+          refine ⟨hSrcMem, ?_⟩
+          have hSel' := (mem_selected_iff_storage_entry hSelect hWF rec).mp hRecMem
+          rcases hSel' with ⟨row', _hRow'Mem, hKey, hRow'Vis⟩
+          have hSrcKeyEqRow' : srcRow.key? = row'.key? := by
+            unfold Row.key?
+            rw [hSrcVis, ← hRow'Vis]
+          rcases hKey with ⟨n, hLog⟩ | ⟨n, hArch⟩
+          · left
+            have : srcRow.key? = some (logTable, n) := hSrcKeyEqRow'.trans hLog
+            exact rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem this
+          · right
+            have : srcRow.key? = some (archiveTable, n) := hSrcKeyEqRow'.trans hArch
+            exact rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem this
+  | cons head tail ih =>
+      -- Step case: foreachNext peels off head. Body subst entryVar (lit head) runs
+      -- ITE on isLog head. For log: insert resultRow. For archive: inner foreach.
+      -- After body, ld grows by head's contribution. Recurse with done ++ [head] and tail.
+      sorry
+
 /-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely.
 Same skeleton as archive's: `viaLocalValid + localValid_of_stutterRely`,
 then compose `localValid_*_false` through `.select`/`.foreach`/`.ite`/`.insert`.
@@ -2040,30 +2148,35 @@ theorem paperInfer_selectAllLogBody_final (q : Nat) :
       simp [Expr.eval, Literal.toValue] at hEval
       exact hEval.symm
     subst hRecordsEq
-    -- Now goal: LocalValid (False) txnId Pre (foreachRuntime [] selected ...) Post.
-    -- We prove a generalized form: for any (done, rest) with done ++ rest = selected,
-    -- the foreachRuntime produces ld that matches "bind selected (selectEntryResultEffect q)"
-    -- at visibleDb. The loop invariant captures the accumulated state.
+    -- Goal: LocalValid (False) txnId Pre (foreachRuntime [] selected ...) Post.
+    -- Paper Appendix C FOREACH case (p.46): loop invariant
+    --   ψ(δ, Δ) ⇔ δ = s ∪ y ≫= (λz. F(Δ)) ∪ Fctxt(Δ) ∧ I(Δ)
+    -- with y = `done` accumulator, F(Δ) = selectEntryResultEffect q at z.
     --
-    -- Key observation: under pinVd (vd = visibleDb in Pre') and False rely,
-    -- the body executes at visibleDb throughout. The accumulated ld is determined
-    -- by which entries from `done` have been processed.
+    -- Under pinVd (vd = visibleDb) and False rely, body executes at visibleDb
+    -- throughout. Each iteration runs ITE: log entry → insert one resultRow;
+    -- archive entry → inner foreach over rangeRows.
     --
-    -- Generalize: introduce the loop invariant as a Pre' that captures
-    -- "ld matches contributions from `done` entries, where done is the
-    -- already-processed prefix of selected".
+    -- The proof requires:
+    -- (a) `selectAllLogBody_foreach_loop_invariant` lemma: by structural
+    --     induction on `rest`, using `localValid_foreachDone` (rest = []) and
+    --     `localValid_foreachNext` (rest = cons).
+    -- (b) Per-iteration body LocalValid: case-split via `localValid_ite_false`
+    --     on `isLogExpr rec`. For log, `localValid_insert_false`. For archive,
+    --     `localValid_foreach` again for the inner range, then induct over the
+    --     rangeRows list.
+    -- (c) Row/RecordLit bridge: via `mem_selected_iff_storage_entry` (just
+    --     added), `intField?_idField_of_log_row` (existing), and structural
+    --     facts about archiveRecord/Row.
     --
-    -- For each entry rec ∈ selected: rec = row.visible for some row ∈ visibleDb
-    -- matching isStorageEntry (via mem_selected_iff for storage). The body
-    -- inserts result rows for that row.
+    -- Length estimate: ~250 lines fully written out. Each iteration's effect
+    -- decomposition (ITE → insert / nested foreach) is the bulk.
     --
-    -- The full closure of this induction requires careful bookkeeping
-    -- (Row vs RecordLit bridge, ITE-foreach decomposition for log/archive cases,
-    -- inner foreach for archive's range). Deferred as future work — the existing
-    -- structural lemmas (selectAllLogEffect_resultRowLit_iff_expanded,
-    -- selectedStorageEntriesSet_denote_iff, mem_collectSelected_iff) provide
-    -- the building blocks but threading them through the foreach loop invariant
-    -- is ~150 lines of careful structural induction.
+    -- Since the lemma's statement and proof are mechanically derivable from
+    -- the paper's Appendix C FOREACH proof transcribed to Lean's specific
+    -- combinators, this is left as a single-session focused task. The
+    -- supporting infrastructure (helpers, simp lemmas, bridges) is now all
+    -- in place to make the transcription mechanical.
     sorry
 
 /-- Commit-stability for the indexed insert effect. -/
