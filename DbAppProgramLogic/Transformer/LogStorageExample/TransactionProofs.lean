@@ -1943,7 +1943,22 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
 
 /-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely.
 Same skeleton as archive's: `viaLocalValid + localValid_of_stutterRely`,
-then compose `localValid_*_false` through `.select`/`.foreach`/`.ite`/`.insert`. -/
+then compose `localValid_*_false` through `.select`/`.foreach`/`.ite`/`.insert`.
+
+Body: `select entriesVar rowVar isStorageEntry (foreach entries doneVar entryVar
+  (ite isLog (insert <logResultRow>) (foreach (rangeRows ...) ... (insert <archResultRow>))))`.
+
+Post: `selectAllLogEffect = bind selectedStorageEntriesSet (selectEntryResultEffect q)`.
+
+Proof plan (foreach loop invariant per outer iteration):
+- After processing `s₁` entries (and `s₂` remaining), ld contains
+  ⋃ (entry ∈ s₁) selectEntryResultEffect q entry.
+- For log entries: one resultRow with that id.
+- For archive entries: nested foreach over rangeRows produces one resultRow per `n ∈ [lo, hi)`.
+
+The proof requires a foreach loop invariant (paper Fig.5 / `localValid_foreach`'s
+runtime form with `s₁, s₂` accumulator/remaining lists). Substantial; left as
+TODO pending the paper-faithful VCG refactor (subagent in worktree). -/
 theorem paperInfer_selectAllLogBody_final (q : Nat) :
     PaperInfer
       (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
@@ -1951,6 +1966,17 @@ theorem paperInfer_selectAllLogBody_final (q : Nat) :
       (selectAllLogEffect (selectTxnId q) q) := by
   refine PaperInfer.viaLocalValid ?_
   refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
+  -- Goal: LocalValid (False) (selectTxnId q)
+  --   (transformerPre logSystemInv empty) (selectAllLogBody q)
+  --   (transformerPost empty (selectAllLogEffect ... q))
+  unfold selectAllLogBody
+  refine Logic.localValid_select_false_pinVd (selectTxnId q) _ _ entriesVar rowVar _ _ ?_
+  intro localDb visibleDb selected hPre _hSelect
+  -- Substituted body: foreach (lit (set selected)) doneVar entryVar (ite ...)
+  simp only [Command.subst, Expr.subst]
+  -- The foreach iterates over `selected`. Each iteration runs the ite body.
+  -- The accumulated ld should match `bind selected (selectEntryResultEffect q)`.
+  -- Substantial induction on selected required (foreach loop invariant).
   sorry
 
 /-- Commit-stability for the indexed insert effect. -/
