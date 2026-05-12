@@ -3115,6 +3115,58 @@ private theorem selectAllLogEffect_byRecord_iff_with_selected
       · have := rowFieldInt?_eq_some_iff_lookup.mp hSrcHi
         rw [hSrcVis] at this; exact this
 
+/-- `_byRecord` version: inner `foreachRuntime` over `intRangeRecords "id" lo hi`
+for the archive-head case. Operates purely on `head : RecordLit`'s fields
+(no `headRow ∈ visibleDb` needed). -/
+private theorem selectAllLogBody_archive_inner_foreach_byRecord
+    (q : Nat) (done : SetLit) (head : RecordLit) (lo hi : Int)
+    (nKey : Int)
+    (hHeadArchKey : head.key? = some (archiveTable, nKey))
+    (hHeadLo : head.lookup? "lo" = some (.int lo))
+    (hHeadHi : head.lookup? "hi" = some (.int hi))
+    (hLeq : lo ≤ hi) :
+    ∀ (rangeDone rangeRest : SetLit),
+      rangeDone ++ rangeRest = Expr.intRangeRecords "id" lo hi →
+      Logic.LocalValid (ι := IsolationSpec Database) (fun _ _ _ => False) (selectTxnId q)
+        (fun ld _vd =>
+          ∀ row, row ∈ ld ↔
+            (selectAllLogBody_doneContrib_byRecord q done row ∨
+              ∃ rec, rec ∈ rangeDone ∧ ∃ id : Int,
+                rec.lookup? "id" = some (.int id) ∧
+                row = resultRowLit (selectTxnId q) q id))
+        (Command.foreachRuntime (Expr.setLit rangeDone) (Expr.setLit rangeRest)
+          rangeDoneVar rangeElemVar
+          (Command.subst doneVar (Expr.setLit done)
+            (Command.insert (Expr.subst entryVar (.lit (.record head))
+              (resultRecordExpr q (fieldExpr rangeElemVar idField))))))
+        (fun ld _vd =>
+          ∀ row, row ∈ ld ↔
+            selectAllLogBody_doneContrib_byRecord q (done ++ [head]) row) := by
+  sorry
+
+/-- `_byRecord` version of the main foreach loop invariant. Purely sel-determined
+post (no visibleDb dependence). Structure mirrors `selectAllLogBody_foreach_invariant`
+but with `doneContrib_byRecord` accumulator and `selectAllLogEffect_byRecord`
+post. -/
+private theorem selectAllLogBody_foreach_invariant_byRecord
+    (q : Nat) (selected : SetLit) :
+    ∀ (done rest : SetLit), done ++ rest = selected →
+      Logic.LocalValid (ι := IsolationSpec Database) (fun _ _ _ => False) (selectTxnId q)
+        (fun ld _vd =>
+          ∀ row, row ∈ ld ↔ selectAllLogBody_doneContrib_byRecord q done row)
+        (Command.foreachRuntime (Expr.setLit done) (Expr.setLit rest) doneVar entryVar
+          (Command.ite (isLogExpr entryVar)
+             (Command.insert (resultRecordExpr q (fieldExpr entryVar idField)))
+             (Command.foreach
+                (Expr.rangeRows idField
+                  (fieldExpr entryVar loField) (fieldExpr entryVar hiField))
+                rangeDoneVar rangeElemVar
+                (Command.insert
+                  (resultRecordExpr q (fieldExpr rangeElemVar idField))))))
+        (transformerPost SetLanguage.empty
+          (selectAllLogEffect_byRecord q selected)) := by
+  sorry
+
 /-- Helper for the archive-head case: inner `foreachRuntime` over
 `intRangeRecords "id" lo hi`. Each iteration inserts `resultRowLit q (lo+offset)`
 for the current record's id. After processing all `rangeRest`, the local DB
@@ -3681,25 +3733,119 @@ private theorem selectAllLogBody_foreach_invariant
         · -- Recursive call via ih
           exact ih (done ++ [head]) hSplit'
 
-/-- `PaperInfer` derivation for `selectAllLogBody q` under SI's local rely.
-Same skeleton as archive's: `viaLocalValid + localValid_of_stutterRely`,
-then compose `localValid_*_false` through `.select`/`.foreach`/`.ite`/`.insert`.
+/-- Constructor-only variant of `paperInfer_selectAllLogBody_final` using
+`PaperInfer.selectLazy` at the top instead of `viaLocalValid + select_false_pinVd`.
+The body's `Fbody` is `selectAllLogEffect_byRecord q` (purely sel-determined),
+matching the body's operational effect for universal sel. The bridge to
+`selectAllLogEffect` happens at the `_final` level via `conseqF_withInv`. -/
+theorem paperInfer_selectAllLogBody_via_lazy_pure (q : Nat) :
+    PaperInfer
+      (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
+      (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
+      (fun localDb globalDb out =>
+        ∃ selected,
+          Semantics.collectSelected globalDb rowVar
+              (instantiateSymExpr emptySymEnv [rowVar] (isStorageEntryExpr rowVar)) = some selected ∧
+          selectAllLogEffect_byRecord q selected localDb globalDb out) := by
+  unfold selectAllLogBody
+  refine PaperInfer.selectLazy
+    (env := emptySymEnv)
+    (Fbody := selectAllLogEffect_byRecord q)
+    ?_ ?_ ?_
+  · -- stability of transformerPre under SI silent rely
+    exact transformerPre_stable_relyMod_snapshot _ _
+  · -- hCollectStable: under SI silent rely, R doesn't change vd
+    intro localDb visibleDb visibleDb' hR
+    have := relyMod_snapshot_exec_silent localDb visibleDb visibleDb' hR
+    rw [this]
+  · -- per-`selected` body PaperInfer
+    intro selected
+    -- Substituted body: .foreach (.lit (.set selected)) doneVar entryVar (...)
+    simp only [Command.subst, Expr.subst, Expr.subst_lit,
+      show (entriesVar : VarName) ≠ rowVar from by decide,
+      show (entriesVar : VarName) ≠ doneVar from by decide,
+      show (entriesVar : VarName) ≠ entryVar from by decide,
+      show (entriesVar : VarName) = entriesVar from rfl, if_true, if_false]
+    refine PaperInfer.viaLocalValid ?_
+    refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
+    -- LocalValid (False) txnId Pre body Post
+    refine Logic.localValid_foreach (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?_ ?_
+    · -- stableBiAssertion under False rely is trivial
+      intro _ _ _ _ hR
+      exact False.elim hR
+    · intro records hEval
+      have hRecordsEq : selected = records := by
+        simp [Expr.eval, Literal.toValue] at hEval
+        exact hEval
+      subst hRecordsEq
+      -- LocalValid (False) Pre (foreachRuntime [] selected ...) Post
+      refine Logic.localValid_conseq ?_
+        (selectAllLogBody_foreach_invariant_byRecord q selected [] selected (List.nil_append _)) ?_
+      · -- Pre bridge: transformerPre logSystemInv empty → ld = [] (via doneContrib_byRecord [])
+        intro ld vd hPre
+        intro row
+        rcases hPre with ⟨hLocal, _hInv⟩
+        constructor
+        · intro hRow
+          have := (hLocal row).mpr hRow
+          simp [SetLanguage.denote_empty] at this
+        · rintro ⟨_entry, hEmptyMem, _⟩
+          cases hEmptyMem
+      · intros _ _ hPost
+        exact hPost
 
-Body: `select entriesVar rowVar isStorageEntry (foreach entries doneVar entryVar
-  (ite isLog (insert <logResultRow>) (foreach (rangeRows ...) ... (insert <archResultRow>))))`.
-
-Post: `selectAllLogEffect = bind selectedStorageEntriesSet (selectEntryResultEffect q)`.
-
-Proof plan (foreach loop invariant per outer iteration):
-- After processing `s₁` entries (and `s₂` remaining), ld contains
-  ⋃ (entry ∈ s₁) selectEntryResultEffect q entry.
-- For log entries: one resultRow with that id.
-- For archive entries: nested foreach over rangeRows produces one resultRow per `n ∈ [lo, hi)`.
-
-The proof requires a foreach loop invariant (paper Fig.5 / `localValid_foreach`'s
-runtime form with `s₁, s₂` accumulator/remaining lists). Substantial; left as
-TODO pending the paper-faithful VCG refactor (subagent in worktree). -/
+/-- `paperInfer_selectAllLogBody_final`: derived from `_via_lazy_pure` via
+`conseqF_withInv` bridging LazyF (with `_byRecord`) → `selectAllLogEffect`.
+Composes the byRecord ↔ with_selected iff with the existing
+`lazyF_select_iff_selectAllLogEffect_at_invariant`. -/
 theorem paperInfer_selectAllLogBody_final (q : Nat) :
+    PaperInfer
+      (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
+      (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
+      (selectAllLogEffect (selectTxnId q) q) := by
+  refine PaperInfer.conseqF_withInv (I := logSystemInv) ?_
+    (paperInfer_selectAllLogBody_via_lazy_pure q) ?_
+  · -- hStableI: logSystemInv stable under R_select q (SI silent rely)
+    intro ld v v' hInv hStep
+    have hEq := relyMod_snapshot_exec_silent ld v v' hStep
+    rw [hEq]; exact hInv
+  · -- bridge: LazyF (byRecord) → selectAllLogEffect, using both per-sel iffs
+    intro ld vd hInv hPostLazy
+    intro row
+    have hRowLazy := hPostLazy row
+    simp only [transformerPost, SetLanguage.denote_union, SetLanguage.denote_empty,
+      false_or, SetLanguage.denote, SetLanguage.Env.ofDatabases,
+      SetLanguage.SetExpr.union, SetLanguage.empty] at hRowLazy ⊢
+    -- After simp, hRowLazy : (False ∨ LazyF [] vd row) ↔ row ∈ ld, but `empty` is `fun _ _ _ => False`
+    -- so simp should reduce.
+    have hWF : wellFormedTableFields vd := by
+      rcases hInv with ⟨_, _, _, _, hWF⟩; exact hWF
+    have hInstNop :
+        instantiateSymExpr emptySymEnv [rowVar] (isStorageEntryExpr rowVar) =
+          isStorageEntryExpr rowVar := by simp [instantiateSymExpr, emptySymEnv]
+    refine Iff.trans ?_ hRowLazy
+    constructor
+    · intro hEff
+      rcases collectSelected_storageEntries_succeeds_of_wellFormed hWF with ⟨sel, hSelect⟩
+      refine ⟨sel, ?_, ?_⟩
+      · rw [hInstNop]; exact hSelect
+      rw [selectAllLogEffect_byRecord_iff_with_selected hSelect hWF]
+      rw [← lazyF_select_iff_selectAllLogEffect_at_invariant hInv row] at hEff
+      rcases hEff with ⟨sel', hSelect', hEff'⟩
+      rw [hInstNop] at hSelect'
+      have hSelEq : sel = sel' := by
+        rw [hSelect] at hSelect'; exact Option.some.inj hSelect'
+      subst hSelEq
+      exact hEff'
+    · rintro ⟨sel, hSelect, hEffByR⟩
+      rw [hInstNop] at hSelect
+      rw [selectAllLogEffect_byRecord_iff_with_selected hSelect hWF] at hEffByR
+      rw [← lazyF_select_iff_selectAllLogEffect_at_invariant hInv row]
+      exact ⟨sel, by rw [hInstNop]; exact hSelect, hEffByR⟩
+
+/-- _final_old: previous version using `viaLocalValid + False rely descent`.
+Kept for reference; replaced by the `_via_lazy_pure + conseqF_withInv` chain. -/
+private theorem paperInfer_selectAllLogBody_final_old (q : Nat) :
     PaperInfer
       (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
       (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
