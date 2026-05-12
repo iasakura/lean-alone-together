@@ -12,12 +12,13 @@ TransactionProofs.lean:2645  paperInfer_selectAllLogBody_final
 
 両方とも `PaperInfer.viaLocalValid + Logic.localValid_of_stutterRely + Logic.localValid_select_false_pinVd` の False rely descent パターンを使用。doc Step 4 と memory `feedback_false_rely_descent` に従い除去する。
 
-## 既に揃っている infrastructure (commit `5b25fe6` 等)
+## 既に揃っている infrastructure (commit `5b25fe6`, `118f62d` 等)
 
 | 補題/combinator | 場所 | 用途 |
 |---|---|---|
 | `Logic.localValid_select_collectInvariant` | Logic.lean | SELECT body の pre に `collectSelected = some sel` を組み込む変種 |
-| `PaperInfer.conseqF` | InferenceSoundness.lean | 派生 F-weakening combinator (`viaLocalValid + sound + localValid_conseq` を内部カプセル化) |
+| `PaperInfer.conseqF` | InferenceSoundness.lean | 派生 F-weakening combinator (`viaLocalValid + sound + localValid_conseq` を内部カプセル化)。pointwise F-equiv 用 |
+| `PaperInfer.conseqF_withInv` | InferenceSoundness.lean | invariant-aware F-weakening。F-equiv が `I vd` 下のみ成立する場合用 (例: `LazyF ↔ archiveLogEffect` は `logSystemInv vd` 下のみ成立) |
 | `paperInferenceSound_*_wrapped` | Paper/Select/Foreach.lean | per-rule wrapped soundness |
 | `logSystemInvAtNext_no_log_at_next` | Spec.lean | 静的 log freshness (insertLog 用) |
 | `archiveKeysFreshFrom_no_archive_at` | Spec.lean | 静的 archive freshness (archiveLog 用) |
@@ -114,11 +115,26 @@ case hBody =>
 `_indexed_final` の目標 F は `archiveLogEffect (archiveTxnId i) i` (直接形)。
 両者は denote 同値 (logSystemInv 下: selected = collectSelected log rows, selectedLitMin sel = selectedLogMin vd 等)。
 
-`PaperInfer.conseqF hStableI _via_lazy_pure hLazyF_to_archiveLogEffect` で bridge。
+**注意: pointwise には等価でない** (iff の逆方向は `collectSelected vd` の成功を要し、これは `logSystemInv vd` 下のみ言える)。したがって `PaperInfer.conseqF` (pointwise 版) ではなく **`PaperInfer.conseqF_withInv`** を使う。
 
-`hLazyF_to_archiveLogEffect` は `transformerPost empty LazyF ld vd → transformerPost empty archiveLogEffect ld vd` を示す補題。具体的には:
-- LazyF が true な row は archiveLogEffect でも true (`archiveLogEffect_with_selected sel = archiveLogEffect` when sel = collectSelected vd の log rows)。
-- Iff の逆方向は collectSelected 成功性 (= 静的に logSystemInv から導出可能) で。
+```
+PaperInfer.conseqF_withInv hStableI_archiveInv _via_lazy_pure hLazyF_to_archiveLogEffect
+```
+
+`hLazyF_to_archiveLogEffect` は型:
+```
+∀ ld vd, (logSystemInv vd ∧ archiveKeysFreshFrom i vd) →
+  transformerPost empty LazyF ld vd → 
+  transformerPost empty (archiveLogEffect (archiveTxnId i) i) ld vd
+```
+
+これを示すための補題群 (要実装):
+- `selectedLitMin_eq_selectedLogMin`: `collectSelected vd rowVar (isLogExpr) = some sel → selectedLitMin sel = some lo ↔ selectedLogMin vd lo`
+- `selectedLitMax_eq_selectedLogMax`: 同様
+- `collectSelected_succeeds_under_invariant`: `logSystemInv vd → ∃ sel, collectSelected vd rowVar (isLogExpr) = some sel` (静的に decidable)
+- `archiveLogEffect_with_selected_eq_archiveLogEffect`: `collectSelected vd = some sel → archiveLogEffect_with_selected sel ld vd row ↔ archiveLogEffect ld vd row`
+
+これら 4 補題 + iff bridging で `hLazyF_to_archiveLogEffect` を組み立て。~80-150 LOC。
 
 ## selectAll refactor 戦略
 
