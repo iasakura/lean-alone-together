@@ -179,7 +179,7 @@ def maxInt? : List Int → Option Int
   | [] => none
   | value :: values => some (values.foldl max value)
 
-private def intRangeRecords (field : FieldName) (lo hi : Int) : SetLit :=
+def intRangeRecords (field : FieldName) (lo hi : Int) : SetLit :=
   (List.range (Int.toNat (hi - lo))).map fun (offset : Nat) =>
     ⟨[(field, .int (lo + (offset : Int)))]⟩
 
