@@ -354,6 +354,19 @@ theorem PaperInfer.conseqF_withInv
       hStableI hMulti hIInit
   exact hFEq _ _ hIFinal hPost
 
+/-- Derived `PaperInfer` rule for a stuck `.letE`: when the expression doesn't
+evaluate, the letE never reduces, so any post-condition is vacuously valid.
+Uses `viaLocalValid + Logic.localValid_letE_none` internally. Works under any
+rely (the stuck-ness is purely operational). -/
+theorem PaperInfer.letE_none
+    {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    {Fctxt F : SetExpr}
+    {x : VarName} {expr : Expr} {body : Semantics.Program}
+    (hNone : Expr.eval expr = none) :
+    PaperInfer R txnId I Fctxt (.letE x expr body) F := by
+  refine PaperInfer.viaLocalValid ?_
+  exact Logic.localValid_letE_none R txnId _ _ x expr body hNone
+
 end Transformer
 
 end DbAppProgramLogic

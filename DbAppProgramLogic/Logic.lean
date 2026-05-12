@@ -1316,6 +1316,43 @@ theorem localValid_let (R : LocalRely) (txnId : TxnId) (P Q : BiAssertion)
           exact ih visibleDb' hEq (hStable _ _ _ hPvisible hR) hCfgSkip
   exact hAux (MultiStep.toFwd hMulti) visibleDb rfl hP hSkip
 
+/-- `LocalValid` for a stuck `.letE` (expression doesn't evaluate) is vacuously
+true under any rely. The letE command never reduces (no local step fires),
+so no multistep can reach skip. General-R analogue of
+`localValid_letE_none_false` (which was False-rely only). -/
+theorem localValid_letE_none {ι : Type} (R : LocalRely) (txnId : TxnId)
+    (P Q : BiAssertion) (x : VarName) (expr : Expr) (body : Command ι Database)
+    (hNone : Expr.eval expr = none) :
+    LocalValid R txnId P (.letE x expr body) Q := by
+  intro localDb visibleDb finalCfg _hP hMulti hSkip
+  -- letE with non-eval expr is stuck: no local step possible, so multistep stays at letE.
+  have hStay :
+      ∀ {cfg₁ cfg₂ : LocalConfig ι},
+        MultiStepFwd (localInterleavedStep (ι := ι) R txnId) cfg₁ cfg₂ →
+        ∀ visibleDb,
+          cfg₁ = ⟨(.letE x expr body : Command ι Database), localDb, visibleDb⟩ →
+          cfg₂.cmd = (.letE x expr body : Command ι Database) := by
+    intro cfg₁ cfg₂ hPath
+    induction hPath with
+    | refl =>
+        intro visibleDb hStart
+        cases hStart
+        rfl
+    | cons hStep hRest ih =>
+        intro visibleDb hStart
+        cases hStart
+        rcases localInterleavedStep_let_inv (txnId := txnId) (x := x) (expr := expr)
+          (body := body) (localDb := localDb) (visibleDb := visibleDb) hStep with
+          hLocal | hRely
+        · rcases hLocal with ⟨_steppedValue, hEvalStep, _hEq⟩
+          rw [hEvalStep] at hNone
+          cases hNone
+        · rcases hRely with ⟨visibleDb', hEq, _hR⟩
+          exact ih visibleDb' hEq
+  have hCmd := hStay (MultiStep.toFwd hMulti) visibleDb rfl
+  rw [hCmd] at hSkip
+  cases hSkip
+
 theorem localValid_seq (R : LocalRely) (txnId : TxnId) (P P' Q : BiAssertion)
     (left right : Command ι Database)
     (hLeft : LocalValid R txnId P left P')
