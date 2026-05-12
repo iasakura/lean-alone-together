@@ -1996,6 +1996,235 @@ private def selectAllLogBody_doneContrib
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
         (selectEntryResultEffect (selectTxnId q) q srcRow) row
 
+/-- Helper for the archive-head case: inner `foreachRuntime` over
+`intRangeRecords "id" lo hi`. Each iteration inserts `resultRowLit q (lo+offset)`
+for the current record's id. After processing all `rangeRest`, the local DB
+contains exactly the archive contribution of `head`. -/
+private theorem selectAllLogBody_archive_inner_foreach
+    (q : Nat) (visibleDb : Database) (done : SetLit)
+    (head : RecordLit) (lo hi : Int)
+    (headRow : Row) (hHeadRowMem : headRow ∈ visibleDb)
+    (hHeadVis : headRow.visible = head)
+    (nKey : Int)
+    (hHeadKey' : head.key? = some (archiveTable, nKey))
+    (hHeadLo : head.lookup? "lo" = some (.int lo))
+    (hHeadHi : head.lookup? "hi" = some (.int hi))
+    (hLeq : lo ≤ hi) :
+    ∀ (rangeDone rangeRest : SetLit),
+      rangeDone ++ rangeRest = Expr.intRangeRecords "id" lo hi →
+      Logic.LocalValid (ι := IsolationSpec Database) (fun _ _ _ => False) (selectTxnId q)
+        (fun ld vd => vd = visibleDb ∧
+          ∀ row, row ∈ ld ↔
+            (selectAllLogBody_doneContrib q visibleDb done row ∨
+              ∃ rec, rec ∈ rangeDone ∧ ∃ id : Int,
+                rec.lookup? "id" = some (.int id) ∧
+                row = resultRowLit (selectTxnId q) q id))
+        (Command.foreachRuntime (Expr.setLit rangeDone) (Expr.setLit rangeRest)
+          rangeDoneVar rangeElemVar
+          (Command.subst doneVar (Expr.setLit done)
+            (Command.insert (Expr.subst entryVar (.lit (.record head))
+              (resultRecordExpr q (fieldExpr rangeElemVar idField))))))
+        (fun ld vd => vd = visibleDb ∧
+          ∀ row, row ∈ ld ↔
+            selectAllLogBody_doneContrib q visibleDb (done ++ [head]) row) := by
+  -- We use `headRow.visible = head` to lift head's lookups to `rowFieldInt? headRow`.
+  have hHeadRowLo : rowFieldInt? headRow loField = some lo := by
+    rw [rowFieldInt?_eq_some_iff_lookup, hHeadVis]; exact hHeadLo
+  have hHeadRowHi : rowFieldInt? headRow hiField = some hi := by
+    rw [rowFieldInt?_eq_some_iff_lookup, hHeadVis]; exact hHeadHi
+  have hHeadRowKey : headRow.key? = some (archiveTable, nKey) := by
+    show headRow.visible.key? = _
+    rw [hHeadVis]; exact hHeadKey'
+  intro rangeDone rangeRest hSplit
+  induction rangeRest generalizing rangeDone with
+  | nil =>
+      -- rangeDone = intRangeRecords "id" lo hi.
+      have hRangeDoneEq : rangeDone = Expr.intRangeRecords "id" lo hi := by
+        simpa using hSplit
+      subst hRangeDoneEq
+      refine Logic.localValid_foreachDone (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?_ ?_
+      · intro _ _ _ _ hR; exact False.elim hR
+      · intro ld vd hPre
+        rcases hPre with ⟨hVd, hLdMem⟩
+        refine ⟨hVd, ?_⟩
+        intro row
+        rw [hLdMem row]
+        unfold selectAllLogBody_doneContrib
+        constructor
+        · rintro (hDC | hRec)
+          · rcases hDC with ⟨rec, hRecMem, srcRow, hSrcMem, hSrcVis, hOut⟩
+            exact ⟨rec, List.mem_append_left _ hRecMem, srcRow, hSrcMem, hSrcVis, hOut⟩
+          · rcases hRec with ⟨rec, hRecMem, id, hRecId, hRowEq⟩
+            -- rec ∈ intRangeRecords "id" lo hi means rec = ⟨[("id", .int (lo+k))]⟩
+            -- with k < (hi-lo).toNat. So id = lo+k and lo ≤ id < hi.
+            simp [Expr.intRangeRecords, List.mem_map, List.mem_range] at hRecMem
+            rcases hRecMem with ⟨k, hkLt, hRecForm⟩
+            subst hRecForm
+            -- rec.lookup? "id" = some (.int (lo + k))
+            have hIdEq : id = lo + (k : Int) := by
+              simp [RecordLit.lookup?] at hRecId
+              omega
+            subst hIdEq
+            -- now id = lo + k where k < (hi - lo).toNat.
+            have hLeId : lo ≤ lo + (k : Int) := by
+              have : (0 : Int) ≤ (k : Int) := Int.natCast_nonneg _
+              omega
+            have hIdLt : lo + (k : Int) < hi := by
+              -- hkLt may be either `k < (hi - lo).toNat` or `↑k < hi - lo`.
+              -- Try to bridge via omega after a cast.
+              have hCast : (k : Int) < hi - lo := by exact_mod_cast hkLt
+              omega
+            -- Build doneContrib (done ++ [head]) row via rec=head, srcRow=headRow,
+            -- selectArchiveResultEffect.
+            refine ⟨head, List.mem_append_right _ (List.mem_singleton_self _),
+                    headRow, hHeadRowMem, hHeadVis, ?_⟩
+            right
+            refine ⟨lo, hi, lo + (k : Int), ⟨nKey, hHeadRowKey⟩, hHeadRowLo,
+                    hHeadRowHi, hLeId, hIdLt, hRowEq⟩
+        · rintro ⟨rec, hRecMem, srcRow, hSrcMem, hSrcVis, hOut⟩
+          rcases List.mem_append.mp hRecMem with hRecDone | hRecHead
+          · -- rec ∈ done: original doneContrib branch.
+            left
+            exact ⟨rec, hRecDone, srcRow, hSrcMem, hSrcVis, hOut⟩
+          · -- rec = head.
+            rw [List.mem_singleton] at hRecHead
+            subst hRecHead
+            -- srcRow.visible = head, so srcRow.key? = head.key? = (archiveTable, nKey).
+            have hSrcKey : srcRow.key? = some (archiveTable, nKey) := by
+              show srcRow.visible.key? = _
+              rw [hSrcVis]; exact hHeadKey'
+            rcases hOut with hLog | hArch
+            · -- Log subcase contradicts archive head.
+              exfalso
+              rcases hLog with ⟨_n, ⟨_id, hLogKey⟩, _, _⟩
+              rw [hSrcKey] at hLogKey
+              simp [logTable, archiveTable] at hLogKey
+            · -- Archive subcase: extract n', show ∃ rec ∈ intRangeRecords.
+              rcases hArch with ⟨lo', hi', n', ⟨_id, _hKey⟩, hLo', hHi', hLoLeN, hNLtHi, hRowEq⟩
+              -- rowFieldInt? srcRow loField = some lo' AND head's lookup gives lo.
+              -- Since srcRow.visible = head, rowFieldInt? srcRow loField = some lo. So lo' = lo.
+              have hLoMatch : rowFieldInt? srcRow loField = some lo := by
+                rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hHeadLo
+              have hHiMatch : rowFieldInt? srcRow hiField = some hi := by
+                rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hHeadHi
+              rw [hLoMatch] at hLo'
+              rw [hHiMatch] at hHi'
+              have hLoEq : lo' = lo := (Option.some.inj hLo').symm
+              have hHiEq : hi' = hi := (Option.some.inj hHi').symm
+              -- Replace lo'/hi' with lo/hi in remaining hypotheses without subst.
+              rw [hLoEq] at hLoLeN
+              rw [hHiEq] at hNLtHi
+              right
+              -- Pick offset = n' - lo (which is ≥ 0).
+              have hNGeLo : (0 : Int) ≤ n' - lo := by omega
+              have hOffsetEq : ((n' - lo).toNat : Int) = n' - lo := Int.toNat_of_nonneg hNGeLo
+              -- After simp [Expr.intRangeRecords, List.mem_map, List.mem_range], the
+              -- membership predicate becomes `↑a < hi - lo`, so we phrase hOffsetLt
+              -- in that simplified form too.
+              have hOffsetLt : ((n' - lo).toNat : Int) < hi - lo := by omega
+              refine ⟨⟨[(idField, .int (lo + ((n' - lo).toNat : Int)))]⟩, ?_, n', ?_, hRowEq⟩
+              · -- membership in intRangeRecords
+                simp [Expr.intRangeRecords, List.mem_map, List.mem_range, idField]
+                refine ⟨(n' - lo).toNat, hOffsetLt, ?_⟩
+                -- Goal: ↑(n' - lo).toNat = max (n' - lo) 0
+                rw [Int.toNat_of_nonneg hNGeLo]
+                omega
+              · -- lookup? "id" = some (.int n')
+                simp [RecordLit.lookup?, idField]
+                -- Need: lo + ((n' - lo).toNat : Int) = n'. From hOffsetEq.
+                omega
+  | cons current rest ih =>
+      -- foreachNext + seq + insert.
+      have hSplit' : (rangeDone ++ [current]) ++ rest = Expr.intRangeRecords "id" lo hi := by
+        rw [List.append_assoc]; simpa using hSplit
+      -- current ∈ intRangeRecords means current.lookup? "id" = some (.int (lo + k)).
+      have hCurrentInRange : current ∈ Expr.intRangeRecords "id" lo hi := by
+        rw [← hSplit]
+        simp
+      have hCurrentForm : ∃ k : Nat, ((k : Int) < hi - lo) ∧
+          ⟨[(idField, .int (lo + (k : Int)))]⟩ = current := by
+        simp [Expr.intRangeRecords, List.mem_map, List.mem_range, idField] at hCurrentInRange
+        exact hCurrentInRange
+      rcases hCurrentForm with ⟨k, _hkLt, hCurForm⟩
+      have hCurId : current.lookup? "id" = some (.int (lo + (k : Int))) := by
+        rw [← hCurForm]
+        simp [RecordLit.lookup?, idField]
+      apply Logic.localValid_foreachNext (fun _ _ _ => False) (selectTxnId q)
+      · intro _ _ _ _ hR; exact False.elim hR
+      · -- Body for current + foreachRuntime (rangeDone ++ [current]) rest
+        refine Logic.localValid_seq_false (selectTxnId q) _
+          (fun ld vd => vd = visibleDb ∧
+            ∀ row, row ∈ ld ↔
+              (selectAllLogBody_doneContrib q visibleDb done row ∨
+                ∃ rec, rec ∈ (rangeDone ++ [current]) ∧ ∃ id : Int,
+                  rec.lookup? "id" = some (.int id) ∧
+                  row = resultRowLit (selectTxnId q) q id))
+          _ _ _ ?_ ?_
+        · -- The body Command.subst "rangeDone" ... (Command.subst "num" ... innerBody)
+          -- innerBody = Command.subst "done" ... (Command.insert ...)
+          -- After push-through, this is Command.insert e where e evaluates to
+          -- resultRecord q (lo + k).
+          simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
+            Expr.substFieldExprs_nil, Expr.subst_lit,
+            doneVar, entryVar, rangeDoneVar, rangeElemVar,
+            idField, loField, hiField, tableField,
+            show ("entry" : VarName) ≠ "num" from by decide,
+            show ("entry" : VarName) ≠ "rangeDone" from by decide,
+            show ("done" : VarName) ≠ "entry" from by decide,
+            show ("done" : VarName) ≠ "rangeDone" from by decide,
+            show ("done" : VarName) ≠ "num" from by decide,
+            show ("num" : VarName) ≠ "rangeDone" from by decide,
+            show ("num" : VarName) ≠ "entry" from by decide,
+            show ("rangeDone" : VarName) ≠ "entry" from by decide,
+            show ("rangeDone" : VarName) ≠ "done" from by decide,
+            show ("rangeDone" : VarName) ≠ "num" from by decide,
+            if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
+            dite_eq_left_iff, dite_eq_right_iff]
+          refine Logic.localValid_insert_false (selectTxnId q) _ _ _ ?_
+          intro ld vd record hPre hEval _hFresh
+          rcases hPre with ⟨hVd, hLdMem⟩
+          subst hVd
+          have hRecordEq : record = resultRecord q (lo + (k : Int)) := by
+            simp [resultRecordExpr, fieldExpr, Expr.int, Expr.subst, Expr.eval,
+              Expr.evalFieldValues, Literal.toValue, hCurId,
+              resultRecord, tableField, idField] at hEval
+            exact hEval.symm
+          subst hRecordEq
+          refine ⟨rfl, ?_⟩
+          intro row
+          constructor
+          · intro hRow
+            rcases List.mem_append.mp hRow with hLd | hNew
+            · rcases (hLdMem row).mp hLd with hDC | hRec
+              · left; exact hDC
+              · right
+                rcases hRec with ⟨rec, hRecMem, id, hRecId, hRowEq⟩
+                exact ⟨rec, List.mem_append_left _ hRecMem, id, hRecId, hRowEq⟩
+            · rw [List.mem_singleton] at hNew
+              subst hNew
+              right
+              refine ⟨current, List.mem_append_right _ (List.mem_singleton_self _),
+                lo + (k : Int), hCurId, ?_⟩
+              show Row.fromInsert (selectTxnId q) (resultRecord q (lo + (k : Int))) = _
+              rfl
+          · rintro (hDC | hRec)
+            · exact List.mem_append_left _ ((hLdMem row).mpr (Or.inl hDC))
+            · rcases hRec with ⟨rec, hRecMem, id, hRecId, hRowEq⟩
+              rcases List.mem_append.mp hRecMem with hRecDone | hRecCur
+              · exact List.mem_append_left _
+                  ((hLdMem row).mpr (Or.inr ⟨rec, hRecDone, id, hRecId, hRowEq⟩))
+              · rw [List.mem_singleton] at hRecCur
+                subst hRecCur
+                -- rec = current, so id = lo + k (matches hCurId).
+                rw [hCurId] at hRecId
+                have hIdEq : id = lo + (k : Int) := (ScalarLit.int.inj
+                  (Option.some.inj hRecId)).symm
+                subst hIdEq
+                rw [hRowEq]
+                exact List.mem_append_right _ (List.mem_singleton_self _)
+        · -- Recurse via ih.
+          exact ih (rangeDone ++ [current]) hSplit'
+
 /-- `selectAllLogBody`'s foreach loop invariant under `(done, rest)` parameters
 with `done ++ rest = selected`. Lifting from foreach's empty-accumulator
 start (done = [], rest = selected) to fully-processed (done = selected,
@@ -2228,10 +2457,108 @@ private theorem selectAllLogBody_foreach_invariant
               cases hEvalTrue
             · -- False branch: inner foreach over rangeRows
               intro _hEvalFalse
-              -- ~100 lines left for inner induction.
-              -- Pending: a focused subagent task to write out the rangeRows
-              -- inner induction.
-              sorry
+              -- Clean up the nested dite (False ∨ False) coming from Command.subst's
+              -- if-then-else for foreach bound-var checks.
+              simp only [or_self, dite_false]
+              -- Now the body is Command.foreach (rangeRows ...) "rangeDone" "num"
+              --   (Command.subst "done" ... (Command.insert (Expr.subst "entry" ... ...))).
+              refine Logic.localValid_foreach (fun _ _ _ => False) (selectTxnId q)
+                _ _ _ _ _ _ ?_ ?_
+              · -- Stable Pre under False rely.
+                intro _ _ _ _ hR; exact False.elim hR
+              · -- Body: for any records that rangeRows evaluates to, recurse.
+                intro records hSrcEval
+                -- After substitutions and Expr.eval/.proj reductions, hSrcEval encodes
+                -- head.lookup? "lo" / "hi", their being .int, and the range condition.
+                -- We extract lo, hi via case analysis on the bind chain.
+                have hSrcEval' :
+                    (do
+                      let .scalar (.int loVal) ←
+                        (Expr.subst "done" (Expr.setLit done)
+                          (Expr.subst "entry" (.lit (.record head))
+                            (fieldExpr "entry" "lo"))).eval
+                        | none
+                      let .scalar (.int hiVal) ←
+                        (Expr.subst "done" (Expr.setLit done)
+                          (Expr.subst "entry" (.lit (.record head))
+                            (fieldExpr "entry" "hi"))).eval
+                        | none
+                      if loVal <= hiVal then
+                        pure <| Value.set (Expr.intRangeRecords "id" loVal hiVal)
+                      else
+                        none) = some (.set records) := by
+                  rw [← hSrcEval]; rfl
+                -- Compute the inner evals.
+                have hLoEvalProj :
+                    (Expr.subst "done" (Expr.setLit done)
+                      (Expr.subst "entry" (.lit (.record head))
+                        (fieldExpr "entry" "lo"))).eval =
+                    (head.lookup? "lo").bind fun s => some (Value.scalar s) := by
+                  simp [fieldExpr, Expr.subst, Expr.eval, Literal.toValue]
+                have hHiEvalProj :
+                    (Expr.subst "done" (Expr.setLit done)
+                      (Expr.subst "entry" (.lit (.record head))
+                        (fieldExpr "entry" "hi"))).eval =
+                    (head.lookup? "hi").bind fun s => some (Value.scalar s) := by
+                  simp [fieldExpr, Expr.subst, Expr.eval, Literal.toValue]
+                rw [hLoEvalProj, hHiEvalProj] at hSrcEval'
+                -- Now case on head.lookup? "lo".
+                cases hLoLk : head.lookup? "lo" with
+                | none =>
+                    rw [hLoLk] at hSrcEval'
+                    simp at hSrcEval'
+                | some loS =>
+                    rw [hLoLk] at hSrcEval'
+                    cases loS with
+                    | bool _ => simp at hSrcEval'
+                    | int iLo =>
+                        cases hHiLk : head.lookup? "hi" with
+                        | none =>
+                            rw [hHiLk] at hSrcEval'
+                            simp at hSrcEval'
+                        | some hiS =>
+                            rw [hHiLk] at hSrcEval'
+                            cases hiS with
+                            | bool _ => simp at hSrcEval'
+                            | int iHi =>
+                                -- Now: if iLo ≤ iHi then some (.set (intRangeRecords ...)) = some (.set records).
+                                by_cases hLeq : iLo ≤ iHi
+                                · simp [hLeq] at hSrcEval'
+                                  have hHeadLo : head.lookup? "lo" = some (.int iLo) := hLoLk
+                                  have hHeadHi : head.lookup? "hi" = some (.int iHi) := hHiLk
+                                  -- hSrcEval' : intRangeRecords "id" iLo iHi = records.
+                                  have hRecEq : records = Expr.intRangeRecords "id" iLo iHi :=
+                                    hSrcEval'.symm
+                                  subst hRecEq
+                                  refine Logic.localValid_conseq
+                                    (P' := fun ld vd => vd = visibleDb ∧
+                                      ∀ row, row ∈ ld ↔
+                                        (selectAllLogBody_doneContrib q visibleDb done row ∨
+                                          ∃ rec, rec ∈ ([] : SetLit) ∧ ∃ id : Int,
+                                            rec.lookup? "id" = some (.int id) ∧
+                                            row = resultRowLit (selectTxnId q) q id))
+                                    (Q' := fun ld vd => vd = visibleDb ∧
+                                      ∀ row, row ∈ ld ↔
+                                        selectAllLogBody_doneContrib q visibleDb
+                                          (done ++ [head]) row)
+                                    ?_ ?_ ?_
+                                  · intro ld vd hPre
+                                    rcases hPre with ⟨hVd, hLdMem⟩
+                                    refine ⟨hVd, ?_⟩
+                                    intro row
+                                    rw [hLdMem row]
+                                    constructor
+                                    · intro h; exact Or.inl h
+                                    · rintro (h | ⟨_, hMem, _⟩)
+                                      · exact h
+                                      · cases hMem
+                                  · exact selectAllLogBody_archive_inner_foreach
+                                      q visibleDb done head iLo iHi headRow hHeadRowMem
+                                      hHeadVis n hHeadKey' hHeadLo hHeadHi hLeq
+                                      [] (Expr.intRangeRecords "id" iLo iHi) (by simp)
+                                  · intro ld vd hPost; exact hPost
+                                · -- iLo > iHi: if-cond false, so eval returns none, contradicting some.
+                                  simp [hLeq] at hSrcEval'
         · -- Recursive call via ih
           exact ih (done ++ [head]) hSplit'
 
