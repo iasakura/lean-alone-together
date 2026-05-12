@@ -2120,6 +2120,28 @@ private theorem paperInfer_archiveDelete
   PaperInfer.delete (env := []) (source := rowVar) (predicate := predicate)
     (archive_transformerPre_union_stable i _)
 
+/-- Constructor-only `PaperInfer` for the archive's `.seq (insert) (delete)` step.
+The output F is `.union insertedRowSet deleteSetExpr` (the constructor-natural
+shape from `PaperInfer.seq + PaperInfer.insert + PaperInfer.delete`). -/
+private theorem paperInfer_archiveSeqInsertDelete
+    (i : Nat) (lo hi0 : Int) (predicate : Expr) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.seq
+        (.insert (archiveRecordExpr i (Expr.int lo) (Expr.int (hi0 + 1))))
+        (.delete rowVar predicate))
+      (.union
+        (insertedRowSet (archiveTxnId i) emptySymEnv
+          (archiveRecordExpr i (Expr.int lo) (Expr.int (hi0 + 1))))
+        (deleteSetExpr (archiveTxnId i) [] rowVar predicate)) := by
+  refine PaperInfer.seq
+    (paperInfer_archiveInsert i lo hi0)
+    (archive_transformerPost_stable _)
+    (paperInfer_archiveDelete i predicate _)
+
 /-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
 (which forces `visibleDb = visibleDb'`). The strengthening lets the guarantee
 bridge know archive-id `i` is fresh in the visible database.
