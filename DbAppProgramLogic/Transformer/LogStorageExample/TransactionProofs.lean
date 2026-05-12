@@ -2061,6 +2061,65 @@ private theorem archive_transformerPost_stable (F : SetLanguage.SetExpr) :
       (transformerPost SetLanguage.empty F) :=
   transformerPost_stable_relyMod_snapshot _ _
 
+/-- Helper: stability of `transformerPre I (empty ∪ F)` under SI silent rely
+(specialized for archive's invariant). -/
+private theorem archive_transformerPre_union_stable
+    (i : Nat) (F : SetLanguage.SetExpr) :
+    Logic.stableBiAssertion
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+        (.union SetLanguage.empty F)) :=
+  transformerPre_stable_relyMod_snapshot _ _
+
+/-- Constructor-only `PaperInfer` for the archive-row INSERT step (given
+specific `lo, hi0` extracted from `setMinField` / `setMaxField` evaluation
+on a non-empty `selected`). Discharges `hFresh` from `archiveKeysFreshFrom i`. -/
+private theorem paperInfer_archiveInsert (i : Nat) (lo hi0 : Int) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.insert (archiveRecordExpr i (Expr.int lo) (Expr.int (hi0 + 1))))
+      (insertedRowSet (archiveTxnId i) emptySymEnv
+        (archiveRecordExpr i (Expr.int lo) (Expr.int (hi0 + 1)))) := by
+  refine PaperInfer.insert (env := emptySymEnv)
+    (expr := archiveRecordExpr i (Expr.int lo) (Expr.int (hi0 + 1)))
+    (archive_transformerPre_stable i) ?closed ?fresh
+  · intro vd row; rfl
+  · intro ld vd record hPre hEval
+    rcases (transformerPre_empty_iff _ ld vd).mp hPre with ⟨hLocal, hInv⟩
+    subst hLocal
+    have hRecordKey : record.key? = some (archiveTable, (i : Int)) := by
+      simp [instantiateSymExpr, emptySymEnv] at hEval
+      unfold archiveRecordExpr at hEval
+      simp [Expr.eval, Literal.toValue] at hEval
+      rcases hEval with ⟨⟩
+      rfl
+    unfold Semantics.insertFresh
+    rw [hRecordKey]
+    simp only []
+    have hNoKey : ¬ Database.hasKey vd (archiveTable, (i : Int)) :=
+      archiveKeysFreshFrom_no_archive_at hInv.2
+    intro hConcat
+    apply hNoKey
+    simpa using hConcat
+
+/-- Constructor-only `PaperInfer` for the archive log DELETE step (under the
+seq's post-insert context with `Fctxt = .union empty insertedRowSet`). The
+predicate has been pre-substituted with concrete `lo, hi0` literals. -/
+private theorem paperInfer_archiveDelete
+    (i : Nat) (predicate : Expr) (insertF : SetLanguage.SetExpr) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      (.union SetLanguage.empty insertF)
+      (.delete rowVar predicate)
+      (deleteSetExpr (archiveTxnId i) [] rowVar predicate) :=
+  PaperInfer.delete (env := []) (source := rowVar) (predicate := predicate)
+    (archive_transformerPre_union_stable i _)
+
 /-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
 (which forces `visibleDb = visibleDb'`). The strengthening lets the guarantee
 bridge know archive-id `i` is fresh in the visible database.
