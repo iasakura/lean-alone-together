@@ -326,6 +326,34 @@ theorem PaperInfer.conseqF
   have hSound := PaperInfer.sound hStableI h
   exact Logic.localValid_conseq (fun _ _ hp => hp) hSound hFEq
 
+/-- Invariant-aware variant of `PaperInfer.conseqF`: the F-equivalence may use
+`I visibleDb` at the post point. This is needed when the bridge between F and
+F' only holds at `I`-respecting databases (e.g. `LazyF ↔ archiveLogEffect`
+requires `collectSelected vd ...` to succeed, which follows from `logSystemInv vd`).
+`I` is propagated from the precondition through the rely multistep via
+`localMultiStep_preserves_invariant`. -/
+theorem PaperInfer.conseqF_withInv
+    {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
+    {Fctxt F F' : SetExpr} {body : Semantics.Program}
+    (h : PaperInfer R txnId I Fctxt body F)
+    (hFEq : ∀ localDb visibleDb,
+      I visibleDb →
+      transformerPost Fctxt F localDb visibleDb →
+      transformerPost Fctxt F' localDb visibleDb) :
+    PaperInfer R txnId I Fctxt body F' := by
+  refine PaperInfer.viaLocalValid ?_
+  intro localDb visibleDb finalCfg hPre hMulti hSkip
+  have hSound := PaperInfer.sound hStableI h
+  have hPost := hSound localDb visibleDb finalCfg hPre hMulti hSkip
+  have hIInit : I visibleDb := hPre.2
+  have hIFinal : I finalCfg.visibleDb :=
+    localMultiStep_preserves_invariant
+      (cfg := ⟨body, localDb, visibleDb⟩)
+      (cfg' := finalCfg)
+      hStableI hMulti hIInit
+  exact hFEq _ _ hIFinal hPost
+
 end Transformer
 
 end DbAppProgramLogic
