@@ -2045,6 +2045,22 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy (i : Nat) :
       rintro (⟨_, _, hMin, _, _⟩ | ⟨_, _, _, _, hMin, _, _, _, _, _, _⟩) <;>
         rw [hMinNone] at hMin <;> cases hMin
 
+/-- Helper: stability of `transformerPre I empty` under SI silent rely
+(specialized for archive's invariant). -/
+private theorem archive_transformerPre_stable (i : Nat) :
+    Logic.stableBiAssertion
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (transformerPre (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+        SetLanguage.empty) :=
+  transformerPre_stable_relyMod_snapshot _ _
+
+/-- Helper: stability of `transformerPost empty F` under SI silent rely. -/
+private theorem archive_transformerPost_stable (F : SetLanguage.SetExpr) :
+    Logic.stableBiAssertion
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (transformerPost SetLanguage.empty F) :=
+  transformerPost_stable_relyMod_snapshot _ _
+
 /-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
 (which forces `visibleDb = visibleDb'`). The strengthening lets the guarantee
 bridge know archive-id `i` is fresh in the visible database.
