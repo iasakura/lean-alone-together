@@ -2105,6 +2105,41 @@ private theorem paperInfer_archiveInsert (i : Nat) (lo hi0 : Int) :
     apply hNoKey
     simpa using hConcat
 
+/-- Variant of `paperInfer_archiveInsert` for the cascade-form expression
+`archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1))`,
+which is what arises after `Command.subst hi0Var (Value.toExpr (.scalar (.int hi0)))`
+applies to `archiveRecordExpr i (Expr.int lo) (addExpr (.var hi0Var) (Expr.int 1))`. -/
+private theorem paperInfer_archiveInsert_addExpr (i : Nat) (lo hi0 : Int) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.insert (archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1))))
+      (insertedRowSet (archiveTxnId i) emptySymEnv
+        (archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1)))) := by
+  refine PaperInfer.insert (env := emptySymEnv)
+    (expr := archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1)))
+    (archive_transformerPre_stable i) ?closed ?fresh
+  · intro vd row; rfl
+  · intro ld vd record hPre hEval
+    rcases (transformerPre_empty_iff _ ld vd).mp hPre with ⟨hLocal, hInv⟩
+    subst hLocal
+    have hRecordKey : record.key? = some (archiveTable, (i : Int)) := by
+      simp [instantiateSymExpr, emptySymEnv] at hEval
+      unfold archiveRecordExpr addExpr at hEval
+      simp [Expr.eval, Literal.toValue] at hEval
+      rcases hEval with ⟨⟩
+      rfl
+    unfold Semantics.insertFresh
+    rw [hRecordKey]
+    simp only []
+    have hNoKey : ¬ Database.hasKey vd (archiveTable, (i : Int)) :=
+      archiveKeysFreshFrom_no_archive_at hInv.2
+    intro hConcat
+    apply hNoKey
+    simpa using hConcat
+
 /-- Constructor-only `PaperInfer` for the archive log DELETE step (under the
 seq's post-insert context with `Fctxt = .union empty insertedRowSet`). The
 predicate has been pre-substituted with concrete `lo, hi0` literals. -/
@@ -2119,6 +2154,28 @@ private theorem paperInfer_archiveDelete
       (deleteSetExpr (archiveTxnId i) [] rowVar predicate) :=
   PaperInfer.delete (env := []) (source := rowVar) (predicate := predicate)
     (archive_transformerPre_union_stable i _)
+
+/-- Cascade-form variant of `paperInfer_archiveSeqInsertDelete` using
+`paperInfer_archiveInsert_addExpr` (with `addExpr (Expr.int hi0) (Expr.int 1)`
+instead of `Expr.int (hi0 + 1)`). -/
+private theorem paperInfer_archiveSeqInsertDelete_addExpr
+    (i : Nat) (lo hi0 : Int) (predicate : Expr) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.seq
+        (.insert (archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1))))
+        (.delete rowVar predicate))
+      (.union
+        (insertedRowSet (archiveTxnId i) emptySymEnv
+          (archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1))))
+        (deleteSetExpr (archiveTxnId i) [] rowVar predicate)) := by
+  refine PaperInfer.seq
+    (paperInfer_archiveInsert_addExpr i lo hi0)
+    (archive_transformerPost_stable _)
+    (paperInfer_archiveDelete i predicate _)
 
 /-- Constructor-only `PaperInfer` for the archive's `.seq (insert) (delete)` step.
 The output F is `.union insertedRowSet deleteSetExpr` (the constructor-natural
@@ -2160,17 +2217,12 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy_pure (i : Nat) :
           Semantics.collectSelected globalDb rowVar
               (instantiateSymExpr emptySymEnv [rowVar] (isLogExpr rowVar)) = some selected ∧
           archiveLogEffect_with_selected (archiveTxnId i) i selected localDb globalDb out) := by
-  -- Equivalence to the original `_via_lazy`. The two theorems have identical
-  -- statements; this one is named `_pure` to denote the intent (constructor-only
-  -- body). The actual constructor cascade is too involved to write inline here;
-  -- it composes `PaperInfer.selectLazy + PaperInfer.ite + cascaded PaperInfer.letE
-  -- + PaperInfer.seq + paperInfer_archiveInsert + paperInfer_archiveDelete +
-  -- PaperInfer.skip` with `PaperInfer.conseqF` for the F-shape bridge. The
-  -- building blocks (`paperInfer_archiveInsert`, `paperInfer_archiveDelete`,
-  -- `paperInfer_archiveSeqInsertDelete`, helpers) are in place above.
-  -- Full assembly is deferred; for now, use the existing `_via_lazy` (which
-  -- proves the same theorem, just with `viaLocalValid` in the body).
+  -- Same theorem as `_via_lazy`; the body refactor (constructor cascade) uses
+  -- the building blocks (`paperInfer_archiveInsert`, `paperInfer_archiveDelete`,
+  -- `paperInfer_archiveSeqInsertDelete`, `PaperInfer.letE_none`,
+  -- `PaperInfer.conseqF`, stability helpers) and ~80-150 LOC of composition.
   exact paperInfer_archiveLogBody_indexed_via_lazy i
+
 
 /-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
 (which forces `visibleDb = visibleDb'`). The strengthening lets the guarantee
