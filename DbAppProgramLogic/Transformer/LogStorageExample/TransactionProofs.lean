@@ -1457,13 +1457,75 @@ theorem paperInfer_insertLogBody_of_stable
 
 /-! ## Final remaining obligations -/
 
+/-- `paperInfer_insertLogBody_indexed_final` built **without** `viaLocalValid`,
+using only `PaperInfer.insert` / `PaperInfer.update` / `PaperInfer.seq` constructors.
+
+The static freshness witness required by `PaperInfer.insert` is discharged from
+the `logSystemInvAtNext i` invariant: under that invariant, the log key
+`(logTable, i)` is fresh in the visible database (no live log row at index `i`
+since the live range is `[cut, i)`). This is `logSystemInvAtNext_no_log_at_next`. -/
 theorem paperInfer_insertLogBody_indexed_final (i : Nat) :
     PaperInfer
       (Logic.relyMod R_insert (IsolationSpec.readCommitted Database).exec)
       (insertTxnId i) (logSystemInvAtNext i) SetLanguage.empty (insertLogBody i)
-      (insertLogEffect (insertTxnId i) i) :=
-  paperInfer_insertLogBody_of_stable R_insert (logSystemInvAtNext i)
-    (insertTxnId i) i (logSystemInvAtNext_stable_R_insert i)
+      (insertLogEffect (insertTxnId i) i) := by
+  let R := Logic.relyMod R_insert (IsolationSpec.readCommitted Database).exec
+  let I := logSystemInvAtNext i
+  let txnId := insertTxnId i
+  let inserted := insertedRowSet txnId emptySymEnv (logRecordExpr (.int i))
+  let updated := updateSetExpr txnId [] rowVar
+    (insertCounterUpdateExpr i) (isCounterExpr rowVar)
+  have hStableI : Logic.stableAssertion R_insert I := logSystemInvAtNext_stable_R_insert i
+  have hStablePre : Logic.stableBiAssertion R (transformerPre I SetLanguage.empty) :=
+    stable_transformerPre_empty_readCommitted hStableI
+  -- LEFT: PaperInfer.insert with static freshness from logSystemInvAtNext i.
+  have hLeft :
+      PaperInfer R txnId I SetLanguage.empty
+        (.insert (logRecordExpr (.int i))) inserted := by
+    refine PaperInfer.insert (env := emptySymEnv) (expr := logRecordExpr (.int i))
+      hStablePre ?_ ?_
+    · intro visibleDb row
+      rfl
+    · intro localDb visibleDb record hPre hEval
+      rcases (transformerPre_empty_iff I localDb visibleDb).mp hPre with ⟨hLocal, hInv⟩
+      subst hLocal
+      have hRecordKey : record.key? = some (logTable, (i : Int)) := by
+        have hEvalNorm : Expr.eval (logRecordExpr (.int i)) = some (.record record) := by
+          simpa [instantiateSymExpr, emptySymEnv] using hEval
+        unfold logRecordExpr at hEvalNorm
+        simp [Expr.eval, Literal.toValue] at hEvalNorm
+        -- After simp, the equality `record = {explicit fields}` is destructured
+        -- via Option.some.injEq and Value.record.injEq, substituting record.
+        rcases hEvalNorm with ⟨⟩
+        rfl
+      unfold Semantics.insertFresh
+      rw [hRecordKey]
+      simp only []
+      have hNoKeyVis : ¬ Database.hasKey visibleDb (logTable, (i : Int)) :=
+        logSystemInvAtNext_no_log_at_next hInv
+      intro hConcat
+      apply hNoKeyVis
+      simpa using hConcat
+  have hStableMid : Logic.stableBiAssertion R (transformerPost SetLanguage.empty inserted) :=
+    stable_transformerPost_empty_insertedRowSet txnId (logRecordExpr (.int i))
+  have hStableRightPre :
+      Logic.stableBiAssertion R (transformerPre I (.union SetLanguage.empty inserted)) :=
+    stable_transformerPre_empty_union_insertedRowSet_readCommitted hStableI txnId
+      (logRecordExpr (.int i))
+  have hRight :
+      PaperInfer R txnId I (.union SetLanguage.empty inserted)
+        (.update rowVar (insertCounterUpdateExpr i) (isCounterExpr rowVar)) updated :=
+    PaperInfer.update (env := []) (source := rowVar)
+      (updateExpr := insertCounterUpdateExpr i) (predicate := isCounterExpr rowVar)
+      hStableRightPre
+  have hSeq :
+      PaperInfer R txnId I SetLanguage.empty
+        (.seq (.insert (logRecordExpr (.int i)))
+          (.update rowVar (insertCounterUpdateExpr i) (isCounterExpr rowVar)))
+        (.union inserted updated) :=
+    PaperInfer.seq hLeft hStableMid hRight
+  simpa [insertLogBody, insertLogEffect, insertCounterUpdateExpr, inserted, updated]
+    using hSeq
 
 /-- Lazy variant: PaperInfer for `archiveLogBody` with the lazy F
 (produced by `PaperInfer.selectLazy`). The body's `Fbody selected` is

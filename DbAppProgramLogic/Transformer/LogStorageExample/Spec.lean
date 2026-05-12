@@ -207,6 +207,25 @@ theorem resultPrefixFor_unionPrefix {oldDb newDb : Database} {q k : Nat}
   rw [hNew n, hOld n]
   omega
 
+/-! ## Freshness lemmas (static, from invariant) -/
+
+/-- Under `logSystemInvAtNext i`, the log key `(logTable, i)` is fresh: no row
+in the database has that key. This is the static-freshness witness needed by
+`PaperInfer.insert` for `logRecordExpr (.int i)`. -/
+theorem logSystemInvAtNext_no_log_at_next {db : Database} {i : Nat}
+    (hInv : logSystemInvAtNext i db) :
+    ¬ Database.hasKey db (logTable, (i : Int)) := by
+  rcases hInv with ⟨cut, hShape, _, _⟩
+  rcases hShape with ⟨_hCut, _, _, _, hStorageLive, hLiveLog, _, _⟩
+  intro hKey
+  -- `hasKey db key` ↔ key ∈ db.filterMap Row.key? ↔ ∃ row ∈ db, row.key? = some key.
+  rcases List.mem_filterMap.mp hKey with ⟨row, hMem, hRowKey⟩
+  have hTable : rowInTable row logTable := rowInTable_of_key? hRowKey
+  have hLive : liveRow row := hStorageLive row hMem (Or.inr (Or.inl hTable))
+  have hLogAt : liveLog db (i : Int) := ⟨row, hMem, hLive, hRowKey⟩
+  have hRange := (hLiveLog i).mp hLogAt
+  omega
+
 /-! ## Invariant preservation lemmas -/
 
 theorem G_insert_preserves_logSystemInv {oldDb newDb : Database}
