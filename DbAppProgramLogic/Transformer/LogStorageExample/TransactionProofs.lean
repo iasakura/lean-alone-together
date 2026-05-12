@@ -490,6 +490,46 @@ private theorem intField?_idField_of_log_row {row : Row} {n : Int}
   unfold Expr.intField? rowFieldInt? at *
   exact h
 
+/-- Under `wellFormedTableFields vd`, every row's `isLogExpr` predicate
+evaluates definitively (some bool). -/
+private theorem satisfiesPredicate_isLogExpr_succeeds_of_wellFormed
+    {vd : Database} (hWF : wellFormedTableFields vd) (row : Row) (hMem : row ∈ vd) :
+    ∃ b, Semantics.satisfiesPredicate rowVar (isLogExpr rowVar) row.visible = some b := by
+  rcases hWF row hMem with ⟨t, n, hKey, hTab⟩
+  -- Extract the lookup directly: rowFieldInt? = some t ↔ lookup? = some (.int t).
+  have hLookup : row.visible.lookup? tableField = some (.int t) := by
+    unfold rowFieldInt? at hTab
+    cases h : row.visible.lookup? tableField with
+    | none => rw [h] at hTab; cases hTab
+    | some lit =>
+        rw [h] at hTab
+        cases lit with
+        | int v => simp at hTab; rw [hTab]
+        | _ => cases hTab
+  refine ⟨decide (t = logTable), ?_⟩
+  unfold Semantics.satisfiesPredicate isLogExpr isTableExpr eqExpr fieldExpr
+  simp [Semantics.instantiateRecord, Expr.subst, Expr.eval, Literal.toValue,
+    Expr.int, hLookup]
+
+/-- Under `wellFormedTableFields vd`, `collectSelected vd rowVar (isLogExpr rowVar)`
+succeeds (returns some). This is the static "predicate evaluates definitively"
+witness needed to bridge `LazyF → archiveLogEffect` (the `LazyF` existential
+over `selected` requires `collectSelected` to succeed). -/
+private theorem collectSelected_logs_succeeds_of_wellFormed
+    {vd : Database} (hWF : wellFormedTableFields vd) :
+    ∃ sel, Semantics.collectSelected vd rowVar (isLogExpr rowVar) = some sel := by
+  unfold Semantics.collectSelected
+  induction vd with
+  | nil => exact ⟨[], rfl⟩
+  | cons head tail ih =>
+      have hHead : head ∈ (head :: tail) := List.mem_cons_self
+      rcases satisfiesPredicate_isLogExpr_succeeds_of_wellFormed hWF head hHead with ⟨bHead, hHeadSat⟩
+      have hWFTail : wellFormedTableFields tail := fun row hMem => hWF row (List.mem_cons_of_mem _ hMem)
+      rcases ih hWFTail with ⟨tailSel, hTailGo⟩
+      refine ⟨if bHead then head.visible :: tailSel else tailSel, ?_⟩
+      simp only [Semantics.collectSelected.go, hHeadSat, hTailGo,
+        Bind.bind, Option.bind, Option.some_bind, pure, Pure.pure]
+
 /-- For each `rec ∈ selected`, `collectIntFieldValues` extracts some `n` and
 that `n` appears in the produced values list. -/
 private theorem mem_collectIntFieldValues_of_mem
@@ -1527,6 +1567,71 @@ theorem paperInfer_insertLogBody_indexed_final (i : Nat) :
   simpa [insertLogBody, insertLogEffect, insertCounterUpdateExpr, inserted, updated]
     using hSeq
 
+/-- Pointwise denote-equivalence between `LazyF` (existential over `selected`)
+and `archiveLogEffect`, at a vd satisfying `logSystemInv`. Used as the bridge
+hypothesis for `PaperInfer.conseqF_withInv` in `paperInfer_archiveLogBody_indexed_final`. -/
+private theorem lazyF_iff_archiveLogEffect_at_invariant
+    {i : Nat} {ld vd : Database} (hInv : logSystemInv vd) (row : Row) :
+    (∃ selected,
+        Semantics.collectSelected vd rowVar
+            (instantiateSymExpr emptySymEnv [rowVar] (isLogExpr rowVar)) = some selected ∧
+        archiveLogEffect_with_selected (archiveTxnId i) i selected ld vd row) ↔
+      archiveLogEffect (archiveTxnId i) i ld vd row := by
+  -- instantiateSymExpr emptySymEnv [rowVar] (isLogExpr rowVar) = isLogExpr rowVar (emptySymEnv has no scalars).
+  have hInstNop :
+      instantiateSymExpr emptySymEnv [rowVar] (isLogExpr rowVar) = isLogExpr rowVar := by
+    simp [instantiateSymExpr, emptySymEnv]
+  rw [hInstNop]
+  have hWF : wellFormedTableFields vd := by
+    rcases hInv with ⟨_, _, _, _, hWF⟩
+    exact hWF
+  constructor
+  · -- LazyF → archiveLogEffect: use selectedLitMin/Max ↔ selectedLogMin/Max bridges.
+    rintro ⟨selected, hSelect, hEff⟩
+    unfold archiveLogEffect_with_selected at hEff
+    unfold archiveLogEffect
+    simp only [SetLanguage.SetExpr.union] at hEff ⊢
+    rcases hEff with hIns | hDel
+    · -- Insert effect: ∃ lo hi0, selectedLitMin = some lo ∧ selectedLitMax = some hi0 ∧ row = archiveRow ...
+      left
+      unfold archiveLogInsertEffect_with_selected at hIns
+      unfold archiveLogInsertEffect
+      rcases hIns with ⟨lo, hi0, hLitMin, hLitMax, hRow⟩
+      refine ⟨lo, hi0, ?_, ?_, hRow⟩
+      · exact (selectedLitMin_iff_selectedLogMin hSelect hWF).mp hLitMin
+      · exact (selectedLitMax_iff_selectedLogMax hSelect hWF).mp hLitMax
+    · -- Delete effect: ∃ src n lo hi0, selectedLitMin/Max + log row in vd + range + markDeleted
+      right
+      unfold archiveLogDeleteEffect_with_selected at hDel
+      unfold archiveLogDeleteEffect
+      rcases hDel with ⟨src, n, lo, hi0, hLitMin, hLitMax, hSrcMem, hSrcKey, hLo, hHi, hOut⟩
+      refine ⟨src, n, lo, hi0, ?_, ?_, ⟨hSrcMem, hSrcKey⟩, hLo, hHi, hOut⟩
+      · exact (selectedLitMin_iff_selectedLogMin hSelect hWF).mp hLitMin
+      · exact (selectedLitMax_iff_selectedLogMax hSelect hWF).mp hLitMax
+  · -- archiveLogEffect → LazyF: get selected via collectSelected_logs_succeeds.
+    intro hEff
+    rcases collectSelected_logs_succeeds_of_wellFormed hWF with ⟨selected, hSelect⟩
+    refine ⟨selected, hSelect, ?_⟩
+    unfold archiveLogEffect at hEff
+    unfold archiveLogEffect_with_selected
+    simp only [SetLanguage.SetExpr.union] at hEff
+    simp only [SetLanguage.SetExpr.union]
+    rcases hEff with hIns | hDel
+    · left
+      unfold archiveLogInsertEffect at hIns
+      unfold archiveLogInsertEffect_with_selected
+      rcases hIns with ⟨lo, hi0, hLogMin, hLogMax, hRow⟩
+      refine ⟨lo, hi0, ?_, ?_, hRow⟩
+      · exact (selectedLitMin_iff_selectedLogMin hSelect hWF).mpr hLogMin
+      · exact (selectedLitMax_iff_selectedLogMax hSelect hWF).mpr hLogMax
+    · right
+      unfold archiveLogDeleteEffect at hDel
+      unfold archiveLogDeleteEffect_with_selected
+      rcases hDel with ⟨src, n, lo, hi0, hLogMin, hLogMax, ⟨hSrcMem, hSrcKey⟩, hLo, hHi, hOut⟩
+      refine ⟨src, n, lo, hi0, ?_, ?_, hSrcMem, hSrcKey, hLo, hHi, hOut⟩
+      · exact (selectedLitMin_iff_selectedLogMin hSelect hWF).mpr hLogMin
+      · exact (selectedLitMax_iff_selectedLogMax hSelect hWF).mpr hLogMax
+
 /-- Lazy variant: PaperInfer for `archiveLogBody` with the lazy F
 (produced by `PaperInfer.selectLazy`). The body's `Fbody selected` is
 parameterised over `selected`, so the universal LocalValid quantification
@@ -1785,6 +1890,34 @@ log rows (V_end = V_start since no env interference). Then `.ite` branches:
 The full proof requires composing `localValid_*_false` rules through the
 nested structure. That is the remaining substantial work for this sorry. -/
 theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty (archiveLogBody i)
+      (archiveLogEffect (archiveTxnId i) i) := by
+  -- Use `_via_lazy` (LazyF post) + `PaperInfer.conseqF_withInv` to bridge to
+  -- `archiveLogEffect` post under the invariant. The body proof's
+  -- `viaLocalValid + False rely descent` is now confined to `_via_lazy`'s
+  -- internal proof; this `_indexed_final` does not directly use those.
+  refine PaperInfer.conseqF_withInv
+    (I := fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+    ?hStableI (paperInfer_archiveLogBody_indexed_via_lazy i) ?hBridge
+  case hStableI =>
+    -- Trivial under SI silent rely (vd doesn't change).
+    intro localDb v v' hInv hStep
+    have hEq := relyMod_snapshot_exec_silent localDb v v' hStep
+    rw [hEq]; exact hInv
+  case hBridge =>
+    intro ld vd hInv hPostLazy
+    intro row
+    have hRowLazy := hPostLazy row
+    simp only [transformerPost, SetLanguage.denote, SetLanguage.Env.ofDatabases,
+      SetLanguage.SetExpr.union, SetLanguage.empty, false_or] at hRowLazy ⊢
+    rw [← lazyF_iff_archiveLogEffect_at_invariant (i := i) hInv.1 row]
+    exact hRowLazy
+
+private theorem paperInfer_archiveLogBody_indexed_final_old (i : Nat) :
     PaperInfer
       (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
       (archiveTxnId i)
