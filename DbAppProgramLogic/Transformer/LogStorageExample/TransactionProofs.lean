@@ -530,6 +530,60 @@ private theorem collectSelected_logs_succeeds_of_wellFormed
       simp only [Semantics.collectSelected.go, hHeadSat, hTailGo,
         Bind.bind, Option.bind, Option.some_bind, pure, Pure.pure]
 
+/-- Under `wellFormedTableFields vd`, every row's `isStorageEntryExpr` predicate
+evaluates definitively (some bool). Analogous to
+`satisfiesPredicate_isLogExpr_succeeds_of_wellFormed`. -/
+private theorem satisfiesPredicate_isStorageEntryExpr_succeeds_of_wellFormed
+    {vd : Database} (hWF : wellFormedTableFields vd) (row : Row) (hMem : row ∈ vd) :
+    ∃ b, Semantics.satisfiesPredicate rowVar (isStorageEntryExpr rowVar) row.visible = some b := by
+  rcases hWF row hMem with ⟨t, n, _hKey, hTab⟩
+  have hLookup : row.visible.lookup? tableField = some (.int t) := by
+    unfold rowFieldInt? at hTab
+    cases h : row.visible.lookup? tableField with
+    | none => rw [h] at hTab; cases hTab
+    | some lit =>
+        rw [h] at hTab
+        cases lit with
+        | int v => simp at hTab; rw [hTab]
+        | _ => cases hTab
+  by_cases hLog : t = logTable
+  · refine ⟨true, ?_⟩
+    unfold Semantics.satisfiesPredicate isStorageEntryExpr isLogExpr isArchiveExpr
+      isTableExpr orExpr eqExpr fieldExpr
+    simp [Semantics.instantiateRecord, Expr.subst, Expr.eval, Literal.toValue,
+      Expr.int, hLookup, hLog]
+  · by_cases hArch : t = archiveTable
+    · refine ⟨true, ?_⟩
+      unfold Semantics.satisfiesPredicate isStorageEntryExpr isLogExpr isArchiveExpr
+        isTableExpr orExpr eqExpr fieldExpr
+      have hArchNeLog : ¬ archiveTable = logTable := by decide
+      simp [Semantics.instantiateRecord, Expr.subst, Expr.eval, Literal.toValue,
+        Expr.int, hLookup, hLog, hArch, hArchNeLog]
+    · refine ⟨false, ?_⟩
+      unfold Semantics.satisfiesPredicate isStorageEntryExpr isLogExpr isArchiveExpr
+        isTableExpr orExpr eqExpr fieldExpr
+      simp [Semantics.instantiateRecord, Expr.subst, Expr.eval, Literal.toValue,
+        Expr.int, hLookup, hLog, hArch]
+
+/-- Analogue of `collectSelected_logs_succeeds_of_wellFormed` for storage entries
+(`isStorageEntryExpr` instead of `isLogExpr`). -/
+private theorem collectSelected_storageEntries_succeeds_of_wellFormed
+    {vd : Database} (hWF : wellFormedTableFields vd) :
+    ∃ sel, Semantics.collectSelected vd rowVar (isStorageEntryExpr rowVar) = some sel := by
+  unfold Semantics.collectSelected
+  induction vd with
+  | nil => exact ⟨[], rfl⟩
+  | cons head tail ih =>
+      have hHead : head ∈ (head :: tail) := List.mem_cons_self
+      rcases satisfiesPredicate_isStorageEntryExpr_succeeds_of_wellFormed hWF head hHead with
+        ⟨bHead, hHeadSat⟩
+      have hWFTail : wellFormedTableFields tail :=
+        fun row hMem => hWF row (List.mem_cons_of_mem _ hMem)
+      rcases ih hWFTail with ⟨tailSel, hTailGo⟩
+      refine ⟨if bHead then head.visible :: tailSel else tailSel, ?_⟩
+      simp only [Semantics.collectSelected.go, hHeadSat, hTailGo,
+        Bind.bind, Option.bind, Option.some_bind, pure, Pure.pure]
+
 /-- For each `rec ∈ selected`, `collectIntFieldValues` extracts some `n` and
 that `n` appears in the produced values list. -/
 private theorem mem_collectIntFieldValues_of_mem
