@@ -949,6 +949,18 @@ def selectAllLogEffect (txnId : TxnId) (q : Nat) : SetLanguage.SetExpr :=
   SetLanguage.SetExpr.bind selectedStorageEntriesSet
     (fun entry => selectEntryResultEffect txnId q entry)
 
+/-- `selectAllLogEffect_with_selected`: parametrized over the captured
+`selected` SetLit (= what `collectSelected` returns). The iteration is over
+entries in `selected`, and for each we look up the source row in `globalDb`
+to apply `selectEntryResultEffect`. Used as the `Fbody` for
+`PaperInfer.selectLazy` in `paperInfer_selectAllLogBody_via_lazy`. -/
+def selectAllLogEffect_with_selected (txnId : TxnId) (q : Nat) (selected : SetLit) :
+    SetLanguage.SetExpr :=
+  fun localDb globalDb row =>
+    ∃ entry, entry ∈ selected ∧
+      ∃ srcRow, srcRow ∈ globalDb ∧ srcRow.visible = entry ∧
+        selectEntryResultEffect txnId q srcRow localDb globalDb row
+
 theorem selectedStorageEntriesSet_denote_iff (db : Database) (row : Row) :
     SetLanguage.denote (SetLanguage.Env.ofDatabases [] db) selectedStorageEntriesSet row ↔
       row ∈ db ∧ (rowFieldInt? row tableField = some logTable ∨
