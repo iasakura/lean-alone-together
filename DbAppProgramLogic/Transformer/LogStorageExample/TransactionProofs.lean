@@ -2730,13 +2730,13 @@ theorem paperInfer_archiveLogBody_indexed_final (i : Nat) :
       (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
       SetLanguage.empty (archiveLogBody i)
       (archiveLogEffect (archiveTxnId i) i) := by
-  -- Use `_via_lazy` (LazyF post) + `PaperInfer.conseqF_withInv` to bridge to
-  -- `archiveLogEffect` post under the invariant. The body proof's
-  -- `viaLocalValid + False rely descent` is now confined to `_via_lazy`'s
-  -- internal proof; this `_indexed_final` does not directly use those.
+  -- Use `_via_lazy_pure` (constructor-only LazyF post) +
+  -- `PaperInfer.conseqF_withInv` to bridge to `archiveLogEffect` post
+  -- under the invariant. The body proof is fully constructor-based now
+  -- (no `viaLocalValid` for body, no False rely descent).
   refine PaperInfer.conseqF_withInv
     (I := fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
-    ?hStableI (paperInfer_archiveLogBody_indexed_via_lazy i) ?hBridge
+    ?hStableI (paperInfer_archiveLogBody_indexed_via_lazy_pure i) ?hBridge
   case hStableI =>
     -- Trivial under SI silent rely (vd doesn't change).
     intro localDb v v' hInv hStep
@@ -3024,6 +3024,96 @@ private def selectAllLogBody_doneContrib
     ∃ srcRow, srcRow ∈ visibleDb ∧ srcRow.visible = rec ∧
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
         (selectEntryResultEffect (selectTxnId q) q srcRow) row
+
+/-- Per-entry result effect lifted from `Row`-based to `RecordLit`-based form.
+Since `selectEntryResultEffect`'s logic depends only on entry's visible record
+(via `key?`, `lookup?`), the `byRecord` form takes a record directly. -/
+private def selectEntryResultEffect_byRecord (q : Nat) (entry : RecordLit) :
+    SetLanguage.SetExpr :=
+  fun _localDb _globalDb row =>
+    ((∃ id, entry.key? = some (logTable, id)) ∧
+      ∃ n, entry.lookup? "id" = some (.int n) ∧
+        row = resultRowLit (selectTxnId q) q n) ∨
+    ((∃ id, entry.key? = some (archiveTable, id)) ∧
+      ∃ lo hi n, entry.lookup? "lo" = some (.int lo) ∧
+        entry.lookup? "hi" = some (.int hi) ∧
+        lo ≤ n ∧ n < hi ∧ row = resultRowLit (selectTxnId q) q n)
+
+/-- `selectAllLogEffect_byRecord sel`: per-`sel` formulation purely determined
+by `sel`'s entries (no dependence on `vd`). This matches the foreach body's
+operational effect under universal `sel`, suitable for `PaperInfer.selectLazy`. -/
+private def selectAllLogEffect_byRecord (q : Nat) (selected : SetLit) :
+    SetLanguage.SetExpr :=
+  fun localDb globalDb row =>
+    ∃ entry, entry ∈ selected ∧
+      selectEntryResultEffect_byRecord q entry localDb globalDb row
+
+/-- `_byRecord` analog of `selectAllLogBody_doneContrib`: purely sel-determined
+accumulator predicate. -/
+private def selectAllLogBody_doneContrib_byRecord
+    (q : Nat) (done : SetLit) (row : Row) : Prop :=
+  ∃ entry, entry ∈ done ∧
+    selectEntryResultEffect_byRecord q entry [] [] row
+
+/-- Per-row bridge between `selectAllLogEffect_byRecord` (purely sel-determined)
+and `selectAllLogEffect_with_selected` (requires source-row in vd). Holds under
+`hSelect : collectSelected vd ... = some sel` + `hWF : wellFormedTableFields vd`,
+since `sel`'s entries correspond bijectively to storage rows in `vd`. -/
+private theorem selectAllLogEffect_byRecord_iff_with_selected
+    {q : Nat} {ld vd : Database} {selected : SetLit}
+    (hSelect : Semantics.collectSelected vd rowVar (isStorageEntryExpr rowVar) = some selected)
+    (hWF : wellFormedTableFields vd) (row : Row) :
+    selectAllLogEffect_byRecord q selected ld vd row ↔
+    selectAllLogEffect_with_selected (selectTxnId q) q selected ld vd row := by
+  unfold selectAllLogEffect_byRecord selectAllLogEffect_with_selected
+  constructor
+  · rintro ⟨entry, hEntry, hEff⟩
+    -- Get srcRow ∈ vd with srcRow.visible = entry via mem_selected_iff_storage_entry.
+    rcases (mem_selected_iff_storage_entry hSelect hWF entry).mp hEntry with
+      ⟨srcRow, hSrcMem, _hKeyOr, hSrcVis⟩
+    refine ⟨entry, hEntry, srcRow, hSrcMem, hSrcVis, ?_⟩
+    -- Bridge `_byRecord entry row` to `selectEntryResultEffect q srcRow ld vd row`.
+    unfold selectEntryResultEffect_byRecord at hEff
+    unfold selectEntryResultEffect SetLanguage.SetExpr.union
+    have hSrcKey : srcRow.key? = entry.key? := by
+      unfold Row.key?; rw [hSrcVis]
+    rcases hEff with hLog | hArch
+    · left
+      unfold selectLogResultEffect
+      rcases hLog with ⟨⟨id, hLogKey⟩, n, hId, hRow⟩
+      refine ⟨n, ⟨id, ?_⟩, ?_, hRow⟩
+      · rw [hSrcKey]; exact hLogKey
+      · rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hId
+    · right
+      unfold selectArchiveResultEffect
+      rcases hArch with ⟨⟨id, hArchKey⟩, lo, hi, n, hLo, hHi, hLoLe, hLtHi, hRow⟩
+      refine ⟨lo, hi, n, ⟨id, ?_⟩, ?_, ?_, hLoLe, hLtHi, hRow⟩
+      · rw [hSrcKey]; exact hArchKey
+      · rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hLo
+      · rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hHi
+  · rintro ⟨entry, hEntry, srcRow, hSrcMem, hSrcVis, hEff⟩
+    refine ⟨entry, hEntry, ?_⟩
+    unfold selectEntryResultEffect SetLanguage.SetExpr.union at hEff
+    unfold selectEntryResultEffect_byRecord
+    have hSrcKey : srcRow.key? = entry.key? := by
+      unfold Row.key?; rw [hSrcVis]
+    rcases hEff with hLog | hArch
+    · left
+      unfold selectLogResultEffect at hLog
+      rcases hLog with ⟨n, ⟨id, hSrcLogKey⟩, hSrcId, hRow⟩
+      refine ⟨⟨id, ?_⟩, n, ?_, hRow⟩
+      · rw [← hSrcKey]; exact hSrcLogKey
+      · have := rowFieldInt?_eq_some_iff_lookup.mp hSrcId
+        rw [hSrcVis] at this; exact this
+    · right
+      unfold selectArchiveResultEffect at hArch
+      rcases hArch with ⟨lo, hi, n, ⟨id, hSrcArchKey⟩, hSrcLo, hSrcHi, hLoLe, hLtHi, hRow⟩
+      refine ⟨⟨id, ?_⟩, lo, hi, n, ?_, ?_, hLoLe, hLtHi, hRow⟩
+      · rw [← hSrcKey]; exact hSrcArchKey
+      · have := rowFieldInt?_eq_some_iff_lookup.mp hSrcLo
+        rw [hSrcVis] at this; exact this
+      · have := rowFieldInt?_eq_some_iff_lookup.mp hSrcHi
+        rw [hSrcVis] at this; exact this
 
 /-- Helper for the archive-head case: inner `foreachRuntime` over
 `intRangeRecords "id" lo hi`. Each iteration inserts `resultRowLit q (lo+offset)`
