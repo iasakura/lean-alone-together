@@ -2397,10 +2397,11 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy_pure (i : Nat) :
           Semantics.collectSelected globalDb rowVar
               (instantiateSymExpr emptySymEnv [rowVar] (isLogExpr rowVar)) = some selected ∧
           archiveLogEffect_with_selected (archiveTxnId i) i selected localDb globalDb out) := by
-  -- Same theorem as `_via_lazy`; the body refactor (constructor cascade) uses
-  -- the building blocks (`paperInfer_archiveInsert`, `paperInfer_archiveDelete`,
-  -- `paperInfer_archiveSeqInsertDelete`, `PaperInfer.letE_none`,
-  -- `PaperInfer.conseqF`, stability helpers) and ~80-150 LOC of composition.
+  -- Building blocks for the constructor-only body cascade are above:
+  -- `paperInfer_archiveBodySubst_nonempty / _empty` give per-case body PaperInfer.
+  -- The F-shape bridge (ctor F → archive_with_selected sel) via `PaperInfer.conseqF`
+  -- is the remaining piece (~60-80 LOC of selectedLitMin/Max characterization +
+  -- denote-iff).
   exact paperInfer_archiveLogBody_indexed_via_lazy i
 
 
