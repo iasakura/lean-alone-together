@@ -22,6 +22,27 @@ theorem paperInferenceSound_foreach (R : LocalRely) (txnId : TxnId)
   intro records hEval
   exact hBody records hEval
 
+/-- Wrapped FOREACH rule. `Logic.localValid_foreach` accepts a generic post `Q`, so the
+wrapped post flows through unchanged. The body LocalValid (per evaluated `records`) is
+provided in wrapped form. -/
+theorem paperInferenceSound_foreach_wrapped (R : LocalRely) (txnId : TxnId)
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr) (env : SymEnv)
+    (source : Expr) (doneVar elemVar : VarName) (body : Semantics.Program)
+    (F : SetLanguage.SetExpr)
+    (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+    (hBody :
+      ∀ records,
+        Expr.eval (instantiateSymExpr env [] source) = some (.set records) →
+        Logic.LocalValid R txnId (transformerPre I Fctxt)
+          (.foreachRuntime (Expr.setLit []) (Expr.setLit records) doneVar elemVar body)
+          (transformerPostWrapped R I Fctxt F)) :
+    paperInferenceSoundWrapped R txnId I Fctxt
+      (.foreach (instantiateSymExpr env [] source) doneVar elemVar body) F := by
+  refine Logic.localValid_foreach R txnId _ _ (instantiateSymExpr env [] source) doneVar elemVar body
+    hStable ?_
+  intro records hEval
+  exact hBody records hEval
+
 theorem inferEffect_foreachRuntime_eq (txnId : TxnId) (env : Env)
     (done remaining : Expr) (doneVar elemVar : VarName)
     (body : Semantics.Program) (db : Database) :

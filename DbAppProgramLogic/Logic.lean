@@ -1520,6 +1520,61 @@ theorem localValid_select (R : LocalRely) (txnId : TxnId) (P Q : BiAssertion)
                 exact ih visibleDbMid rfl (hStable _ _ _ hPvisible hR) hCfgSkip
   exact hAux (MultiStep.toFwd hMulti) visibleDb rfl hP hSkip
 
+/-- Variant of `localValid_select` whose body LocalValid carries the
+`Semantics.collectSelected vd source predicate = some selected` witness in its
+precondition. The outer SELECT reduction pins `vd_init = visibleDbMid` (the moment
+`collectSelected` was observed), so the strengthened pre is satisfied when the body
+is invoked.
+
+This is the paper-faithful Lean encoding of Theorem C.18's SELECT case strengthening
+`P'(δ, Δ) ⇔ P(δ, Δ) ∧ y = {r ∈ Δ | [r/x]e}` (p.45). It lets the body's proof leverage
+`hCollectStable` to propagate the `collectSelected` fact across rely-multistep, even
+though the body LocalValid is otherwise universal over `(ld_init, vd_init)`. -/
+theorem localValid_select_collectInvariant (R : LocalRely) (txnId : TxnId) (P Q : BiAssertion)
+    (binder source : VarName) (predicate : Expr) (body : Command ι Database)
+    (hStable : stableBiAssertion R P)
+    (hBody :
+      ∀ selected,
+        LocalValid R txnId
+          (fun ld vd => P ld vd ∧
+            Semantics.collectSelected vd source predicate = some selected)
+          (Command.subst binder (.lit (.set selected)) body) Q) :
+    LocalValid R txnId P (.select binder source predicate body) Q := by
+  intro localDb visibleDb finalCfg hP hMulti hSkip
+  have hAux :
+      ∀ {cfg₁ cfg₂ : LocalConfig ι},
+        MultiStepFwd (localInterleavedStep (ι := ι) R txnId) cfg₁ cfg₂ →
+        ∀ visibleDb,
+          cfg₁ = ⟨(.select binder source predicate body : Command ι Database), localDb, visibleDb⟩ →
+          P localDb visibleDb →
+          cfg₂.cmd = (Command.skip : Command ι Database) →
+          Q cfg₂.localDb cfg₂.visibleDb := by
+    intro cfg₁ cfg₂ hPath
+    induction hPath with
+    | refl =>
+        intro visibleDb hStart hPvisible hCfgSkip
+        cases hStart
+        cases hCfgSkip
+    | @cons cfgStart cfgMid cfgFinal hStep hRest ih =>
+        intro visibleDb hStart hPvisible hCfgSkip
+        cases hStart
+        cases cfgMid with
+        | mk cmdMid localDbMid visibleDbMid =>
+            cases hStep with
+            | inl hLocal =>
+                rcases hLocal with ⟨hLocal, hVisibleEq⟩
+                subst hVisibleEq
+                cases hLocal with
+                | select hSelect =>
+                    exact hBody _ localDb visibleDbMid _ ⟨hPvisible, hSelect⟩
+                      (MultiStep.ofFwd hRest) hCfgSkip
+            | inr hRely =>
+                rcases hRely with ⟨hCmd, hLocalEq, _hNotSkip, hR⟩
+                subst hCmd
+                subst hLocalEq
+                exact ih visibleDbMid rfl (hStable _ _ _ hPvisible hR) hCfgSkip
+  exact hAux (MultiStep.toFwd hMulti) visibleDb rfl hP hSkip
+
 theorem localValid_insert {ι : Type} (R : LocalRely) (txnId : TxnId) (P Q : BiAssertion)
     (expr : Expr)
     (hStable : stableBiAssertion R P)

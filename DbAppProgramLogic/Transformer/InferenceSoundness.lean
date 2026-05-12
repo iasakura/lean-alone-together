@@ -26,33 +26,6 @@ def transformerPostI (I : Assertion) (Fctxt F : SetExpr) : BiAssertion :=
   fun localDb visibleDb =>
     transformerPost Fctxt F localDb visibleDb ∧ I visibleDb
 
-theorem localInterleavedStep_preserves_invariant
-    {ι : Type} {R : LocalRely} {txnId : TxnId} {I : Assertion}
-    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
-    {cfg cfg' : LocalConfig ι}
-    (hStep : Logic.localInterleavedStep (ι := ι) R txnId cfg cfg')
-    (hI : I cfg.visibleDb) :
-    I cfg'.visibleDb := by
-  rcases cfg with ⟨cmd, localDb, visibleDb⟩
-  rcases cfg' with ⟨cmd', localDb', visibleDb'⟩
-  rcases hStep with hLocal | hRely
-  · rcases hLocal with ⟨_hStep, hVis⟩
-    simpa [hVis] using hI
-  · rcases hRely with ⟨_hCmd, _hLocal, _hNotSkip, hR⟩
-    exact hStableI _ _ _ hI hR
-
-theorem localMultiStep_preserves_invariant
-    {ι : Type} {R : LocalRely} {txnId : TxnId} {I : Assertion}
-    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
-    {cfg cfg' : LocalConfig ι}
-    (hMulti : Logic.LocalMultiStep R txnId ι cfg cfg')
-    (hI : I cfg.visibleDb) :
-    I cfg'.visibleDb := by
-  induction hMulti with
-  | refl => exact hI
-  | tail _hPrev hLast ih =>
-      exact localInterleavedStep_preserves_invariant hStableI hLast ih
-
 /-- The key invariant-augmentation lemma: a `LocalValid` judgment whose precondition implies the
 visible-DB invariant `I` can have `I` added to its postcondition, provided `R` preserves `I`. -/
 theorem LocalValid.augment_invariant
@@ -69,12 +42,6 @@ theorem LocalValid.augment_invariant
     (cfg := ⟨body, localDb, visibleDb⟩)
     (cfg' := finalCfg)
     hStableI hMulti hI₀
-
-theorem transformerPre_implies_invariant
-    (I : Assertion) (Fctxt : SetExpr) :
-    ∀ ld vd, transformerPre I Fctxt ld vd → I vd := by
-  intro _ _ hPre
-  exact hPre.2
 
 /-- Strong soundness: every paper-style derivation produces a `LocalValid` whose post-condition
 includes the invariant `I`. The paper-faithful version (no `I` in the post) is recovered as
@@ -240,69 +207,66 @@ theorem PaperInfer.sound_with_invariant
         (transformerPre_implies_invariant I Fctxt) hForeachSound
   | @selectLazy Fctxt Fbody env binder source predicate body hStable hCollectStable
       _hBody ihBody =>
-      -- Lazy SELECT rule (Fig.8 [F'(∆)/y] form). `hCollectStable` says R
-      -- preserves `collectSelected` (trivial under SI silent rely). This lets
-      -- us transport the outer `hSelect` to any R-reachable vd', closing the
-      -- conversion `Fbody outer-selected ↔ LazyF`.
-      have hBody' :
-          ∀ localDb visibleDb selected,
-            transformerPre I Fctxt localDb visibleDb →
-            Semantics.collectSelected visibleDb source
-                (instantiateSymExpr env [source] predicate) = some selected →
-            Logic.LocalValid R txnId (transformerPre I Fctxt)
-              (Command.subst binder (.lit (.set selected)) body)
-              (transformerPost Fctxt
-                (fun localDb' globalDb' out =>
-                  ∃ selected',
-                    Semantics.collectSelected globalDb' source
-                        (instantiateSymExpr env [source] predicate) = some selected' ∧
-                    Fbody selected' localDb' globalDb' out)) := by
-        intro localDb visibleDb selected hPre hSelect
-        intro ld_init vd_init finalCfg hPreBody hMulti hSkip
-        have hPostBody := (ihBody selected) ld_init vd_init finalCfg hPreBody hMulti hSkip
-        rcases hPostBody with ⟨hPost, _hI⟩
-        -- collectSelected is preserved through R-multistep via hCollectStable
-        have hCollect_preserved :
-            ∀ {cfg cfg' : LocalConfig (IsolationSpec Database)},
-              Logic.LocalMultiStep R txnId (IsolationSpec Database) cfg cfg' →
-              Semantics.collectSelected cfg.visibleDb source
-                  (instantiateSymExpr env [source] predicate) =
-                Semantics.collectSelected cfg'.visibleDb source
-                  (instantiateSymExpr env [source] predicate) := by
-          intro cfg cfg' hM
-          induction hM with
-          | refl => rfl
-          | tail _hPrev hLast ih =>
-              rcases hLast with hLocal | hRely
-              · rcases hLocal with ⟨_hStep, hVisEq⟩
-                exact ih.trans (by rw [hVisEq])
-              · rcases hRely with ⟨_hCmd, _hLocal, _hNotSkip, hR⟩
-                exact ih.trans (hCollectStable _ _ _ hR).symm
-        -- The body LocalValid is universal over (ld_init, vd_init), but
-        -- hSelect is about the OUTER visibleDb. To bridge, we need vd_init's
-        -- collectSelected to match. This requires vd_init = visibleDb, which
-        -- holds when the body LocalValid is invoked from
-        -- `paperInferenceSound_selectLazy`'s wrapper at (localDb, visibleDb).
-        -- The universal premise is `hPreBody : transformerPre I Fctxt ld_init vd_init`,
-        -- which doesn't force vd_init = visibleDb. So we cannot fully bridge here
-        -- at the sound_with_invariant level without additional information.
-        -- Leaving the sorry for the universal-vd_init gap; closing requires
-        -- a stronger framing (e.g., the wrap operator at the LocalValid pre).
-        intro row
-        sorry
-      have hSelectLazySound :
-          Logic.LocalValid R txnId (transformerPre I Fctxt)
-            (.select binder source (instantiateSymExpr env [source] predicate) body)
-            (transformerPost Fctxt
-              (fun localDb globalDb out =>
-                ∃ selected,
-                  Semantics.collectSelected globalDb source
-                      (instantiateSymExpr env [source] predicate) = some selected ∧
-                  Fbody selected localDb globalDb out)) :=
-        paperInferenceSound_selectLazy R txnId I Fctxt env binder source predicate body Fbody
-          hStable hBody'
-      exact LocalValid.augment_invariant hStableI
-        (transformerPre_implies_invariant I Fctxt) hSelectLazySound
+      -- Lazy SELECT rule (Fig.8 [F'(∆)/y] form). The body LocalValid produced by
+      -- `Logic.localValid_select_collectInvariant` carries the
+      -- `collectSelected vd_init src pred = some selected` witness in its
+      -- precondition (paper p.45 strengthening `P'(δ,Δ) ⇔ P ∧ y = sel(Δ)`).
+      -- Inside the body, `hCollectStable` propagates this through the rely
+      -- multistep to `collectSelected finalCfg.vd`, allowing the bridge from
+      -- `Fbody selected` (body's effect) to `LazyF` (outer existential effect).
+      refine Logic.localValid_select_collectInvariant R txnId _ _ binder source
+        (instantiateSymExpr env [source] predicate) body hStable ?_
+      intro selected
+      intro ld_init vd_init finalCfg hPreStrong hMulti hSkip
+      rcases hPreStrong with ⟨hPreBody, hSelectInit⟩
+      -- ihBody (selected) gives the body's `transformerPostI I Fctxt (Fbody selected)`.
+      have hPostBody := (ihBody selected) ld_init vd_init finalCfg hPreBody hMulti hSkip
+      rcases hPostBody with ⟨hPost, hI_final⟩
+      -- Propagate `collectSelected` from `vd_init` to `finalCfg.visibleDb`.
+      have hCollect_preserved :
+          ∀ {cfg cfg' : LocalConfig (IsolationSpec Database)},
+            Logic.LocalMultiStep R txnId (IsolationSpec Database) cfg cfg' →
+            Semantics.collectSelected cfg.visibleDb source
+                (instantiateSymExpr env [source] predicate) =
+              Semantics.collectSelected cfg'.visibleDb source
+                (instantiateSymExpr env [source] predicate) := by
+        intro cfg cfg' hM
+        induction hM with
+        | refl => rfl
+        | tail _hPrev hLast ih =>
+            rcases hLast with hLocal | hRely
+            · rcases hLocal with ⟨_hStep, hVisEq⟩
+              exact ih.trans (by rw [hVisEq])
+            · rcases hRely with ⟨_hCmd, _hLocal, _hNotSkip, hR⟩
+              exact ih.trans (hCollectStable _ _ _ hR).symm
+      have hSelectFinal :
+          Semantics.collectSelected finalCfg.visibleDb source
+              (instantiateSymExpr env [source] predicate) = some selected := by
+        have hEq := hCollect_preserved
+          (cfg := ⟨Command.subst binder (.lit (.set selected)) body, ld_init, vd_init⟩)
+          (cfg' := finalCfg) hMulti
+        exact hEq ▸ hSelectInit
+      -- Bridge `Fbody selected` (body's effect) ↔ `LazyF` (outer effect) at
+      -- `finalCfg.visibleDb`, using `hSelectFinal` as the existential witness.
+      refine ⟨?_, hI_final⟩
+      intro row
+      have hPostRow := hPost row
+      simp only [transformerPost, SetLanguage.denote_union, SetLanguage.denote,
+        SetLanguage.Env.ofDatabases] at hPostRow ⊢
+      constructor
+      · rintro (hFctxt | hLazy)
+        · exact hPostRow.mp (Or.inl hFctxt)
+        · -- `hLazy : LazyF [] finalCfg.vd row` definitionally reduces to the existential.
+          obtain ⟨selected', hSel', hFbody'⟩ := hLazy
+          have hEq : selected' = selected := by
+            rw [hSelectFinal] at hSel'
+            exact (Option.some.inj hSel').symm
+          subst hEq
+          exact hPostRow.mp (Or.inr hFbody')
+      · intro hRow
+        rcases hPostRow.mpr hRow with hFctxt | hFbody
+        · exact Or.inl hFctxt
+        · exact Or.inr ⟨selected, hSelectFinal, hFbody⟩
   | @viaLocalValid Fctxt F body hSound =>
       exact LocalValid.augment_invariant hStableI
         (transformerPre_implies_invariant I Fctxt) hSound
@@ -335,26 +299,6 @@ theorem PaperInfer.sound_wrapped
     paperInferenceSoundWrapped R txnId I Fctxt body F := by
   intro localDb visibleDb finalCfg hPre hMulti hSkip
   have hPost := PaperInfer.sound hStableI h localDb visibleDb finalCfg hPre hMulti hSkip
-  have hIInit : I visibleDb := hPre.2
-  have hIFinal : I finalCfg.visibleDb :=
-    localMultiStep_preserves_invariant
-      (cfg := ⟨body, localDb, visibleDb⟩)
-      (cfg' := finalCfg)
-      hStableI hMulti hIInit
-  exact transformerPostWrapped_of_transformerPost hIFinal hPost
-
-/-- Internal helper: lift iff-form `LocalValid` to wrapped form via `vd' := vd`
-witness. Used by per-case lifts in `sound_with_invariant_wrapped`. -/
-private theorem lift_iff_to_wrapped
-    {R : LocalRely} {txnId : TxnId} {I : Assertion}
-    (hStableI : Logic.stableBiAssertion R (fun _ vd => I vd))
-    {Fctxt F : SetExpr} {body : Semantics.Program}
-    (hIff : Logic.LocalValid R txnId (transformerPre I Fctxt) body
-              (transformerPost Fctxt F)) :
-    Logic.LocalValid R txnId (transformerPre I Fctxt) body
-      (transformerPostWrapped R I Fctxt F) := by
-  intro localDb visibleDb finalCfg hPre hMulti hSkip
-  have hPost := hIff localDb visibleDb finalCfg hPre hMulti hSkip
   have hIInit : I visibleDb := hPre.2
   have hIFinal : I finalCfg.visibleDb :=
     localMultiStep_preserves_invariant

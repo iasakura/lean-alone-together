@@ -587,6 +587,79 @@ theorem transformerPostWrapped_of_transformerPost
     transformerPostWrapped R I Fctxt F localDb visibleDb :=
   ⟨visibleDb, fun _ => rfl, hI, hPost⟩
 
+/-- Reverse bridge: when `transformerPost Fctxt F` is `R`-stable, the wrap's pin
+`(stable → vd' = visibleDb)` fires, witnessing `vd' = visibleDb`, so the iff form
+can be recovered. Used in `seq`-style composition where the wrapped post of the
+first sub-derivation must be turned into the second's `transformerPre`-shaped
+precondition. -/
+theorem transformerPost_of_transformerPostWrapped
+    {R : LocalRely} {I : Assertion} {Fctxt F : SetLanguage.SetExpr}
+    {localDb visibleDb : Database}
+    (hStable : Logic.stableBiAssertion R (transformerPost Fctxt F))
+    (hWrap : transformerPostWrapped R I Fctxt F localDb visibleDb) :
+    transformerPost Fctxt F localDb visibleDb := by
+  rcases hWrap with ⟨vd', hPin, _hI, hPost⟩
+  have hVd : vd' = visibleDb := hPin hStable
+  exact hVd ▸ hPost
+
+/-- Generic invariant preservation through a single `localInterleavedStep`. The local-step
+branch leaves the visible database unchanged; the rely branch invokes `stableBiAssertion` on `I`. -/
+theorem localInterleavedStep_preserves_invariant
+    {ι : Type} {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
+    {cfg cfg' : LocalConfig ι}
+    (hStep : Logic.localInterleavedStep (ι := ι) R txnId cfg cfg')
+    (hI : I cfg.visibleDb) :
+    I cfg'.visibleDb := by
+  rcases cfg with ⟨cmd, localDb, visibleDb⟩
+  rcases cfg' with ⟨cmd', localDb', visibleDb'⟩
+  rcases hStep with hLocal | hRely
+  · rcases hLocal with ⟨_hStep, hVis⟩
+    simpa [hVis] using hI
+  · rcases hRely with ⟨_hCmd, _hLocal, _hNotSkip, hR⟩
+    exact hStableI _ _ _ hI hR
+
+/-- Generic invariant preservation through `localMultiStep` (transitive closure
+of `localInterleavedStep`). -/
+theorem localMultiStep_preserves_invariant
+    {ι : Type} {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
+    {cfg cfg' : LocalConfig ι}
+    (hMulti : Logic.LocalMultiStep R txnId ι cfg cfg')
+    (hI : I cfg.visibleDb) :
+    I cfg'.visibleDb := by
+  induction hMulti with
+  | refl => exact hI
+  | tail _hPrev hLast ih =>
+      exact localInterleavedStep_preserves_invariant hStableI hLast ih
+
+theorem transformerPre_implies_invariant
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr) :
+    ∀ ld vd, transformerPre I Fctxt ld vd → I vd := by
+  intro _ _ hPre
+  exact hPre.2
+
+/-- Lift an iff-form `LocalValid` to the wrapped form via the `vd' := visibleDb`
+witness, using `I visibleDb` from `transformerPre` plus invariant propagation through
+the rely multistep. Used by per-rule `paperInferenceSound_*_wrapped` lemmas. -/
+theorem lift_iff_to_wrapped
+    {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ vd => I vd))
+    {Fctxt F : SetLanguage.SetExpr} {body : Semantics.Program}
+    (hIff : Logic.LocalValid R txnId (transformerPre I Fctxt) body
+              (transformerPost Fctxt F)) :
+    Logic.LocalValid R txnId (transformerPre I Fctxt) body
+      (transformerPostWrapped R I Fctxt F) := by
+  intro localDb visibleDb finalCfg hPre hMulti hSkip
+  have hPost := hIff localDb visibleDb finalCfg hPre hMulti hSkip
+  have hIInit : I visibleDb := hPre.2
+  have hIFinal : I finalCfg.visibleDb :=
+    localMultiStep_preserves_invariant
+      (cfg := ⟨body, localDb, visibleDb⟩)
+      (cfg' := finalCfg)
+      hStableI hMulti hIInit
+  exact transformerPostWrapped_of_transformerPost hIFinal hPost
+
 /-- Variant of `paperInferenceSound` that keeps the symbolic environment explicit. The command is
 materialized against the current visible database before the `LocalValid` judgment is stated. This
 is the form needed to recurse through `SELECT` and `FOREACH`, where the body is not executed
