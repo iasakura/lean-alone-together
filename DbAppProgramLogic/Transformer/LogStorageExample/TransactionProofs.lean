@@ -1646,6 +1646,109 @@ private theorem archiveIndexedInv_stableBi
   rw [hEq]
   exact hI
 
+/-- `selectedStorageEntriesSet` doesn't reference `localDb`, so its application
+form `(ld, vd, entry)` is equivalent to `entry ∈ vd ∧ satisfiesPredicate
+isStorageEntry entry.visible = some true` regardless of `ld`. -/
+private theorem selectedStorageEntriesSet_apply_iff
+    (ld vd : Database) (entry : Row) :
+    selectedStorageEntriesSet ld vd entry ↔
+      entry ∈ vd ∧
+        Semantics.satisfiesPredicate rowVar (isStorageEntryExpr rowVar) entry.visible = some true := by
+  unfold selectedStorageEntriesSet globalSelectionSet SetLanguage.SetExpr.bind
+    SetLanguage.SetExpr.globalDb
+  constructor
+  · rintro ⟨mid, hMidMem, hBody⟩
+    by_cases hCond :
+        evalSymExprAtRow emptySymEnv rowVar mid (isStorageEntryExpr rowVar) =
+          some (Value.scalar (ScalarLit.bool true))
+    · simp [hCond, SetLanguage.singleton, SetLanguage.empty] at hBody
+      subst hBody
+      refine ⟨hMidMem, ?_⟩
+      unfold Semantics.satisfiesPredicate
+      unfold evalSymExprAtRow at hCond
+      simp only [emptySymEnv, instantiateSymExpr_noScalars] at hCond
+      rw [hCond]
+      rfl
+    · simp [hCond, SetLanguage.singleton, SetLanguage.empty] at hBody
+  · rintro ⟨hMem, hSat⟩
+    refine ⟨entry, hMem, ?_⟩
+    have hCond :
+        evalSymExprAtRow emptySymEnv rowVar entry (isStorageEntryExpr rowVar) =
+          some (Value.scalar (ScalarLit.bool true)) := by
+      unfold evalSymExprAtRow
+      simp only [emptySymEnv, instantiateSymExpr_noScalars]
+      unfold Semantics.satisfiesPredicate at hSat
+      cases hE : Expr.eval (Semantics.instantiateRecord rowVar entry.visible (isStorageEntryExpr rowVar)) with
+      | none => rw [hE] at hSat; cases hSat
+      | some v =>
+          cases v with
+          | scalar lit =>
+              cases lit with
+              | bool b =>
+                  rw [hE] at hSat
+                  simp at hSat
+                  subst hSat
+                  rfl
+              | _ => rw [hE] at hSat; cases hSat
+          | _ => rw [hE] at hSat; cases hSat
+    simp [hCond, SetLanguage.singleton]
+
+/-- Pointwise denote-equivalence between `LazyF_select` (existential over
+`selected` storage entries) and `selectAllLogEffect`, at a vd satisfying
+`logSystemInv`. Mirrors `lazyF_iff_archiveLogEffect_at_invariant`. -/
+private theorem lazyF_select_iff_selectAllLogEffect_at_invariant
+    {q : Nat} {ld vd : Database} (hInv : logSystemInv vd) (row : Row) :
+    (∃ selected,
+        Semantics.collectSelected vd rowVar
+            (instantiateSymExpr emptySymEnv [rowVar] (isStorageEntryExpr rowVar)) = some selected ∧
+        selectAllLogEffect_with_selected (selectTxnId q) q selected ld vd row) ↔
+      selectAllLogEffect (selectTxnId q) q ld vd row := by
+  have hInstNop :
+      instantiateSymExpr emptySymEnv [rowVar] (isStorageEntryExpr rowVar) =
+        isStorageEntryExpr rowVar := by
+    simp [instantiateSymExpr, emptySymEnv]
+  rw [hInstNop]
+  have hWF : wellFormedTableFields vd := by
+    rcases hInv with ⟨_, _, _, _, hWF⟩; exact hWF
+  unfold selectAllLogEffect SetLanguage.SetExpr.bind
+  unfold selectAllLogEffect_with_selected
+  constructor
+  · rintro ⟨sel, hSelect, entry, hEntry, srcRow, hSrcMem, hVis, hEffect⟩
+    refine ⟨srcRow, ?_, hEffect⟩
+    rw [selectedStorageEntriesSet_apply_iff]
+    refine ⟨hSrcMem, ?_⟩
+    -- Need: satisfiesPredicate isStorageEntry srcRow.visible = some true.
+    rcases (mem_selected_iff_storage_entry hSelect hWF entry).mp hEntry with
+      ⟨srcRow', _hSrcMem', hKeyOr, hVis'⟩
+    have hVisEq : srcRow.visible = srcRow'.visible := hVis.trans hVis'.symm
+    -- satisfiesPredicate depends only on the record (.visible), not the row's other fields.
+    refine (satisfiesPredicate_isStorageEntryExpr_iff srcRow).mpr ?_
+    have hKeyEq : Row.key? srcRow = Row.key? srcRow' := by
+      unfold Row.key?; rw [hVisEq]
+    rcases hKeyOr with ⟨n, hLog⟩ | ⟨n, hArch⟩
+    · exact Or.inl (rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem (hKeyEq ▸ hLog))
+    · exact Or.inr (rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem (hKeyEq ▸ hArch))
+  · rintro ⟨entryRow, hStorage, hEffect⟩
+    rw [selectedStorageEntriesSet_apply_iff] at hStorage
+    rcases hStorage with ⟨hEntryRowMem, hSat⟩
+    rcases collectSelected_storageEntries_succeeds_of_wellFormed hWF with ⟨sel, hSelect⟩
+    refine ⟨sel, hSelect, entryRow.visible, ?_, entryRow, hEntryRowMem, rfl, hEffect⟩
+    refine (mem_selected_iff_storage_entry hSelect hWF entryRow.visible).mpr
+      ⟨entryRow, hEntryRowMem, ?_, rfl⟩
+    have hTabOr : rowFieldInt? entryRow tableField = some logTable ∨
+        rowFieldInt? entryRow tableField = some archiveTable :=
+      (satisfiesPredicate_isStorageEntryExpr_iff entryRow).mp hSat
+    rcases hWF entryRow hEntryRowMem with ⟨t, n, hKey, hTab⟩
+    rcases hTabOr with hLog | hArch
+    · rw [hTab] at hLog
+      have hTEq : t = logTable := Option.some.inj hLog
+      subst hTEq
+      exact Or.inl ⟨n, hKey⟩
+    · rw [hTab] at hArch
+      have hTEq : t = archiveTable := Option.some.inj hArch
+      subst hTEq
+      exact Or.inr ⟨n, hKey⟩
+
 /-- Pointwise denote-equivalence between `LazyF` (existential over `selected`)
 and `archiveLogEffect`, at a vd satisfying `logSystemInv`. Used as the bridge
 hypothesis for `PaperInfer.conseqF_withInv` in `paperInfer_archiveLogBody_indexed_final`. -/
