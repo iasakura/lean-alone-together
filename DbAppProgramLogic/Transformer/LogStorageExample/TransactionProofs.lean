@@ -1567,6 +1567,19 @@ theorem paperInfer_insertLogBody_indexed_final (i : Nat) :
   simpa [insertLogBody, insertLogEffect, insertCounterUpdateExpr, inserted, updated]
     using hSeq
 
+/-- Helper: `stableBiAssertion` for the archive's invariant under SI's silent
+rely. The underlying rely doesn't change `visibleDb`, so any vd-only assertion
+is trivially stable. -/
+private theorem archiveIndexedInv_stableBi
+    {R : Rely} (i : Nat) :
+    Logic.stableBiAssertion
+      (Logic.relyMod R (IsolationSpec.snapshot (σ := Database)).exec)
+      (fun (_ : Database) vd => logSystemInv vd ∧ archiveKeysFreshFrom i vd) := by
+  intro localDb v v' hI hStep
+  have hEq := relyMod_snapshot_exec_silent localDb v v' hStep
+  rw [hEq]
+  exact hI
+
 /-- Pointwise denote-equivalence between `LazyF` (existential over `selected`)
 and `archiveLogEffect`, at a vd satisfying `logSystemInv`. Used as the bridge
 hypothesis for `PaperInfer.conseqF_withInv` in `paperInfer_archiveLogBody_indexed_final`. -/
