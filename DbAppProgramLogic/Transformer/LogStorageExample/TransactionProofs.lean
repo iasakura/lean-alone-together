@@ -2308,6 +2308,77 @@ private theorem paperInfer_archiveLetELoVar
     rw [hSubst]
     exact PaperInfer.sound (archiveIndexedInv_stableBi i) hInnerLetEPi
 
+/-- The constructor-natural F produced by the cascade for non-empty selected
+case (when both `setMinField` / `setMaxField` evaluate). -/
+private def archiveCtorF_nonempty (i : Nat) (lo hi0 : Int) : SetLanguage.SetExpr :=
+  .union
+    (insertedRowSet (archiveTxnId i) emptySymEnv
+      (archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1))))
+    (deleteSetExpr (archiveTxnId i) [] rowVar
+      (Expr.subst hi0Var (Expr.int hi0)
+        (Expr.subst loVar (Expr.int lo) archiveDeletePredicate)))
+
+/-- Outer `.ite (.setNonempty (.lit (.set sel))) compactBody[sel] .skip` PaperInfer
+for non-empty selected (with both `setMinField` and `setMaxField` evaluating).
+The output F is `.ite (formulaOfExpr setNonempty) archiveCtorF_nonempty empty`
+(PaperInfer.ite's constructor-natural shape). -/
+private theorem paperInfer_archiveBodySubst_nonempty
+    (i : Nat) (lo hi0 : Int) (selected : SetLit)
+    (hMinEval :
+      Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) =
+        some (Value.scalar (ScalarLit.int lo)))
+    (hMaxEval :
+      Expr.eval (.setMaxField (Expr.lit (Literal.set selected)) idField) =
+        some (Value.scalar (ScalarLit.int hi0))) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.ite (.setNonempty (Expr.lit (Literal.set selected)))
+        (.letE loVar (.setMinField (Expr.lit (Literal.set selected)) idField)
+          (.letE hi0Var (.setMaxField (Expr.lit (Literal.set selected)) idField)
+            (.seq
+              (.insert (archiveRecordExpr i (.var loVar) (addExpr (.var hi0Var) (Expr.int 1))))
+              (.delete rowVar archiveDeletePredicate))))
+        .skip)
+      (.ite
+        (formulaOfExpr emptySymEnv (.setNonempty (Expr.lit (Literal.set selected))))
+        (archiveCtorF_nonempty i lo hi0) SetLanguage.empty) :=
+  PaperInfer.ite (env := emptySymEnv)
+    (cond := .setNonempty (Expr.lit (Literal.set selected)))
+    (archive_transformerPre_stable i)
+    (paperInfer_archiveLetELoVar i lo hi0 selected hMinEval hMaxEval)
+    (PaperInfer.skip (archive_transformerPost_stable _))
+
+/-- Outer `.ite ... compactBody[sel] .skip` PaperInfer for empty selected
+(where `setMinField` returns none, making compactBody[sel] stuck via
+`PaperInfer.letE_none`). -/
+private theorem paperInfer_archiveBodySubst_empty
+    (i : Nat) (selected : SetLit)
+    (hMinNone :
+      Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) = none) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.ite (.setNonempty (Expr.lit (Literal.set selected)))
+        (.letE loVar (.setMinField (Expr.lit (Literal.set selected)) idField)
+          (.letE hi0Var (.setMaxField (Expr.lit (Literal.set selected)) idField)
+            (.seq
+              (.insert (archiveRecordExpr i (.var loVar) (addExpr (.var hi0Var) (Expr.int 1))))
+              (.delete rowVar archiveDeletePredicate))))
+        .skip)
+      (.ite
+        (formulaOfExpr emptySymEnv (.setNonempty (Expr.lit (Literal.set selected))))
+        SetLanguage.empty SetLanguage.empty) :=
+  PaperInfer.ite (env := emptySymEnv)
+    (cond := .setNonempty (Expr.lit (Literal.set selected)))
+    (archive_transformerPre_stable i)
+    (PaperInfer.letE_none hMinNone)
+    (PaperInfer.skip (archive_transformerPost_stable _))
+
 /-- Constructor-only variant of `paperInfer_archiveLogBody_indexed_via_lazy`.
 
 The per-`selected` body PaperInfer is built using only PaperInfer constructors
