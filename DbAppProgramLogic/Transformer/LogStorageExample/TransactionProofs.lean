@@ -2129,12 +2129,81 @@ private theorem selectAllLogBody_foreach_invariant
           -- Case-split on head's key type via hHeadKey
           rcases hHeadKey with ⟨n, hLogKey⟩ | ⟨n, hArchKey⟩
           · -- Log head: head's tableField = logTable, ITE takes true branch
-            -- Body becomes: insert (resultRecordExpr q (head's idField))
-            -- Need: localValid_ite_false where the cond evaluates to true
-            -- Then localValid_insert_false produces ld' = ld ++ [resultRowLit q n]
-            -- Membership invariant: ld' satisfies doneContrib (done ++ [head])
-            -- ~80 lines
-            sorry
+            have hHeadTableLookup : head.lookup? "table" = some (.int logTable) := by
+              rw [← hHeadVis]
+              exact lookup?_table_of_key_wellFormed hWF hHeadRowMem hLogKey
+            have hHeadIdLookup : head.lookup? "id" = some (.int n) := by
+              rw [← hHeadVis]
+              exact lookup?_id_of_key hLogKey
+            have hHeadKey' : head.key? = some (logTable, n) := by
+              rw [← hHeadVis]; exact hLogKey
+            refine Logic.localValid_ite_false (selectTxnId q) _ _ _ _ _ ?_ ?_
+            · intro _hEvalTrue
+              refine Logic.localValid_insert_false (selectTxnId q) _ _ _ ?_
+              intro ld vd record hPre hEval _hFresh
+              rcases hPre with ⟨hVd, hLdMem⟩
+              subst hVd
+              have hRecordEq : record = resultRecord q n := by
+                simp [resultRecordExpr, fieldExpr, Expr.int, Expr.subst, Expr.eval,
+                  Expr.evalFieldValues, Literal.toValue, hHeadIdLookup,
+                  resultRecord, tableField, idField] at hEval
+                exact hEval.symm
+              subst hRecordEq
+              refine ⟨rfl, ?_⟩
+              intro row
+              constructor
+              · intro hRow
+                rcases List.mem_append.mp hRow with hLd | hNew
+                · have hDC := (hLdMem row).mp hLd
+                  rcases hDC with ⟨rec, hRec, srcRow, hSrcMem, hSrcVis, hOut⟩
+                  exact ⟨rec, List.mem_append_left _ hRec, srcRow, hSrcMem, hSrcVis, hOut⟩
+                · rw [List.mem_singleton] at hNew
+                  subst hNew
+                  refine ⟨head, List.mem_append_right _ (List.mem_singleton_self _),
+                    headRow, hHeadRowMem, hHeadVis, ?_⟩
+                  left
+                  refine ⟨n, ⟨n, hLogKey⟩, ?_, rfl⟩
+                  exact rowFieldInt?_eq_some_iff_lookup.mpr
+                    (by rw [hHeadVis]; exact hHeadIdLookup)
+              · rintro ⟨rec, hRec, srcRow, hSrcMem, hSrcVis, hOut⟩
+                rcases List.mem_append.mp hRec with hRecDone | hRecHead
+                · exact List.mem_append_left _
+                    ((hLdMem row).mpr ⟨rec, hRecDone, srcRow, hSrcMem, hSrcVis, hOut⟩)
+                · rw [List.mem_singleton] at hRecHead
+                  subst hRecHead
+                  refine List.mem_append_right _ ?_
+                  rcases hOut with hLog | hArch
+                  · rcases hLog with ⟨n', _hSrcKey, hSrcId, hRowEq⟩
+                    have hSrcIdEq : n' = n := by
+                      have hL : rec.lookup? "id" = some (.int n') := by
+                        have := rowFieldInt?_eq_some_iff_lookup.mp hSrcId
+                        rw [hSrcVis] at this
+                        exact this
+                      rw [hHeadIdLookup] at hL
+                      injection hL with hL
+                      exact (ScalarLit.int.inj hL).symm
+                    subst hSrcIdEq
+                    rw [hRowEq]
+                    exact List.mem_singleton_self _
+                  · exfalso
+                    rcases hArch with ⟨_lo, _hi, _n', ⟨_id, hArchKey⟩, _⟩
+                    have hSrcKeyVis : srcRow.key? = some (logTable, n) := by
+                      show srcRow.visible.key? = _
+                      rw [hSrcVis]; exact hHeadKey'
+                    rw [hSrcKeyVis] at hArchKey
+                    simp [logTable, archiveTable] at hArchKey
+            · -- False branch: contradiction since head's table = logTable
+              intro hEvalFalse
+              exfalso
+              have hEvalTrue : (Expr.subst "done" (Expr.setLit done)
+                  (Expr.subst "entry" (Expr.lit (Literal.record head))
+                    (isLogExpr "entry"))).eval =
+                  some (Value.scalar (.bool true)) := by
+                simp [isLogExpr, isTableExpr, eqExpr, fieldExpr, Expr.int,
+                  Expr.subst, Expr.eval, Literal.toValue, tableField,
+                  hHeadTableLookup]
+              rw [hEvalTrue] at hEvalFalse
+              cases hEvalFalse
           · -- Archive head: ITE takes false branch, inner foreach over rangeRows
             -- Body becomes: foreach (rangeRows idField head.lo head.hi) ... insert resultRow
             -- Need: localValid_ite_false with cond false; then localValid_foreach
