@@ -307,6 +307,25 @@ theorem PaperInfer.sound_wrapped
       hStableI hMulti hIInit
   exact transformerPostWrapped_of_transformerPost hIFinal hPost
 
+/-- Derived F-weakening combinator: if `PaperInfer ... F` holds and the iff-form
+post `transformerPost Fctxt F` implies `transformerPost Fctxt F'` pointwise,
+then `PaperInfer ... F'` holds. Internally uses `PaperInfer.viaLocalValid` +
+`PaperInfer.sound` + `Logic.localValid_conseq`. Used at the "F-conversion"
+points in example proofs (e.g. converting the constructor-natural F of `.ite`
+to a denote-equivalent custom F like `archiveLogEffect_with_selected`). -/
+theorem PaperInfer.conseqF
+    {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
+    {Fctxt F F' : SetExpr} {body : Semantics.Program}
+    (h : PaperInfer R txnId I Fctxt body F)
+    (hFEq : ∀ localDb visibleDb,
+      transformerPost Fctxt F localDb visibleDb →
+      transformerPost Fctxt F' localDb visibleDb) :
+    PaperInfer R txnId I Fctxt body F' := by
+  refine PaperInfer.viaLocalValid ?_
+  have hSound := PaperInfer.sound hStableI h
+  exact Logic.localValid_conseq (fun _ _ hp => hp) hSound hFEq
+
 end Transformer
 
 end DbAppProgramLogic

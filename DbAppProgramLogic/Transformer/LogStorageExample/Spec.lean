@@ -226,6 +226,16 @@ theorem logSystemInvAtNext_no_log_at_next {db : Database} {i : Nat}
   have hRange := (hLiveLog i).mp hLogAt
   omega
 
+/-- Under `archiveKeysFreshFrom i`, the archive key `(archiveTable, i)` is fresh:
+no row in the database has that key. This is the static-freshness witness for
+the archive-row `PaperInfer.insert` in `archiveLogBody`. -/
+theorem archiveKeysFreshFrom_no_archive_at {db : Database} {i : Nat}
+    (hFresh : archiveKeysFreshFrom i db) :
+    ¬ Database.hasKey db (archiveTable, (i : Int)) := by
+  intro hKey
+  rcases List.mem_filterMap.mp hKey with ⟨row, hMem, hRowKey⟩
+  exact hFresh i (Nat.le_refl i) row hMem hRowKey
+
 /-! ## Invariant preservation lemmas -/
 
 theorem G_insert_preserves_logSystemInv {oldDb newDb : Database}
