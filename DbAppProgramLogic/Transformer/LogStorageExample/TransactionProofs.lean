@@ -2251,6 +2251,63 @@ private theorem paperInfer_archiveLetEHi0Var
     rw [hSubst]
     exact PaperInfer.sound (archiveIndexedInv_stableBi i) hSeqPi
 
+/-- PaperInfer for the outer `.letE loVar (.setMinField ...) (inner letE for hi0Var)`,
+composing `paperInfer_archiveLetEHi0Var` via `PaperInfer.letE + PaperInfer.sound`. -/
+private theorem paperInfer_archiveLetELoVar
+    (i : Nat) (lo hi0 : Int) (selected : SetLit)
+    (hMinEval :
+      Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) =
+        some (Value.scalar (ScalarLit.int lo)))
+    (hMaxEval :
+      Expr.eval (.setMaxField (Expr.lit (Literal.set selected)) idField) =
+        some (Value.scalar (ScalarLit.int hi0))) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.letE loVar (.setMinField (Expr.lit (Literal.set selected)) idField)
+        (.letE hi0Var (.setMaxField (Expr.lit (Literal.set selected)) idField)
+          (.seq
+            (.insert (archiveRecordExpr i (.var loVar) (addExpr (.var hi0Var) (Expr.int 1))))
+            (.delete rowVar archiveDeletePredicate))))
+      (.union
+        (insertedRowSet (archiveTxnId i) emptySymEnv
+          (archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1))))
+        (deleteSetExpr (archiveTxnId i) [] rowVar
+          (Expr.subst hi0Var (Expr.int hi0)
+            (Expr.subst loVar (Expr.int lo) archiveDeletePredicate)))) := by
+  refine PaperInfer.letE (env := emptySymEnv) (x := loVar)
+    (expr := .setMinField (Expr.lit (Literal.set selected)) idField)
+    (value := Value.scalar (ScalarLit.int lo))
+    (archive_transformerPre_stable i) ?hEval ?hBody
+  · simp [instantiateSymExpr, emptySymEnv]
+    exact hMinEval
+  · have hInnerLetEPi := paperInfer_archiveLetEHi0Var i lo hi0 selected hMaxEval
+      (Expr.subst loVar (Expr.int lo) archiveDeletePredicate)
+    have hSubst :
+        (Command.subst loVar (Value.toExpr (Value.scalar (ScalarLit.int lo)))
+          (.letE hi0Var (.setMaxField (Expr.lit (Literal.set selected)) idField)
+            (.seq
+              (.insert (archiveRecordExpr i (.var loVar) (addExpr (.var hi0Var) (Expr.int 1))))
+              (.delete rowVar archiveDeletePredicate)))
+            : Semantics.Program) =
+          ((.letE hi0Var (.setMaxField (Expr.lit (Literal.set selected)) idField)
+            (.seq
+              (.insert (archiveRecordExpr i (Expr.int lo) (addExpr (.var hi0Var) (Expr.int 1))))
+              (.delete rowVar (Expr.subst loVar (Expr.int lo) archiveDeletePredicate))))
+            : Semantics.Program) := by
+      simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
+        Expr.substFieldExprs_nil, Expr.subst_lit, Value.subst_toExpr, Value.toExpr,
+        archiveRecordExpr, addExpr, Expr.int, loVar, hi0Var, rowVar,
+        idField, tableField, loField, hiField,
+        show ("lo" : VarName) ≠ "hi0" from by decide,
+        show ("lo" : VarName) ≠ "row" from by decide,
+        show ("lo" : VarName) = "lo" from rfl,
+        if_true, if_false, ite_eq_left_iff, ite_eq_right_iff]
+    rw [hSubst]
+    exact PaperInfer.sound (archiveIndexedInv_stableBi i) hInnerLetEPi
+
 /-- Constructor-only variant of `paperInfer_archiveLogBody_indexed_via_lazy`.
 
 The per-`selected` body PaperInfer is built using only PaperInfer constructors
