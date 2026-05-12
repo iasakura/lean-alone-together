@@ -2379,13 +2379,276 @@ private theorem paperInfer_archiveBodySubst_empty
     (PaperInfer.letE_none hMinNone)
     (PaperInfer.skip (archive_transformerPost_stable _))
 
+/-- `setNonempty` formula on a non-empty SetLit literal evaluates to true. -/
+private theorem formulaOfExpr_setNonempty_nonempty
+    (selected : SetLit) (hNonempty : selected ≠ [])
+    (ld vd : Database) :
+    formulaOfExpr emptySymEnv (.setNonempty (Expr.lit (Literal.set selected))) ld vd := by
+  unfold formulaOfExpr
+  simp [instantiateSymExpr, emptySymEnv, Expr.eval, Literal.toValue, Expr.setNonempty]
+  -- setNonempty eval: scalar (bool (selected ≠ []))
+  cases selected with
+  | nil => exact (hNonempty rfl).elim
+  | cons _ _ => nofun
+
+/-- `setNonempty` on empty list is false. -/
+private theorem formulaOfExpr_setNonempty_empty
+    (ld vd : Database) :
+    ¬ formulaOfExpr emptySymEnv (.setNonempty (Expr.lit (Literal.set ([] : SetLit)))) ld vd := by
+  unfold formulaOfExpr
+  simp [instantiateSymExpr, emptySymEnv, Expr.eval, Literal.toValue, Expr.setNonempty]
+
+/-- Pointwise denote-iff for the insert side of the cascade-form ctor F.
+Under `selectedLitMin sel = some lo` and `selectedLitMax sel = some hi0`,
+the constructor-natural `insertedRowSet` (over `archiveRecordExpr i lo (hi0+1)`)
+denotes the same row-set as `archiveLogInsertEffect_with_selected sel`. -/
+private theorem insertedRowSet_iff_archive_insert_with_selected
+    (i : Nat) (lo hi0 : Int) (selected : SetLit)
+    (hSelMin : selectedLitMin selected = some lo)
+    (hSelMax : selectedLitMax selected = some hi0)
+    (ld vd : Database) (row : Row) :
+    (insertedRowSet (archiveTxnId i) emptySymEnv
+        (archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1)))) ld vd row ↔
+      archiveLogInsertEffect_with_selected (archiveTxnId i) i selected ld vd row := by
+  unfold insertedRowSet archiveLogInsertEffect_with_selected
+  have hEval :
+      Expr.eval (instantiateSymExpr emptySymEnv []
+          (archiveRecordExpr i (Expr.int lo) (addExpr (Expr.int hi0) (Expr.int 1)))) =
+        some (Value.record (archiveRecord i lo (hi0 + 1))) := by
+    simp [instantiateSymExpr, emptySymEnv, archiveRecordExpr, addExpr, Expr.eval,
+      Literal.toValue, Expr.int, Expr.evalFieldValues, Bind.bind, Option.bind, Pure.pure,
+      archiveRecord]
+  rw [hEval]
+  constructor
+  · intro hRow
+    exact ⟨lo, hi0, hSelMin, hSelMax, by rw [hRow]; rfl⟩
+  · rintro ⟨lo', hi0', hMin', hMax', hOut⟩
+    rw [hSelMin] at hMin'; rw [hSelMax] at hMax'
+    cases hMin'; cases hMax'
+    rw [hOut]
+    rfl
+
+/-- Pointwise denote-iff for the delete side. Under `selectedLitMin/Max sel = some lo/hi0`
+and `wellFormedTableFields vd`, the constructor-natural `deleteSetExpr`
+(predicate substituted with `lo/hi0` literals) denotes the same row-set as
+`archiveLogDeleteEffect_with_selected sel`. -/
+private theorem deleteSetExpr_iff_archive_delete_with_selected
+    (i : Nat) (lo hi0 : Int) (selected : SetLit)
+    (hSelMin : selectedLitMin selected = some lo)
+    (hSelMax : selectedLitMax selected = some hi0)
+    (ld vd : Database) (hWF : wellFormedTableFields vd) (row : Row) :
+    (deleteSetExpr (archiveTxnId i) [] rowVar
+        (Expr.subst hi0Var (Expr.int hi0)
+          (Expr.subst loVar (Expr.int lo) archiveDeletePredicate))) ld vd row ↔
+      archiveLogDeleteEffect_with_selected (archiveTxnId i) selected ld vd row := by
+  have hPredEq :
+      (Expr.subst hi0Var (Expr.int hi0)
+          (Expr.subst loVar (Expr.int lo) archiveDeletePredicate)) =
+        (Expr.binop BinOp.and
+          (Expr.binop BinOp.eq ((Expr.var rowVar).proj tableField)
+            (Expr.lit (.scalar (.int logTable))))
+          (Expr.binop BinOp.and
+            (Expr.binop BinOp.le (Expr.lit (.scalar (.int lo)))
+              ((Expr.var rowVar).proj idField))
+            (Expr.binop BinOp.le ((Expr.var rowVar).proj idField)
+              (Expr.lit (.scalar (.int hi0)))))) := by
+    unfold archiveDeletePredicate andExpr leExpr isLogExpr isTableExpr eqExpr fieldExpr
+      loVar hi0Var rowVar Expr.int
+    simp [Expr.subst]
+  unfold deleteSetExpr deleteSetExprWith
+  unfold SetLanguage.SetExpr.bind SetLanguage.SetExpr.globalDb
+  unfold archiveLogDeleteEffect_with_selected
+  simp only [instantiateExpr_nil]
+  rw [hPredEq]
+  constructor
+  · rintro ⟨src, hSrc, hBody⟩
+    classical
+    by_cases hPred : rowPredicateFormula [] rowVar
+        (Expr.binop BinOp.and
+          (Expr.binop BinOp.eq ((Expr.var rowVar).proj tableField)
+            (Expr.lit (.scalar (.int logTable))))
+          (Expr.binop BinOp.and
+            (Expr.binop BinOp.le (Expr.lit (.scalar (.int lo)))
+              ((Expr.var rowVar).proj idField))
+            (Expr.binop BinOp.le ((Expr.var rowVar).proj idField)
+              (Expr.lit (.scalar (.int hi0)))))) src
+    · have hOut : row = src.markDeleted (archiveTxnId i) := by
+        simp [hPred, SetLanguage.singleton] at hBody
+        exact hBody
+      have hPred' :
+          Semantics.satisfiesPredicate rowVar
+            (Expr.binop BinOp.and
+              (Expr.binop BinOp.eq ((Expr.var rowVar).proj tableField)
+                (Expr.lit (.scalar (.int logTable))))
+              (Expr.binop BinOp.and
+                (Expr.binop BinOp.le (Expr.lit (.scalar (.int lo)))
+                  ((Expr.var rowVar).proj idField))
+                (Expr.binop BinOp.le ((Expr.var rowVar).proj idField)
+                  (Expr.lit (.scalar (.int hi0)))))) src.visible = some true := by
+        simpa [rowPredicateFormula, instantiateExpr_nil] using hPred
+      have hSat := (satisfiesPredicate_archiveDelete_iff src lo hi0).mp hPred'
+      rcases hSat with ⟨hTab, n, hId, hLo, hHi⟩
+      have hKey : src.key? = some (logTable, n) :=
+        rowKey?_of_table_id_fields hTab hId
+      exact ⟨src, n, lo, hi0, hSelMin, hSelMax, hSrc, hKey, hLo, hHi, hOut⟩
+    · simp [hPred, SetLanguage.empty] at hBody
+  · rintro ⟨src, n, lo', hi0', hMin', hMax', hSrcMem, hKey, hLo, hHi, hOut⟩
+    rw [hSelMin] at hMin'; rw [hSelMax] at hMax'
+    cases hMin'; cases hMax'
+    refine ⟨src, hSrcMem, ?_⟩
+    classical
+    have hTab : rowFieldInt? src tableField = some logTable :=
+      rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem hKey
+    have hId : rowFieldInt? src idField = some n :=
+      rowFieldInt?_idField_of_key hKey
+    have hSat :=
+      (satisfiesPredicate_archiveDelete_iff src lo hi0).mpr ⟨hTab, n, hId, hLo, hHi⟩
+    have hPred : rowPredicateFormula [] rowVar
+        (Expr.binop BinOp.and
+          (Expr.binop BinOp.eq ((Expr.var rowVar).proj tableField)
+            (Expr.lit (.scalar (.int logTable))))
+          (Expr.binop BinOp.and
+            (Expr.binop BinOp.le (Expr.lit (.scalar (.int lo)))
+              ((Expr.var rowVar).proj idField))
+            (Expr.binop BinOp.le ((Expr.var rowVar).proj idField)
+              (Expr.lit (.scalar (.int hi0)))))) src := by
+      simpa [rowPredicateFormula, instantiateExpr_nil] using hSat
+    simp [hPred, SetLanguage.singleton, SetLanguage.empty, hOut]
+
+/-- If `setMinField` on a SetLit evaluates to a some, then `setMaxField` on the
+same SetLit cannot return `none`. Used to dispatch the impossible
+`min some / max none` case in the per-selected dispatch. -/
+private theorem setMinField_some_setMaxField_some_unreachable
+    (selected : SetLit) {lo : Int}
+    (hMin : Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) =
+        some (Value.scalar (ScalarLit.int lo))) :
+    Expr.eval (.setMaxField (Expr.lit (Literal.set selected)) idField) ≠ none := by
+  intro hMaxNone
+  simp only [Expr.eval, Literal.toValue] at hMin hMaxNone
+  cases hVals : Expr.collectIntFieldValues idField selected with
+  | none => simp [hVals] at hMin
+  | some values =>
+    cases values with
+    | nil => simp [hVals, Expr.minInt?] at hMin
+    | cons v vs => simp [hVals, Expr.maxInt?] at hMaxNone
+
+/-- Constructor-only PaperInfer for the body's per-selected case when `selected`
+is non-empty. Uses `paperInfer_archiveBodySubst_nonempty` as the cascade base and
+`PaperInfer.conseqF_withInv` to bridge from the constructor-natural ITE form
+to `archiveLogEffect_with_selected sel`. -/
+private theorem paperInfer_archiveBodyForSelected_nonempty
+    (i : Nat) (selected : SetLit) (hNonempty : selected ≠ [])
+    (lo hi0 : Int)
+    (hMinEval :
+      Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) =
+        some (Value.scalar (ScalarLit.int lo)))
+    (hMaxEval :
+      Expr.eval (.setMaxField (Expr.lit (Literal.set selected)) idField) =
+        some (Value.scalar (ScalarLit.int hi0))) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.ite (.setNonempty (Expr.lit (Literal.set selected)))
+        (.letE loVar (.setMinField (Expr.lit (Literal.set selected)) idField)
+          (.letE hi0Var (.setMaxField (Expr.lit (Literal.set selected)) idField)
+            (.seq
+              (.insert (archiveRecordExpr i (.var loVar) (addExpr (.var hi0Var) (Expr.int 1))))
+              (.delete rowVar archiveDeletePredicate))))
+        .skip)
+      (archiveLogEffect_with_selected (archiveTxnId i) i selected) := by
+  have hSelMin : selectedLitMin selected = some lo := by simp [selectedLitMin, hMinEval]
+  have hSelMax : selectedLitMax selected = some hi0 := by simp [selectedLitMax, hMaxEval]
+  refine PaperInfer.conseqF_withInv
+    (I := fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+    ?hStableI
+    (paperInfer_archiveBodySubst_nonempty i lo hi0 selected hMinEval hMaxEval)
+    ?hFEq
+  case hStableI =>
+    exact archiveIndexedInv_stableBi i
+  case hFEq =>
+    intro ld vd hInv hPost
+    have hFormula : formulaOfExpr emptySymEnv (.setNonempty (Expr.lit (Literal.set selected))) ld vd :=
+      formulaOfExpr_setNonempty_nonempty selected hNonempty ld vd
+    have hWF : wellFormedTableFields vd := by
+      rcases hInv.1 with ⟨_, _, _, _, hWF⟩
+      exact hWF
+    intro row
+    have hRow := hPost row
+    have hInsIff := insertedRowSet_iff_archive_insert_with_selected
+      (i := i) (lo := lo) (hi0 := hi0) (selected := selected) hSelMin hSelMax [] vd row
+    have hDelIff := deleteSetExpr_iff_archive_delete_with_selected
+      (i := i) (lo := lo) (hi0 := hi0) (selected := selected) hSelMin hSelMax [] vd hWF row
+    have hFormula' : formulaOfExpr emptySymEnv
+        (.setNonempty (Expr.lit (Literal.set selected))) [] vd := hFormula
+    simp only [transformerPost, SetLanguage.denote_union, SetLanguage.denote_empty, false_or,
+      SetLanguage.denote, archiveCtorF_nonempty, SetLanguage.SetExpr.union,
+      archiveLogEffect_with_selected, SetLanguage.SetExpr.ite,
+      SetLanguage.Env.ofDatabases] at hRow ⊢
+    rw [if_pos hFormula'] at hRow
+    rw [hInsIff, hDelIff] at hRow
+    exact hRow
+
+/-- Constructor-only PaperInfer for the body's per-selected case when
+`setMinField` returns none (covers `selected = []` and the case where records
+in `selected` lack `idField`). Uses `paperInfer_archiveBodySubst_empty` as the
+cascade base and `PaperInfer.conseqF_withInv` to bridge from the (vacuous)
+ITE form to `archiveLogEffect_with_selected sel` (which is itself vacuous since
+`selectedLitMin sel = none`). -/
+private theorem paperInfer_archiveBodyForSelected_empty
+    (i : Nat) (selected : SetLit)
+    (hMinNone :
+      Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) = none) :
+    PaperInfer
+      (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
+      (archiveTxnId i)
+      (fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+      SetLanguage.empty
+      (.ite (.setNonempty (Expr.lit (Literal.set selected)))
+        (.letE loVar (.setMinField (Expr.lit (Literal.set selected)) idField)
+          (.letE hi0Var (.setMaxField (Expr.lit (Literal.set selected)) idField)
+            (.seq
+              (.insert (archiveRecordExpr i (.var loVar) (addExpr (.var hi0Var) (Expr.int 1))))
+              (.delete rowVar archiveDeletePredicate))))
+        .skip)
+      (archiveLogEffect_with_selected (archiveTxnId i) i selected) := by
+  refine PaperInfer.conseqF_withInv
+    (I := fun db => logSystemInv db ∧ archiveKeysFreshFrom i db)
+    ?hStableI
+    (paperInfer_archiveBodySubst_empty i selected hMinNone)
+    ?hFEq
+  case hStableI =>
+    exact archiveIndexedInv_stableBi i
+  case hFEq =>
+    intro ld vd _hInv hPost
+    have hMinNoneLit : selectedLitMin selected = none := by
+      unfold selectedLitMin; rw [hMinNone]
+    intro row
+    have hRow := hPost row
+    simp only [transformerPost, SetLanguage.denote_union, SetLanguage.denote_empty, false_or,
+      SetLanguage.denote, SetLanguage.SetExpr.union, archiveLogEffect_with_selected,
+      SetLanguage.SetExpr.ite, SetLanguage.Env.ofDatabases, ite_self] at hRow ⊢
+    -- After simp, hRow : empty ∨ empty ↔ row ∈ ld (if cond collapsed via ite_self).
+    refine Iff.trans ?_ hRow
+    constructor
+    · rintro (h | h | h)
+      · exact Or.inl h
+      · rcases h with ⟨_, _, hMin, _, _⟩
+        rw [hMinNoneLit] at hMin; cases hMin
+      · rcases h with ⟨_, _, _, _, hMin, _, _, _, _, _, _⟩
+        rw [hMinNoneLit] at hMin; cases hMin
+    · rintro (h | h)
+      · exact Or.inl h
+      · exact Or.inl h
+
 /-- Constructor-only variant of `paperInfer_archiveLogBody_indexed_via_lazy`.
 
 The per-`selected` body PaperInfer is built using only PaperInfer constructors
 (`.selectLazy / .ite / .letE / .letE_none / .seq / .insert / .delete / .skip /
 .conseqF`) — no `viaLocalValid` for the body proof. The F-shape bridge from the
 constructor-natural ITE form to `archiveLogEffect_with_selected sel` is handled
-via `PaperInfer.conseqF`. -/
+via `PaperInfer.conseqF_withInv`. -/
 theorem paperInfer_archiveLogBody_indexed_via_lazy_pure (i : Nat) :
     PaperInfer
       (Logic.relyMod R_archive (IsolationSpec.snapshot (σ := Database)).exec)
@@ -2397,12 +2660,41 @@ theorem paperInfer_archiveLogBody_indexed_via_lazy_pure (i : Nat) :
           Semantics.collectSelected globalDb rowVar
               (instantiateSymExpr emptySymEnv [rowVar] (isLogExpr rowVar)) = some selected ∧
           archiveLogEffect_with_selected (archiveTxnId i) i selected localDb globalDb out) := by
-  -- Building blocks for the constructor-only body cascade are above:
-  -- `paperInfer_archiveBodySubst_nonempty / _empty` give per-case body PaperInfer.
-  -- The F-shape bridge (ctor F → archive_with_selected sel) via `PaperInfer.conseqF`
-  -- is the remaining piece (~60-80 LOC of selectedLitMin/Max characterization +
-  -- denote-iff).
-  exact paperInfer_archiveLogBody_indexed_via_lazy i
+  unfold archiveLogBody
+  refine PaperInfer.selectLazy
+    (env := emptySymEnv)
+    (Fbody := archiveLogEffect_with_selected (archiveTxnId i) i)
+    ?_ ?_ ?_
+  · exact transformerPre_stable_relyMod_snapshot _ _
+  · intro localDb visibleDb visibleDb' hR
+    have := relyMod_snapshot_exec_silent localDb visibleDb visibleDb' hR
+    rw [this]
+  · intro selected
+    -- Substituted body: `.ite (.setNonempty (.lit (.set selected))) compactBody[sel] .skip`
+    simp only [Command.subst, Expr.subst, archiveCompactBody, Expr.subst_lit,
+      Value.subst_toExpr, Value.toExpr]
+    -- Case-split on selected emptiness, then dispatch to the per-case constructor lemma.
+    -- Case on whether setMinField evaluates.
+    cases hMin : Expr.eval (.setMinField (Expr.lit (Literal.set selected)) idField) with
+    | none =>
+        exact paperInfer_archiveBodyForSelected_empty i selected hMin
+    | some loVal =>
+        rcases setMinField_lit_eval_int hMin with ⟨lo, hloVal⟩
+        subst hloVal
+        -- Now non-stuck on min. Case on max.
+        cases hMax : Expr.eval (.setMaxField (Expr.lit (Literal.set selected)) idField) with
+        | none =>
+            -- Unreachable: if minInt? succeeds, maxInt? on the same list succeeds.
+            exact absurd hMax (setMinField_some_setMaxField_some_unreachable selected hMin)
+        | some hi0Val =>
+            rcases setMaxField_lit_eval_int hMax with ⟨hi0, hhi0Val⟩
+            subst hhi0Val
+            -- Check if selected is empty or not.
+            by_cases hEmpty : selected = []
+            · -- selected = [] → setMinField [] = none, contradiction with hMin.
+              subst hEmpty
+              simp [Expr.eval, Literal.toValue, Expr.collectIntFieldValues, Expr.minInt?] at hMin
+            · exact paperInfer_archiveBodyForSelected_nonempty i selected hEmpty lo hi0 hMin hMax
 
 
 /-- Indexed `PaperInfer` derivation for `archiveLogBody` under SI's local rely
