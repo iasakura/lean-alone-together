@@ -2204,12 +2204,34 @@ private theorem selectAllLogBody_foreach_invariant
                   hHeadTableLookup]
               rw [hEvalTrue] at hEvalFalse
               cases hEvalFalse
-          · -- Archive head: ITE takes false branch, inner foreach over rangeRows
-            -- Body becomes: foreach (rangeRows idField head.lo head.hi) ... insert resultRow
-            -- Need: localValid_ite_false with cond false; then localValid_foreach
-            -- + inner induction over rangeRows. Result rows for each n ∈ [lo, hi)
-            -- ~120 lines
-            sorry
+          · -- Archive head: head's tableField = archiveTable, ITE takes false branch.
+            have hHeadTableLookup : head.lookup? "table" = some (.int archiveTable) := by
+              rw [← hHeadVis]
+              exact lookup?_table_of_key_wellFormed hWF hHeadRowMem hArchKey
+            have hHeadIdLookup : head.lookup? "id" = some (.int n) := by
+              rw [← hHeadVis]
+              exact lookup?_id_of_key hArchKey
+            have hHeadKey' : head.key? = some (archiveTable, n) := by
+              rw [← hHeadVis]; exact hArchKey
+            refine Logic.localValid_ite_false (selectTxnId q) _ _ _ _ _ ?_ ?_
+            · -- True branch: contradiction since head's table is archive
+              intro hEvalTrue
+              exfalso
+              have hEvalFalse : (Expr.subst "done" (Expr.setLit done)
+                  (Expr.subst "entry" (Expr.lit (Literal.record head))
+                    (isLogExpr "entry"))).eval =
+                  some (Value.scalar (.bool false)) := by
+                simp [isLogExpr, isTableExpr, eqExpr, fieldExpr, Expr.int,
+                  Expr.subst, Expr.eval, Literal.toValue, tableField,
+                  hHeadTableLookup, logTable, archiveTable]
+              rw [hEvalFalse] at hEvalTrue
+              cases hEvalTrue
+            · -- False branch: inner foreach over rangeRows
+              intro _hEvalFalse
+              -- ~100 lines left for inner induction.
+              -- Pending: a focused subagent task to write out the rangeRows
+              -- inner induction.
+              sorry
         · -- Recursive call via ih
           exact ih (done ++ [head]) hSplit'
 
