@@ -3124,7 +3124,7 @@ private theorem selectAllLogBody_archive_inner_foreach_byRecord
     (hHeadArchKey : head.key? = some (archiveTable, nKey))
     (hHeadLo : head.lookup? "lo" = some (.int lo))
     (hHeadHi : head.lookup? "hi" = some (.int hi))
-    (hLeq : lo ≤ hi) :
+    (_hLeq : lo ≤ hi) :
     ∀ (rangeDone rangeRest : SetLit),
       rangeDone ++ rangeRest = Expr.intRangeRecords "id" lo hi →
       Logic.LocalValid (ι := IsolationSpec Database) (fun _ _ _ => False) (selectTxnId q)
@@ -3142,7 +3142,141 @@ private theorem selectAllLogBody_archive_inner_foreach_byRecord
         (fun ld _vd =>
           ∀ row, row ∈ ld ↔
             selectAllLogBody_doneContrib_byRecord q (done ++ [head]) row) := by
-  sorry
+  intro rangeDone rangeRest hSplit
+  induction rangeRest generalizing rangeDone with
+  | nil =>
+      have hRangeDoneEq : rangeDone = Expr.intRangeRecords "id" lo hi := by
+        simpa using hSplit
+      subst hRangeDoneEq
+      refine Logic.localValid_foreachDone (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?_ ?_
+      · intro _ _ _ _ hR; exact False.elim hR
+      · intro ld vd hLdMem
+        intro row
+        rw [hLdMem row]
+        unfold selectAllLogBody_doneContrib_byRecord
+        constructor
+        · rintro (hDC | hRec)
+          · rcases hDC with ⟨rec, hRecMem, hEff⟩
+            exact ⟨rec, List.mem_append_left _ hRecMem, hEff⟩
+          · rcases hRec with ⟨rec, hRecMem, id, hRecId, hRowEq⟩
+            simp [Expr.intRangeRecords, List.mem_map, List.mem_range, idField] at hRecMem
+            rcases hRecMem with ⟨k, hkLt, hRecForm⟩
+            subst hRecForm
+            have hIdEq : id = lo + (k : Int) := by
+              simp [RecordLit.lookup?, idField] at hRecId; omega
+            subst hIdEq
+            have hLeId : lo ≤ lo + (k : Int) := by
+              have : (0 : Int) ≤ (k : Int) := Int.natCast_nonneg _
+              omega
+            have hIdLt : lo + (k : Int) < hi := by
+              have hCast : (k : Int) < hi - lo := by exact_mod_cast hkLt
+              omega
+            refine ⟨head, List.mem_append_right _ (List.mem_singleton_self _), ?_⟩
+            unfold selectEntryResultEffect_byRecord
+            right
+            exact ⟨⟨nKey, hHeadArchKey⟩, lo, hi, lo + (k : Int), hHeadLo, hHeadHi, hLeId, hIdLt, hRowEq⟩
+        · rintro ⟨rec, hRecMem, hEff⟩
+          rcases List.mem_append.mp hRecMem with hRecDone | hRecHead
+          · left; exact ⟨rec, hRecDone, hEff⟩
+          · rw [List.mem_singleton] at hRecHead
+            subst hRecHead
+            unfold selectEntryResultEffect_byRecord at hEff
+            rcases hEff with hLog | hArch
+            · exfalso
+              rcases hLog with ⟨⟨_id, hLogKey⟩, _⟩
+              rw [hHeadArchKey] at hLogKey
+              simp [logTable, archiveTable] at hLogKey
+            · rcases hArch with ⟨⟨_id, _hArchKey⟩, lo', hi', n', hLo', hHi', hLoLeN, hNLtHi, hRowEq⟩
+              rw [hHeadLo] at hLo'; rw [hHeadHi] at hHi'
+              have hLoEq : lo' = lo := (ScalarLit.int.inj (Option.some.inj hLo')).symm
+              have hHiEq : hi' = hi := (ScalarLit.int.inj (Option.some.inj hHi')).symm
+              right
+              rw [hLoEq] at hLoLeN
+              rw [hHiEq] at hNLtHi
+              have hNGeLo : (0 : Int) ≤ n' - lo := by omega
+              have hOffsetEq : ((n' - lo).toNat : Int) = n' - lo := Int.toNat_of_nonneg hNGeLo
+              have hOffsetLt : ((n' - lo).toNat : Int) < hi - lo := by omega
+              refine ⟨⟨[(idField, .int (lo + ((n' - lo).toNat : Int)))]⟩, ?_, n', ?_, hRowEq⟩
+              · simp [Expr.intRangeRecords, List.mem_map, List.mem_range, idField]
+                refine ⟨(n' - lo).toNat, hOffsetLt, ?_⟩
+                rw [Int.toNat_of_nonneg hNGeLo]; omega
+              · simp [RecordLit.lookup?, idField]; omega
+  | cons current rest ih =>
+      have hSplit' : (rangeDone ++ [current]) ++ rest = Expr.intRangeRecords "id" lo hi := by
+        rw [List.append_assoc]; simpa using hSplit
+      have hCurrentInRange : current ∈ Expr.intRangeRecords "id" lo hi := by
+        rw [← hSplit]; simp
+      have hCurrentForm : ∃ k : Nat, ((k : Int) < hi - lo) ∧
+          ⟨[(idField, .int (lo + (k : Int)))]⟩ = current := by
+        simp [Expr.intRangeRecords, List.mem_map, List.mem_range, idField] at hCurrentInRange
+        exact hCurrentInRange
+      rcases hCurrentForm with ⟨k, _hkLt, hCurForm⟩
+      have hCurId : current.lookup? "id" = some (.int (lo + (k : Int))) := by
+        rw [← hCurForm]; simp [RecordLit.lookup?, idField]
+      apply Logic.localValid_foreachNext (fun _ _ _ => False) (selectTxnId q)
+      · intro _ _ _ _ hR; exact False.elim hR
+      · refine Logic.localValid_seq_false (selectTxnId q) _
+          (fun ld _vd =>
+            ∀ row, row ∈ ld ↔
+              (selectAllLogBody_doneContrib_byRecord q done row ∨
+                ∃ rec, rec ∈ (rangeDone ++ [current]) ∧ ∃ id : Int,
+                  rec.lookup? "id" = some (.int id) ∧
+                  row = resultRowLit (selectTxnId q) q id))
+          _ _ _ ?_ ?_
+        · simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
+            Expr.substFieldExprs_nil, Expr.subst_lit,
+            doneVar, entryVar, rangeDoneVar, rangeElemVar,
+            idField, loField, hiField, tableField,
+            show ("entry" : VarName) ≠ "num" from by decide,
+            show ("entry" : VarName) ≠ "rangeDone" from by decide,
+            show ("done" : VarName) ≠ "entry" from by decide,
+            show ("done" : VarName) ≠ "rangeDone" from by decide,
+            show ("done" : VarName) ≠ "num" from by decide,
+            show ("num" : VarName) ≠ "rangeDone" from by decide,
+            show ("num" : VarName) ≠ "entry" from by decide,
+            show ("rangeDone" : VarName) ≠ "entry" from by decide,
+            show ("rangeDone" : VarName) ≠ "done" from by decide,
+            show ("rangeDone" : VarName) ≠ "num" from by decide,
+            if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
+            dite_eq_left_iff, dite_eq_right_iff]
+          refine Logic.localValid_insert_false (selectTxnId q) _ _ _ ?_
+          intro ld vd record hLdMem hEval _hFresh
+          have hRecordEq : record = resultRecord q (lo + (k : Int)) := by
+            simp [resultRecordExpr, fieldExpr, Expr.int, Expr.subst, Expr.eval,
+              Expr.evalFieldValues, Literal.toValue, hCurId,
+              resultRecord, tableField, idField] at hEval
+            exact hEval.symm
+          subst hRecordEq
+          intro row
+          constructor
+          · intro hRow
+            rcases List.mem_append.mp hRow with hLd | hNew
+            · rcases (hLdMem row).mp hLd with hDC | hRec
+              · left; exact hDC
+              · right
+                rcases hRec with ⟨rec, hRecMem, id, hRecId, hRowEq⟩
+                exact ⟨rec, List.mem_append_left _ hRecMem, id, hRecId, hRowEq⟩
+            · rw [List.mem_singleton] at hNew
+              subst hNew
+              right
+              refine ⟨current, List.mem_append_right _ (List.mem_singleton_self _),
+                lo + (k : Int), hCurId, ?_⟩
+              rfl
+          · rintro (hDC | hRec)
+            · exact List.mem_append_left _ ((hLdMem row).mpr (Or.inl hDC))
+            · rcases hRec with ⟨rec, hRecMem, id, hRecId, hRowEq⟩
+              rcases List.mem_append.mp hRecMem with hRecDone | hRecCur
+              · exact List.mem_append_left _
+                  ((hLdMem row).mpr (Or.inr ⟨rec, hRecDone, id, hRecId, hRowEq⟩))
+              · rw [List.mem_singleton] at hRecCur
+                subst hRecCur
+                rw [hCurId] at hRecId
+                have hIdEq : id = lo + (k : Int) := (ScalarLit.int.inj
+                  (Option.some.inj hRecId)).symm
+                subst hIdEq
+                rw [hRowEq]
+                exact List.mem_append_right _ (List.mem_singleton_self _)
+        · exact ih (rangeDone ++ [current]) hSplit'
 
 /-- `_byRecord` version of the main foreach loop invariant. Purely sel-determined
 post (no visibleDb dependence). Structure mirrors `selectAllLogBody_foreach_invariant`
