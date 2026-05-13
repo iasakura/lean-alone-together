@@ -367,6 +367,36 @@ theorem PaperInfer.letE_none
   refine PaperInfer.viaLocalValid ?_
   exact Logic.localValid_letE_none R txnId _ _ x expr body hNone
 
+/-- Paper-aligned `PaperInfer` rule for `.select` with **invariant-strengthened
+body precondition** (1710.09844v2.pdf, Appendix C p.45 SELECT case:
+`P' = P ∧ y = {r ∈ Δ|[r/x]e}`).
+
+The body LocalValid is proven under a strengthened pre that includes
+`hSelect : collectSelected vd source predicate = some selected`. This is the
+paper's body Hoare triple, where `y` is pinned to `collectSelected(Δ)`.
+
+Internally uses `viaLocalValid + Logic.localValid_select_collectInvariant`,
+but exposes a paper-faithful PaperInfer rule without forcing the user to use
+`viaLocalValid` directly. -/
+theorem PaperInfer.selectWithInvariant
+    {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    {Fctxt F : SetExpr} {env : SymEnv}
+    {binder source : VarName} {predicate : Expr} {body : Semantics.Program}
+    (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+    (hBody :
+      ∀ selected,
+        Logic.LocalValid R txnId
+          (fun ld vd =>
+            transformerPre I Fctxt ld vd ∧
+              Semantics.collectSelected vd source
+                  (instantiateSymExpr env [source] predicate) = some selected)
+          (Command.subst binder (.lit (.set selected)) body)
+          (transformerPost Fctxt F)) :
+    PaperInfer R txnId I Fctxt
+      (.select binder source (instantiateSymExpr env [source] predicate) body) F := by
+  refine PaperInfer.viaLocalValid ?_
+  exact Logic.localValid_select_collectInvariant R txnId _ _ binder source _ body hStable hBody
+
 end Transformer
 
 end DbAppProgramLogic

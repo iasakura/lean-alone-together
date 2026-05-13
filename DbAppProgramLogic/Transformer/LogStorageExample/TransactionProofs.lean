@@ -3927,28 +3927,23 @@ private theorem selectAllLogBody_foreach_invariant
 
 /-- Constructor-only `paperInfer_selectAllLogBody_final`.
 
-Paper-aligned proof using `Logic.localValid_select_collectInvariant`
-(1710.09844v2.pdf p.45: SELECT case's strengthened body precondition
-`P' = P ∧ y = {r ∈ Δ|[r/x]e}`). This avoids the universal-y problem of
-`PaperInfer.selectLazy` by directly giving the body access to
-`hSelect : collectSelected vd ... = some selected`. -/
+Uses `PaperInfer.selectWithInvariant` (paper-aligned per 1710.09844v2.pdf p.45
+SELECT case: body precondition strengthened to `P' = P ∧ y = {r ∈ Δ|[r/x]e}`).
+This is the paper-faithful VCG combinator — `viaLocalValid` is hidden inside
+`PaperInfer.selectWithInvariant`'s implementation. -/
 theorem paperInfer_selectAllLogBody_final (q : Nat) :
     PaperInfer
       (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
       (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
       (selectAllLogEffect (selectTxnId q) q) := by
-  refine PaperInfer.viaLocalValid ?_
-  refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
   unfold selectAllLogBody
-  have hInstNop :
-      instantiateSymExpr emptySymEnv [rowVar] (isStorageEntryExpr rowVar) =
-        isStorageEntryExpr rowVar := by simp [instantiateSymExpr, emptySymEnv]
-  refine Logic.localValid_select_collectInvariant
-    (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?stable ?body
-  case stable =>
-    intro _ _ _ _ hR; exact False.elim hR
-  case body =>
-    intro selected
+  refine PaperInfer.selectWithInvariant (env := emptySymEnv) ?_ ?_
+  · -- stability of transformerPre under SI silent rely
+    exact transformerPre_stable_relyMod_snapshot _ _
+  · intro selected
+    -- Pre: transformerPre logSystemInv empty ld vd ∧ collectSelected vd rowVar (isStorageEntryExpr rowVar) = some selected
+    -- Body (after subst): foreach (.lit (.set selected)) doneVar entryVar (...)
+    refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
     simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
       Expr.substFieldExprs_nil, Expr.subst_lit, Value.subst_toExpr,
       entriesVar, doneVar, entryVar, rangeDoneVar, rangeElemVar, rowVar,
@@ -3966,7 +3961,6 @@ theorem paperInfer_selectAllLogBody_final (q : Nat) :
       have hRecordsEq : records = selected := by
         simp [Expr.eval, Literal.toValue] at hEval; exact hEval.symm
       subst hRecordsEq
-      -- Note: after subst, `selected` is eliminated; `records` remains in scope.
       intro ld vd finalCfg hPre hMulti hSkip
       rcases hPre with ⟨hPreI, hSelect⟩
       have hInv : logSystemInv vd := hPreI.2
