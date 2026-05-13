@@ -23,6 +23,171 @@ theorem paperInferenceSound_select (R : LocalRely) (txnId : TxnId)
   intro localDb visibleDb selected hPre hSelect
   exact hBody localDb visibleDb selected hPre hSelect
 
+/-- Soundness of the lazy SELECT rule following Fig. 8 ST-SELECT (`λ(∆). [F'(∆)/y] F(∆)`).
+
+The body's effect `Fbody : SetLit → SetExpr` is parameterized over the captured `selected`
+binding, so the substituted body and the body's effect share `selected`. The output `F`
+existentially quantifies `selected` against the runtime visible database, which avoids the
+universal-quantification mismatch caused by baking `selected` into the body via `Command.subst`
+while the surrounding `F` recomputes the aggregate from globalDb.
+
+The proof reduces to `Logic.localValid_select` once the caller supplies a body LocalValid
+whose post directly establishes the lazy F's existential post-shape. This is the natural
+shape that arises by combining the body's `transformerPost Fctxt (Fbody selected)` LocalValid
+with rely-stability information (e.g. SI's silent rely keeps `vd' = visibleDb`, allowing the
+`(selected, visibleDb)` witness to satisfy the lazy F's existential conditions). -/
+theorem paperInferenceSound_selectLazy (R : LocalRely) (txnId : TxnId)
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr) (env : SymEnv)
+    (binder source : VarName) (predicate : Expr) (body : Semantics.Program)
+    (Fbody : SetLit → SetLanguage.SetExpr)
+    (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+    (hBody :
+      ∀ localDb visibleDb selected,
+        transformerPre I Fctxt localDb visibleDb →
+        Semantics.collectSelected visibleDb source (instantiateSymExpr env [source] predicate) = some selected →
+        Logic.LocalValid R txnId (transformerPre I Fctxt)
+          (Command.subst binder (.lit (.set selected)) body)
+          (transformerPost Fctxt
+            (fun localDb' globalDb' out =>
+              ∃ selected',
+                Semantics.collectSelected globalDb' source
+                    (instantiateSymExpr env [source] predicate) = some selected' ∧
+                Fbody selected' localDb' globalDb' out))) :
+    paperInferenceSound R txnId I Fctxt
+      (.select binder source (instantiateSymExpr env [source] predicate) body)
+      (fun localDb globalDb out =>
+        ∃ selected,
+          Semantics.collectSelected globalDb source
+              (instantiateSymExpr env [source] predicate) = some selected ∧
+          Fbody selected localDb globalDb out) := by
+  refine Logic.localValid_select R txnId _ _ binder source
+    (instantiateSymExpr env [source] predicate) body hStable ?_
+  intro localDb visibleDb selected hPre hSelect
+  exact hBody localDb visibleDb selected hPre hSelect
+
+/-! ## Wrap-aware SELECT soundness -/
+
+/-- Wrapped SELECT rule. `Logic.localValid_select` takes a generic post `Q`, so the
+wrapped post `transformerPostWrapped R I Fctxt F` flows through unchanged. The body
+hypothesis is the wrapped form of the universal-`selected` body LocalValid. -/
+theorem paperInferenceSound_select_wrapped (R : LocalRely) (txnId : TxnId)
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr) (env : SymEnv)
+    (binder source : VarName) (predicate : Expr) (body : Semantics.Program)
+    (F : SetLanguage.SetExpr)
+    (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+    (hBody :
+      ∀ localDb visibleDb selected,
+        transformerPre I Fctxt localDb visibleDb →
+        Semantics.collectSelected visibleDb source
+            (instantiateSymExpr env [source] predicate) = some selected →
+        Logic.LocalValid R txnId (transformerPre I Fctxt)
+          (Command.subst binder (.lit (.set selected)) body)
+          (transformerPostWrapped R I Fctxt F)) :
+    paperInferenceSoundWrapped R txnId I Fctxt
+      (.select binder source (instantiateSymExpr env [source] predicate) body) F := by
+  refine Logic.localValid_select R txnId _ _ binder source
+    (instantiateSymExpr env [source] predicate) body hStable ?_
+  intro localDb visibleDb selected hPre hSelect
+  exact hBody localDb visibleDb selected hPre hSelect
+
+/-- Wrapped SELECT-lazy rule (paper Fig.8 `[F'(Δ)/y] F(Δ)`). The body is provided
+as a per-`selected` family of iff-form LocalValids (its iff post is `Fbody selected`).
+The proof routes through `Logic.localValid_select_collectInvariant`, which pins
+`vd_init = visibleDbMid` (the moment `collectSelected` was observed). Together with
+`hCollectStable` propagating through the rely multistep, this lets us bridge the
+body's iff `Fbody selected` to `LazyF` at `finalCfg.visibleDb`, then lift to the
+wrapped outer post with `vd' := finalCfg.visibleDb` witness. -/
+theorem paperInferenceSound_selectLazy_wrapped (R : LocalRely) (txnId : TxnId)
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr) (env : SymEnv)
+    (binder source : VarName) (predicate : Expr) (body : Semantics.Program)
+    (Fbody : SetLit → SetLanguage.SetExpr)
+    (hStableI : Logic.stableBiAssertion R (fun _ vd => I vd))
+    (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+    (hCollectStable :
+      ∀ localDb visibleDb visibleDb',
+        R localDb visibleDb visibleDb' →
+        Semantics.collectSelected visibleDb' source
+            (instantiateSymExpr env [source] predicate) =
+          Semantics.collectSelected visibleDb source
+            (instantiateSymExpr env [source] predicate))
+    (hBody :
+      ∀ selected,
+        Logic.LocalValid R txnId (transformerPre I Fctxt)
+          (Command.subst binder (.lit (.set selected)) body)
+          (transformerPost Fctxt (Fbody selected))) :
+    paperInferenceSoundWrapped R txnId I Fctxt
+      (.select binder source (instantiateSymExpr env [source] predicate) body)
+      (fun localDb globalDb out =>
+        ∃ selected,
+          Semantics.collectSelected globalDb source
+              (instantiateSymExpr env [source] predicate) = some selected ∧
+          Fbody selected localDb globalDb out) := by
+  refine Logic.localValid_select_collectInvariant R txnId _ _ binder source
+    (instantiateSymExpr env [source] predicate) body hStable ?_
+  intro selected
+  intro ld_init vd_init finalCfg hPreStrong hMulti hSkip
+  rcases hPreStrong with ⟨hPreBody, hSelectInit⟩
+  -- Body's iff post (Fbody selected) at finalCfg.
+  have hPost :=
+    hBody selected ld_init vd_init finalCfg hPreBody hMulti hSkip
+  -- Propagate `collectSelected` from `vd_init` to `finalCfg.visibleDb`.
+  have hCollect_preserved :
+      ∀ {cfg cfg' : LocalConfig (IsolationSpec Database)},
+        Logic.LocalMultiStep R txnId (IsolationSpec Database) cfg cfg' →
+        Semantics.collectSelected cfg.visibleDb source
+            (instantiateSymExpr env [source] predicate) =
+          Semantics.collectSelected cfg'.visibleDb source
+            (instantiateSymExpr env [source] predicate) := by
+    intro cfg cfg' hM
+    induction hM with
+    | refl => rfl
+    | tail _hPrev hLast ih =>
+        rcases hLast with hLocal | hRely
+        · rcases hLocal with ⟨_hStep, hVisEq⟩
+          exact ih.trans (by rw [hVisEq])
+        · rcases hRely with ⟨_hCmd, _hLocal, _hNotSkip, hR⟩
+          exact ih.trans (hCollectStable _ _ _ hR).symm
+  have hSelectFinal :
+      Semantics.collectSelected finalCfg.visibleDb source
+          (instantiateSymExpr env [source] predicate) = some selected := by
+    have hEq := hCollect_preserved
+      (cfg := ⟨Command.subst binder (.lit (.set selected)) body, ld_init, vd_init⟩)
+      (cfg' := finalCfg) hMulti
+    exact hEq ▸ hSelectInit
+  -- I is preserved through multistep, giving I at finalCfg.visibleDb.
+  have hI_final : I finalCfg.visibleDb :=
+    localMultiStep_preserves_invariant
+      (cfg := ⟨Command.subst binder (.lit (.set selected)) body, ld_init, vd_init⟩)
+      (cfg' := finalCfg) hStableI hMulti hPreBody.2
+  -- Bridge iff `Fbody selected` ↔ iff `LazyF` at finalCfg.visibleDb.
+  have hPostLazy :
+      transformerPost Fctxt
+        (fun localDb globalDb out =>
+          ∃ selected',
+            Semantics.collectSelected globalDb source
+                (instantiateSymExpr env [source] predicate) = some selected' ∧
+            Fbody selected' localDb globalDb out)
+        finalCfg.localDb finalCfg.visibleDb := by
+    intro row
+    have hPostRow := hPost row
+    simp only [transformerPost, SetLanguage.denote_union, SetLanguage.denote,
+      SetLanguage.Env.ofDatabases] at hPostRow ⊢
+    constructor
+    · rintro (hFctxt | hLazy)
+      · exact hPostRow.mp (Or.inl hFctxt)
+      · obtain ⟨selected', hSel', hFbody'⟩ := hLazy
+        have hEq : selected' = selected := by
+          rw [hSelectFinal] at hSel'
+          exact (Option.some.inj hSel').symm
+        subst hEq
+        exact hPostRow.mp (Or.inr hFbody')
+    · intro hRow
+      rcases hPostRow.mpr hRow with hFctxt | hFbody
+      · exact Or.inl hFctxt
+      · exact Or.inr ⟨selected, hSelectFinal, hFbody⟩
+  -- Lift iff `LazyF` at finalCfg.visibleDb to wrapped form, witness `vd' := finalCfg.visibleDb`.
+  exact transformerPostWrapped_of_transformerPost hI_final hPostLazy
+
 theorem paperInferenceSound_select_of_materializedSet (R : LocalRely) (txnId : TxnId)
     (I : Assertion) (Fctxt : SetLanguage.SetExpr) (env : SymEnv)
     (binder source : VarName) (predicate : Expr) (selectedSet : SetLanguage.SetExpr)

@@ -22,6 +22,50 @@ theorem paperInferenceSound_foreach (R : LocalRely) (txnId : TxnId)
   intro records hEval
   exact hBody records hEval
 
+/-- Wrapped FOREACH rule. `Logic.localValid_foreach` accepts a generic post `Q`, so the
+wrapped post flows through unchanged. The body LocalValid (per evaluated `records`) is
+provided in wrapped form. -/
+theorem paperInferenceSound_foreach_wrapped (R : LocalRely) (txnId : TxnId)
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr) (env : SymEnv)
+    (source : Expr) (doneVar elemVar : VarName) (body : Semantics.Program)
+    (F : SetLanguage.SetExpr)
+    (hStable : Logic.stableBiAssertion R (transformerPre I Fctxt))
+    (hBody :
+      ∀ records,
+        Expr.eval (instantiateSymExpr env [] source) = some (.set records) →
+        Logic.LocalValid R txnId (transformerPre I Fctxt)
+          (.foreachRuntime (Expr.setLit []) (Expr.setLit records) doneVar elemVar body)
+          (transformerPostWrapped R I Fctxt F)) :
+    paperInferenceSoundWrapped R txnId I Fctxt
+      (.foreach (instantiateSymExpr env [] source) doneVar elemVar body) F := by
+  refine Logic.localValid_foreach R txnId _ _ (instantiateSymExpr env [] source) doneVar elemVar body
+    hStable ?_
+  intro records hEval
+  exact hBody records hEval
+
+theorem inferEffect_foreachRuntime_eq (txnId : TxnId) (env : Env)
+    (done remaining : Expr) (doneVar elemVar : VarName)
+    (body : Semantics.Program) (db : Database) :
+    inferEffect txnId env (.foreachRuntime done remaining doneVar elemVar body) db =
+      (match done, remaining with
+      | Expr.lit (.set doneRecords), Expr.lit (.set remainingRecords) =>
+          inferForeach txnId env doneVar elemVar body doneRecords remainingRecords db
+      | _, _ => none) := by
+  rw [inferEffect.eq_def]
+  cases done <;> cases remaining <;> simp
+  case lit.lit doneLit remainingLit =>
+    cases doneLit <;> cases remainingLit <;> simp
+
+theorem inferEffect_foreachRuntime_setLit (txnId : TxnId) (env : Env)
+    (done remaining : SetLit) (doneVar elemVar : VarName)
+    (body : Semantics.Program) (db : Database) :
+    inferEffect txnId env
+      (.foreachRuntime (Expr.setLit done) (Expr.setLit remaining) doneVar elemVar body)
+      db =
+      inferForeach txnId env doneVar elemVar body done remaining db := by
+  rw [inferEffect_foreachRuntime_eq]
+  simp [Expr.setLit]
+
 theorem infer_foreachRuntime_nil_sound (txnId : TxnId) (env : Env) (done : SetLit)
     (doneVar elemVar : VarName) (body : Semantics.Program) (db delta : Database)
     (h :
@@ -30,7 +74,7 @@ theorem infer_foreachRuntime_nil_sound (txnId : TxnId) (env : Env) (done : SetLi
         db = some delta) :
     delta = [] := by
   have hEq : [] = delta := by
-    simpa [inferEffect, inferForeach] using h
+    simpa [inferEffect_foreachRuntime_setLit, inferForeach.eq_def] using h
   simpa using hEq.symm
 
 theorem infer_foreachRuntime_cons_sound (txnId : TxnId) (env : Env) (done : SetLit)
@@ -53,7 +97,9 @@ theorem infer_foreachRuntime_cons_sound (txnId : TxnId) (env : Env) (done : SetL
     simp
   cases hCurrent : inferEffect txnId (foreachEnv env doneVar elemVar done current) body db with
   | none =>
-      simp [inferEffect, inferForeach, hDoneEval, hRemainingEval, hCurrent] at h
+      rw [inferEffect_foreachRuntime_setLit] at h
+      rw [inferForeach.eq_def] at h
+      simp [hCurrent] at h
   | some deltaCurrent =>
       cases hRest :
           inferEffect txnId env
@@ -62,15 +108,19 @@ theorem infer_foreachRuntime_cons_sound (txnId : TxnId) (env : Env) (done : SetL
       | none =>
           have hRest' :
               inferForeach txnId env doneVar elemVar body (done ++ [current]) rest db = none := by
-            simpa [inferEffect, inferForeach] using hRest
-          simp [inferEffect, inferForeach, hDoneEval, hRemainingEval, hCurrent, hRest'] at h
+            simpa [inferEffect_foreachRuntime_setLit] using hRest
+          rw [inferEffect_foreachRuntime_setLit] at h
+          rw [inferForeach.eq_def] at h
+          simp [hCurrent, hRest'] at h
       | some deltaRest =>
           have hRest' :
               inferForeach txnId env doneVar elemVar body (done ++ [current]) rest db =
                 some deltaRest := by
-            simpa [inferEffect, inferForeach] using hRest
+            simpa [inferEffect_foreachRuntime_setLit] using hRest
           have hEqSome : some (deltaCurrent ++ deltaRest) = some delta := by
-            simpa [inferEffect, inferForeach, hDoneEval, hRemainingEval, hCurrent, hRest'] using h
+            rw [inferEffect_foreachRuntime_setLit] at h
+            rw [inferForeach.eq_def] at h
+            simpa [hCurrent, hRest'] using h
           have hEq : delta = deltaCurrent ++ deltaRest := by
             exact (Option.some.inj hEqSome).symm
           refine ⟨deltaCurrent, deltaRest, ?_, ?_, hEq⟩
@@ -106,7 +156,7 @@ theorem infer_foreach_sound (txnId : TxnId) (env : Env) (source : Expr)
           refine ⟨records, ?_⟩
           constructor
           · rfl
-          · simpa [inferEffect, inferForeach] using hRuntime
+          · simpa [inferEffect_foreachRuntime_setLit] using hRuntime
 
 theorem infer_foreachRuntime_sound (txnId : TxnId) (env : Env) (done remaining : Expr)
     (doneVar elemVar : VarName) (body : Semantics.Program) (db delta : Database)
@@ -117,42 +167,14 @@ theorem infer_foreachRuntime_sound (txnId : TxnId) (env : Env) (done remaining :
       inferEffect txnId env
         (.foreachRuntime (Expr.setLit doneRecords) (Expr.setLit remainingRecords) doneVar elemVar body)
         db = some delta := by
-  cases hDone : evalInEnv env done with
-  | none =>
-      have : False := by
-        simp [inferEffect, hDone] at h
-      exact False.elim this
-  | some doneValue =>
-      cases doneValue with
-      | scalar s =>
-          have : False := by
-            simp [inferEffect, hDone] at h
-          exact False.elim this
-      | record record =>
-          have : False := by
-            simp [inferEffect, hDone] at h
-          exact False.elim this
-      | set doneRecords =>
-          cases hRemaining : evalInEnv env remaining with
-          | none =>
-              have : False := by
-                simp [inferEffect, hDone, hRemaining] at h
-              exact False.elim this
-          | some remainingValue =>
-              cases remainingValue with
-              | scalar s =>
-                  have : False := by
-                    simp [inferEffect, hDone, hRemaining] at h
-                  exact False.elim this
-              | record record =>
-                  have : False := by
-                    simp [inferEffect, hDone, hRemaining] at h
-                  exact False.elim this
-              | set remainingRecords =>
-                  refine ⟨doneRecords, remainingRecords, ?_, ?_, ?_⟩
-                  · rfl
-                  · rfl
-                  · simpa [inferEffect, hDone, hRemaining] using h
+  cases done <;> cases remaining <;> simp [inferEffect_foreachRuntime_eq, Expr.setLit] at h
+  case lit.lit doneLit remainingLit =>
+    cases doneLit <;> cases remainingLit <;> simp [inferEffect_foreachRuntime_eq, Expr.setLit] at h
+    case set.set doneRecords remainingRecords =>
+      refine ⟨doneRecords, remainingRecords, ?_, ?_, ?_⟩
+      · simp [evalInEnv, Expr.eval, Literal.toValue, Expr.setLit]
+      · simp [evalInEnv, Expr.eval, Literal.toValue, Expr.setLit]
+      · simpa [inferEffect_foreachRuntime_setLit] using h
 
 
 theorem inferenceSoundEnv_foreachRuntime_lit (txnId : TxnId) (env : Env)
@@ -340,114 +362,29 @@ theorem inferenceSound_foreach (txnId : TxnId) (source : Expr)
     (inferEffect txnId [] (.foreach source doneVar elemVar body))
     (inferenceSoundEnv_foreach txnId [] source doneVar elemVar body hBody)
 
-theorem expr_eq_setLit_of_eval {expr : Expr} {records : SetLit}
-    (h : Expr.eval expr = some (.set records)) :
-    expr = Expr.setLit records := by
-  cases expr with
-  | lit lit =>
-      cases lit with
-      | scalar s =>
-          simp [Expr.eval, Expr.setLit, Literal.toValue] at h
-      | record record =>
-          simp [Expr.eval, Expr.setLit, Literal.toValue] at h
-      | set records' =>
-          have hEq : records' = records := by
-            simpa [Expr.eval, Expr.setLit, Literal.toValue] using h
-          subst hEq
-          rfl
-  | var x =>
-      simp [Expr.eval] at h
-  | proj expr field =>
-      simp [Expr.eval, Option.bind_eq_some_iff] at h
-      rcases h with ⟨value, hExpr, hProj⟩
-      cases value with
-      | scalar s =>
-          simp at hProj
-      | set s =>
-          simp at hProj
-      | record record =>
-          simp [Option.bind_eq_some_iff] at hProj
-  | record fields =>
-      simp [Expr.eval, Option.bind_eq_some_iff] at h
-  | withUpdates base updates =>
-      simp [Expr.eval, Option.bind_eq_some_iff] at h
-      rcases h with ⟨baseValue, hBase, hUpdates⟩
-      cases baseValue with
-      | scalar s =>
-          simp at hUpdates
-      | set s =>
-          simp at hUpdates
-      | record record =>
-          simp [Option.bind_eq_some_iff] at hUpdates
-  | binop op lhs rhs =>
-      simp [Expr.eval, Option.bind_eq_some_iff] at h
-      rcases h with ⟨lhsValue, hLhs, hRhs⟩
-      rcases hRhs with ⟨rhsValue, hEvalRhs, hValue⟩
-      cases op <;> cases lhsValue <;> cases rhsValue
-      all_goals
-        first
-        | simp at hValue
-        | cases ‹ScalarLit› <;> cases ‹ScalarLit› <;> simp at hValue
-
 theorem inferenceSoundEnv_foreachRuntime (txnId : TxnId) (env : Env)
     (done remaining : Expr) (doneVar elemVar : VarName) (body : Semantics.Program)
     (hBody :
       ∀ done current,
         inferenceSoundEnv txnId (foreachEnv env doneVar elemVar done current) body
           (inferEffect txnId (foreachEnv env doneVar elemVar done current) body)) :
-    inferenceSoundEnv txnId env (.foreachRuntime done remaining doneVar elemVar body)
+  inferenceSoundEnv txnId env (.foreachRuntime done remaining doneVar elemVar body)
       (inferEffect txnId env (.foreachRuntime done remaining doneVar elemVar body)) := by
   intro visibleDb localDb' hInfer
-  cases hDone : evalInEnv env done with
-  | none =>
-      have : False := by
-        simp [inferEffect, hDone] at hInfer
-      exact False.elim this
-  | some doneValue =>
-      cases doneValue with
-      | scalar s =>
-          have : False := by
-            simp [inferEffect, hDone] at hInfer
-          exact False.elim this
-      | record record =>
-          have : False := by
-            simp [inferEffect, hDone] at hInfer
-          exact False.elim this
-      | set doneRecords =>
-          cases hRemaining : evalInEnv env remaining with
-          | none =>
-              have : False := by
-                simp [inferEffect, hDone, hRemaining] at hInfer
-              exact False.elim this
-          | some remainingValue =>
-              cases remainingValue with
-              | scalar s =>
-                  have : False := by
-                    simp [inferEffect, hDone, hRemaining] at hInfer
-                  exact False.elim this
-              | record record =>
-                  have : False := by
-                    simp [inferEffect, hDone, hRemaining] at hInfer
-                  exact False.elim this
-              | set remainingRecords =>
-                  have hDoneExpr :
-                      instantiateExpr env [] done = Expr.setLit doneRecords := by
-                    apply expr_eq_setLit_of_eval
-                    simpa [evalInEnv] using hDone
-                  have hRemainingExpr :
-                      instantiateExpr env [] remaining = Expr.setLit remainingRecords := by
-                    apply expr_eq_setLit_of_eval
-                    simpa [evalInEnv] using hRemaining
-                  have hInferLit :
-                      inferEffect txnId env
-                        (.foreachRuntime (Expr.setLit doneRecords) (Expr.setLit remainingRecords)
-                          doneVar elemVar body)
-                        visibleDb = some localDb' := by
-                    simpa [inferEffect, hDone, hRemaining] using hInfer
-                  have hValidLit :=
-                    inferenceSoundEnv_foreachRuntime_lit txnId env doneRecords remainingRecords
-                      doneVar elemVar body hBody visibleDb localDb' hInferLit
-                  simpa [inferenceSoundEnv, instantiateCommand, hDoneExpr, hRemainingExpr] using hValidLit
+  cases done <;> cases remaining <;> simp [inferEffect_foreachRuntime_eq, Expr.setLit] at hInfer
+  case lit.lit doneLit remainingLit =>
+    cases doneLit <;> cases remainingLit <;> simp [inferEffect_foreachRuntime_eq, Expr.setLit] at hInfer
+    case set.set doneRecords remainingRecords =>
+      have hInferLit :
+          inferEffect txnId env
+            (.foreachRuntime (Expr.setLit doneRecords) (Expr.setLit remainingRecords)
+              doneVar elemVar body)
+            visibleDb = some localDb' := by
+        simpa [inferEffect_foreachRuntime_setLit] using hInfer
+      have hValidLit :=
+        inferenceSoundEnv_foreachRuntime_lit txnId env doneRecords remainingRecords
+          doneVar elemVar body hBody visibleDb localDb' hInferLit
+      simpa [inferenceSoundEnv, instantiateCommand] using hValidLit
 
 
 theorem localStep_foreach_of_infer (txnId : TxnId) (env : Env) (source : Expr)

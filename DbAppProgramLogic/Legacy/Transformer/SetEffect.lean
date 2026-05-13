@@ -177,14 +177,14 @@ mutual
         simp [inferSetForeach]
     | cons current rest ih =>
         rcases infer_foreachRuntime_cons_sound txnId env done current rest doneVar elemVar body db rows
-            (by simpa [inferEffect] using hEffect) with
+            (by simpa [inferEffect_foreachRuntime_setLit] using hEffect) with
           ⟨rowsCurrent, rowsRest, hCurrentEff, hRestEff, hRows⟩
         rcases hBody (foreachEnv env doneVar elemVar done current) rowsCurrent hCurrentEff with
           ⟨sCurrent, hCurrentSet⟩
         have hRestForeach :
             inferForeach txnId env doneVar elemVar body (done ++ [current]) rest db =
               some rowsRest := by
-          simpa [inferEffect, inferForeach] using hRestEff
+          simpa [inferEffect_foreachRuntime_setLit] using hRestEff
         rcases ih (done ++ [current]) rowsRest hRestForeach with ⟨sRest, hRestSet⟩
         refine ⟨.union sCurrent sRest, ?_⟩
         simp [inferSetForeach, hCurrentSet, hRestSet]
@@ -247,7 +247,7 @@ theorem inferSetEffect_some_of_inferEffect_some (txnId : TxnId) (env : Env)
           exact ih env' rows' hInferable hBodyEff
         have hForeach :
             inferForeach txnId env doneVar elemVar body [] records db = some rows := by
-          simpa [inferEffect, inferForeach] using hRuntimeEff
+          simpa [inferEffect_foreachRuntime_setLit] using hRuntimeEff
         rcases inferSetForeach_some_of_inferForeach_some txnId env doneVar elemVar body db
             hBody [] records rows hForeach with ⟨s, hSet⟩
         exact ⟨s, by simp [inferSetEffect, hEval, hSet]⟩
@@ -264,7 +264,7 @@ theorem inferSetEffect_some_of_inferEffect_some (txnId : TxnId) (env : Env)
         have hForeach :
             inferForeach txnId env doneVar elemVar body doneRecords remainingRecords db =
               some rows := by
-          simpa [inferEffect, inferForeach] using hRuntimeEff
+          simpa [inferEffect_foreachRuntime_setLit] using hRuntimeEff
         rcases inferSetForeach_some_of_inferForeach_some txnId env doneVar elemVar body db
             hBody doneRecords remainingRecords rows hForeach with ⟨s, hSet⟩
         exact ⟨s, by simp [inferSetEffect, hDoneEval, hRemainingEval, hSet]⟩
@@ -318,12 +318,12 @@ theorem inferSetForeach_sound (txnId : TxnId) (env : Env)
               simp [inferSetForeach, hCurrentSet, hRestSet] at hSet
               cases hSet
               rcases infer_foreachRuntime_cons_sound txnId env done current rest doneVar elemVar body
-                  db rows (by simpa [inferEffect] using hEffect) with
+                  db rows (by simpa [inferEffect_foreachRuntime_setLit] using hEffect) with
                 ⟨rowsCurrent, rowsRest, hCurrentEff, hRestEff, hRows⟩
               have hRestForeach :
                   inferForeach txnId env doneVar elemVar body (done ++ [current]) rest db =
                     some rowsRest := by
-                simpa [inferEffect, inferForeach] using hRestEff
+                simpa [inferEffect_foreachRuntime_setLit] using hRestEff
               have hDenCurrent :
                   SetLanguage.denote (SetLanguage.Env.ofDatabases [] db) sCurrent row ↔
                     row ∈ rowsCurrent := by
@@ -403,7 +403,7 @@ theorem inferSetEffect_sound (txnId : TxnId) (env : Env)
       simp [inferSetEffect, hSourceEval] at hSet
       have hForeachEff :
           inferForeach txnId env doneVar elemVar body [] records db = some rows := by
-        simpa [inferEffect, inferForeach] using hRuntimeEff
+        simpa [inferEffect_foreachRuntime_setLit] using hRuntimeEff
       have hBodySound :
           ∀ (env' : Env) (s : SetLanguage.SetExpr) (rows : Database) (row : Row),
             inferSetEffect txnId env' body db = some s →
@@ -420,7 +420,7 @@ theorem inferSetEffect_sound (txnId : TxnId) (env : Env)
       simp [inferSetEffect, hDoneEval, hRemainingEval] at hSet
       have hForeachEff :
           inferForeach txnId env doneVar elemVar body doneRecords remainingRecords db = some rows := by
-        simpa [inferEffect, inferForeach] using hRuntimeEff
+        simpa [inferEffect_foreachRuntime_setLit] using hRuntimeEff
       have hBodySound :
           ∀ (env' : Env) (s : SetLanguage.SetExpr) (rows : Database) (row : Row),
             inferSetEffect txnId env' body db = some s →
@@ -472,12 +472,12 @@ theorem inferSetForeach_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) 
               simp [inferSetForeach, hCurrentSet, hRestSet] at hSet
               cases hSet
               rcases infer_foreachRuntime_cons_sound txnId env done current rest doneVar elemVar body
-                  db rows (by simpa [inferEffect] using hEffect) with
+                  db rows (by simpa [inferEffect_foreachRuntime_setLit] using hEffect) with
                 ⟨rowsCurrent, rowsRest, hCurrentEff, hRestEff, hRows⟩
               have hRestForeach :
                   inferForeach txnId env doneVar elemVar body (done ++ [current]) rest db =
                     some rowsRest := by
-                simpa [inferEffect, inferForeach] using hRestEff
+                simpa [inferEffect_foreachRuntime_setLit] using hRestEff
               have hDenCurrent := hBody (foreachEnv env doneVar elemVar done current)
                 sCurrent rowsCurrent row hCurrentSet hCurrentEff
               have hDenRest := ih (done ++ [current]) sRest rowsRest row hRestSet hRestForeach
@@ -555,7 +555,7 @@ theorem inferSetEffect_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (
       simp [inferSetEffect, hSourceEval] at hSet
       have hForeachEff :
           inferForeach txnId env doneVar elemVar body [] records db = some rows := by
-        simpa [inferEffect, inferForeach] using hRuntimeEff
+        simpa [inferEffect_foreachRuntime_setLit] using hRuntimeEff
       have hBodySound :
           ∀ (env' : Env) (s : SetLanguage.SetExpr) (rows : Database) (row : Row),
             inferSetEffect txnId env' body db = some s →
@@ -572,7 +572,7 @@ theorem inferSetEffect_abstractGlobal_sound (absVar : VarName) (txnId : TxnId) (
       simp [inferSetEffect, hDoneEval, hRemainingEval] at hSet
       have hForeachEff :
           inferForeach txnId env doneVar elemVar body doneRecords remainingRecords db = some rows := by
-        simpa [inferEffect, inferForeach] using hRuntimeEff
+        simpa [inferEffect_foreachRuntime_setLit] using hRuntimeEff
       have hBodySound :
           ∀ (env' : Env) (s : SetLanguage.SetExpr) (rows : Database) (row : Row),
             inferSetEffect txnId env' body db = some s →

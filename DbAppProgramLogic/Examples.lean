@@ -391,9 +391,9 @@ theorem zeroBalanceInsert_rg_readCommitted_of_stable {R : Rely} (txnId : TxnId)
     (Q := fun localDb visible => localDb = [zeroBalanceRowOf txnId] ∧ nonnegativeBalances visible)
     (G := zeroBalanceGuaranteeOf txnId)
     hStableI ?_ ?_ ?_ ?_ ?_ ?_ ?_
-  · intro localDb baseDb midDb finalDb _ _hR
+  · intro localDb baseDb midDb finalDb _ _ _hR
     constructor <;> simp [IsolationSpec.readCommitted]
-  · intro localDb baseDb midDb finalDb _ _hR
+  · intro localDb baseDb midDb finalDb _ _ _hR
     constructor <;> simp [IsolationSpec.readCommitted]
   · intro localDb visibleDb
     simp
@@ -440,9 +440,9 @@ theorem zeroBalanceInsertTwo_rg_readCommitted_of_stable {R : Rely} (txnId : TxnI
     (Q := fun localDb visible => localDb = [zeroBalanceRowTwoOf txnId] ∧ nonnegativeBalances visible)
     (G := zeroBalanceGuaranteeTwoOf txnId)
     hStableI ?_ ?_ ?_ ?_ ?_ ?_ ?_
-  · intro localDb baseDb midDb finalDb _ _hR
+  · intro localDb baseDb midDb finalDb _ _ _hR
     constructor <;> simp [IsolationSpec.readCommitted]
-  · intro localDb baseDb midDb finalDb _ _hR
+  · intro localDb baseDb midDb finalDb _ _ _hR
     constructor <;> simp [IsolationSpec.readCommitted]
   · intro localDb visibleDb
     simp
@@ -604,11 +604,11 @@ theorem zeroBalanceHandler_refines_graph_readCommitted_via_vcg_of_stable {R : Re
     zeroBalanceInsertBody
     hStableI
     (by
-      intro localDb baseDb midDb finalDb _ _hR
+      intro localDb baseDb midDb finalDb _ _ _hR
       constructor <;> simp [IsolationSpec.readCommitted])
     (zeroBalance_localValid_effectPost_readCommitted_of_stable (R := R) txnId hStableI)
     (by
-      intro localDb baseDb midDb finalDb _ _hR
+      intro localDb baseDb midDb finalDb _ _ _hR
       constructor <;> simp [IsolationSpec.readCommitted])
     (zeroBalance_commitStable_any
       (R := R)
@@ -1216,8 +1216,8 @@ theorem addInterest_updateMembershipFO_holds :
     addInterestUpdatePredicate, interestBaseRow, interestBaseRecord, interestUpdatedRow,
     interestUpdatedRecord, Row.fromInsert, Row.overwrite, RecordLit.lookup?]
   refine ⟨interestBaseRow, ?_, interestUpdatedRecord, ?_, ?_⟩
-  · simp [SetLanguage.Env.ofDatabases]
-    rfl
+  · simp [SetLanguage.Env.ofDatabases, SetLanguage.SetExpr.globalDb, interestBaseRow,
+      interestBaseRecord, Row.fromInsert]
   · native_decide
   · native_decide
 

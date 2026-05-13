@@ -186,14 +186,14 @@ def evalExprInSetEnv (env : SymEnv) (ρ : SetLanguage.Env) (expr : Expr) : Optio
 
 /-- Interpret a boolean expression as a shallow `SetLanguage` formula. -/
 def formulaOfExpr (env : SymEnv) (expr : Expr) : SetLanguage.Formula0 :=
-  fun (_localDb _globalDb : SetLanguage.SetDenotation) =>
+  fun (_localDb _globalDb : Database) =>
     Expr.eval (instantiateSymExpr env [] expr) = some (.scalar (.bool true))
 
 def evalSymExprAtRow (env : SymEnv) (x : VarName) (row : Row) (expr : Expr) : Option Value :=
   Expr.eval (Semantics.instantiateRecord x row.visible (instantiateSymExpr env [x] expr))
 
 def insertedRowSet (txnId : TxnId) (env : SymEnv) (expr : Expr) : SetLanguage.SetExpr :=
-  fun (_localDb _globalDb : SetLanguage.SetDenotation) (row : Row) =>
+  fun (_localDb _globalDb : Database) (row : Row) =>
     match Expr.eval (instantiateSymExpr env [] expr) with
     | some (.record record) => row = Row.fromInsert txnId record
     | _ => False
@@ -203,7 +203,7 @@ def deletedRowSet (txnId : TxnId) (src : Row) : SetLanguage.SetExpr :=
 
 def updatedRowSet (txnId : TxnId) (env : SymEnv) (x : VarName) (src : Row) (updateExpr : Expr) :
     SetLanguage.SetExpr :=
-  fun (_localDb _globalDb : SetLanguage.SetDenotation) (row : Row) =>
+  fun (_localDb _globalDb : Database) (row : Row) =>
     match evalSymExprAtRow env x src updateExpr with
     | some (.record updated) => row = src.overwrite txnId updated
     | _ => False
@@ -220,7 +220,7 @@ def sourceSetExpr (env : SymEnv) (source : Expr) : Option SetLanguage.SetExpr :=
   match instantiateSymExpr env [] source with
   | .var x => env.lookupSet? x
   | .lit (.set rows) =>
-      some (fun (_localDb _globalDb : SetLanguage.SetDenotation) (row : Row) => row.visible ∈ rows)
+      some (fun (_localDb _globalDb : Database) (row : Row) => row.visible ∈ rows)
   | _ => none
 
 /-- Materialize a symbolic row-set against the current visible database by keeping the visible
@@ -539,11 +539,126 @@ def transformerPost (Fctxt F : SetLanguage.SetExpr) : BiAssertion :=
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb) (.union Fctxt F) row ↔
         row ∈ localDb
 
-/-- Paper-style local soundness statement corresponding to Theorem 5.1. -/
+/-- Paper Fig.8's `⟦Fctxt[F]⟧⟨R,I⟩` stability wrap, encoded uniformly as an
+existential over an `I`-witnessing `vd'` together with an implication that
+pins `vd' = vd` when `transformerPost Fctxt F` is `R`-stable.
+
+Reading:
+- **stable branch**: `stableBiAssertion R (transformerPost Fctxt F)` is `True`, so
+  the implication forces `vd' = vd` and the post collapses to the iff at the
+  operational `vd` (paper's identity branch).
+- **unstable branch**: the stability is `False`, the implication is vacuous,
+  `vd'` is free — only required to satisfy `I` and the iff at that `vd'`
+  (paper's `weakenF` branch, Skolem-style).
+
+In both branches, soundness picks `vd' := vd` as the existential witness
+(using `I vd` from the precondition), producing a uniform proof obligation
+regardless of stability. -/
+def transformerPostWrapped
+    (R : LocalRely) (I : Assertion) (Fctxt F : SetLanguage.SetExpr) : BiAssertion :=
+  fun localDb visibleDb =>
+    ∃ vd',
+      (Logic.stableBiAssertion R (transformerPost Fctxt F) → vd' = visibleDb) ∧
+        I vd' ∧
+        transformerPost Fctxt F localDb vd'
+
+/-- Paper-style local soundness statement corresponding to Theorem 5.1.
+Iff-form post (`transformerPost Fctxt F`). -/
 def paperInferenceSound (R : LocalRely) (txnId : TxnId)
     (I : Assertion) (Fctxt : SetLanguage.SetExpr)
     (body : Semantics.Program) (F : SetLanguage.SetExpr) : Prop :=
   Logic.LocalValid R txnId (transformerPre I Fctxt) body (transformerPost Fctxt F)
+
+/-- Paper Fig.8 wrap-aware soundness, using `transformerPostWrapped`. -/
+def paperInferenceSoundWrapped (R : LocalRely) (txnId : TxnId)
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr)
+    (body : Semantics.Program) (F : SetLanguage.SetExpr) : Prop :=
+  Logic.LocalValid R txnId (transformerPre I Fctxt) body
+    (transformerPostWrapped R I Fctxt F)
+
+/-- Bridge: an iff post implies the wrapped post, using `I vd` from the
+precondition's invariant. Universal witness choice `vd' := vd` works in both
+stable and unstable branches of the wrap. -/
+theorem transformerPostWrapped_of_transformerPost
+    {R : LocalRely} {I : Assertion} {Fctxt F : SetLanguage.SetExpr}
+    {localDb visibleDb : Database}
+    (hI : I visibleDb)
+    (hPost : transformerPost Fctxt F localDb visibleDb) :
+    transformerPostWrapped R I Fctxt F localDb visibleDb :=
+  ⟨visibleDb, fun _ => rfl, hI, hPost⟩
+
+/-- Reverse bridge: when `transformerPost Fctxt F` is `R`-stable, the wrap's pin
+`(stable → vd' = visibleDb)` fires, witnessing `vd' = visibleDb`, so the iff form
+can be recovered. Used in `seq`-style composition where the wrapped post of the
+first sub-derivation must be turned into the second's `transformerPre`-shaped
+precondition. -/
+theorem transformerPost_of_transformerPostWrapped
+    {R : LocalRely} {I : Assertion} {Fctxt F : SetLanguage.SetExpr}
+    {localDb visibleDb : Database}
+    (hStable : Logic.stableBiAssertion R (transformerPost Fctxt F))
+    (hWrap : transformerPostWrapped R I Fctxt F localDb visibleDb) :
+    transformerPost Fctxt F localDb visibleDb := by
+  rcases hWrap with ⟨vd', hPin, _hI, hPost⟩
+  have hVd : vd' = visibleDb := hPin hStable
+  exact hVd ▸ hPost
+
+/-- Generic invariant preservation through a single `localInterleavedStep`. The local-step
+branch leaves the visible database unchanged; the rely branch invokes `stableBiAssertion` on `I`. -/
+theorem localInterleavedStep_preserves_invariant
+    {ι : Type} {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
+    {cfg cfg' : LocalConfig ι}
+    (hStep : Logic.localInterleavedStep (ι := ι) R txnId cfg cfg')
+    (hI : I cfg.visibleDb) :
+    I cfg'.visibleDb := by
+  rcases cfg with ⟨cmd, localDb, visibleDb⟩
+  rcases cfg' with ⟨cmd', localDb', visibleDb'⟩
+  rcases hStep with hLocal | hRely
+  · rcases hLocal with ⟨_hStep, hVis⟩
+    simpa [hVis] using hI
+  · rcases hRely with ⟨_hCmd, _hLocal, _hNotSkip, hR⟩
+    exact hStableI _ _ _ hI hR
+
+/-- Generic invariant preservation through `localMultiStep` (transitive closure
+of `localInterleavedStep`). -/
+theorem localMultiStep_preserves_invariant
+    {ι : Type} {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ visibleDb => I visibleDb))
+    {cfg cfg' : LocalConfig ι}
+    (hMulti : Logic.LocalMultiStep R txnId ι cfg cfg')
+    (hI : I cfg.visibleDb) :
+    I cfg'.visibleDb := by
+  induction hMulti with
+  | refl => exact hI
+  | tail _hPrev hLast ih =>
+      exact localInterleavedStep_preserves_invariant hStableI hLast ih
+
+theorem transformerPre_implies_invariant
+    (I : Assertion) (Fctxt : SetLanguage.SetExpr) :
+    ∀ ld vd, transformerPre I Fctxt ld vd → I vd := by
+  intro _ _ hPre
+  exact hPre.2
+
+/-- Lift an iff-form `LocalValid` to the wrapped form via the `vd' := visibleDb`
+witness, using `I visibleDb` from `transformerPre` plus invariant propagation through
+the rely multistep. Used by per-rule `paperInferenceSound_*_wrapped` lemmas. -/
+theorem lift_iff_to_wrapped
+    {R : LocalRely} {txnId : TxnId} {I : Assertion}
+    (hStableI : Logic.stableBiAssertion R (fun _ vd => I vd))
+    {Fctxt F : SetLanguage.SetExpr} {body : Semantics.Program}
+    (hIff : Logic.LocalValid R txnId (transformerPre I Fctxt) body
+              (transformerPost Fctxt F)) :
+    Logic.LocalValid R txnId (transformerPre I Fctxt) body
+      (transformerPostWrapped R I Fctxt F) := by
+  intro localDb visibleDb finalCfg hPre hMulti hSkip
+  have hPost := hIff localDb visibleDb finalCfg hPre hMulti hSkip
+  have hIInit : I visibleDb := hPre.2
+  have hIFinal : I finalCfg.visibleDb :=
+    localMultiStep_preserves_invariant
+      (cfg := ⟨body, localDb, visibleDb⟩)
+      (cfg' := finalCfg)
+      hStableI hMulti hIInit
+  exact transformerPostWrapped_of_transformerPost hIFinal hPost
 
 /-- Variant of `paperInferenceSound` that keeps the symbolic environment explicit. The command is
 materialized against the current visible database before the `LocalValid` judgment is stated. This
@@ -677,10 +792,10 @@ mutual
           let .set records ← evalInEnv env source | none
           inferForeach txnId env doneVar elemVar body [] records db
     | .foreachRuntime done remaining doneVar elemVar body =>
-        fun db => do
-          let .set doneRecords ← evalInEnv env done | none
-          let .set remainingRecords ← evalInEnv env remaining | none
-          inferForeach txnId env doneVar elemVar body doneRecords remainingRecords db
+        match done, remaining with
+        | Expr.lit (.set doneRecords), Expr.lit (.set remainingRecords) =>
+            inferForeach txnId env doneVar elemVar body doneRecords remainingRecords
+        | _, _ => fun _ => none
     | .txn .. => fun _ => none
     | .txnRuntime .. => fun _ => none
     | .par .. => fun _ => none
@@ -763,10 +878,9 @@ def overapproximatesRows (ρ : SetLanguage.Env) (s : SetLanguage.SetExpr) (rows 
   ∀ row, row ∈ rows → SetLanguage.denote ρ s row
 
 def assertionFormula (I : Assertion) : SetLanguage.Formula1 :=
-  fun rows => ∃ db : Database, I db ∧ ∀ row, rows row ↔ row ∈ db
+  fun rows => ∃ db : Database, I db ∧ ∀ row, row ∈ rows ↔ row ∈ db
 
-def currentGlobalBinding (db : Database) : SetLanguage.SetDenotation :=
-  fun row => row ∈ db
+def currentGlobalBinding (db : Database) : Database := db
 
 def setEnvOfDatabase (x : VarName) (db : Database) : SetLanguage.Env :=
   SetLanguage.Env.ofDatabases [] db
@@ -849,7 +963,7 @@ def updateSetExprWith (outVar : VarName) (txnId : TxnId) (env : Env) (source : V
     by
       classical
       exact if rowPredicateFormula env source predicate src then
-        (fun (_localDb _globalDb : SetLanguage.SetDenotation) (out : Row) =>
+        (fun (_localDb _globalDb : Database) (out : Row) =>
           ∃ updated,
             Expr.eval (Semantics.instantiateRecord source src.visible
               (instantiateExpr env [source] updateExpr)) = some (.record updated) ∧

@@ -32,6 +32,8 @@ infixl:65 " .-. " => fun lhs rhs => Expr.binop BinOp.sub lhs rhs
 infix:50 " .==. " => fun lhs rhs => Expr.binop BinOp.eq lhs rhs
 infix:50 " .>=. " => fun lhs rhs => Expr.binop BinOp.ge lhs rhs
 infix:50 " .<=. " => fun lhs rhs => Expr.binop BinOp.le lhs rhs
+infixr:35 " .&&. " => fun lhs rhs => Expr.binop BinOp.and lhs rhs
+infixr:30 " .||. " => fun lhs rhs => Expr.binop BinOp.or lhs rhs
 
 syntax term " with! " ident " := " term : term
 macro_rules

@@ -18,6 +18,8 @@ inductive BinOp where
   | le
   | ge
   | eq
+  | and
+  | or
   deriving Repr, DecidableEq, Inhabited
 
 inductive ScalarLit where
@@ -44,6 +46,11 @@ inductive Expr where
   | record : List (FieldName × Expr) → Expr
   | withUpdates : Expr → List (FieldName × Expr) → Expr
   | binop : BinOp → Expr → Expr → Expr
+  | natPair : Expr → Expr → Expr
+  | setNonempty : Expr → Expr
+  | setMinField : Expr → FieldName → Expr
+  | setMaxField : Expr → FieldName → Expr
+  | rangeRows : FieldName → Expr → Expr → Expr
   deriving Repr, Inhabited
 
 namespace Expr
