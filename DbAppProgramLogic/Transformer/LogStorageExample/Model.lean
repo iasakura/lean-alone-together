@@ -710,7 +710,15 @@ intervals are well-formed, storage rows are live. The `wellFormedTableFields`
 condition lives at the `logSystemInv` level rather than here so that
 `sameStorageShape` (an iff over arbitrary `cut`, `next`) can transfer
 storage-table information in both directions without dragging along
-information about non-storage rows that may be clobbered by `Database.flush`. -/
+information about non-storage rows that may be clobbered by `Database.flush`.
+
+The trailing two clauses (`liveLog` and `archiveCovers` only at `Nat`
+positions) close a gap in the original spec: storageRowsLive forces any
+log-table row to be live, so without ruling out non-Nat live logs we could
+admit ghost log rows at negative ids and break the `cut = cut' → newDb = oldDb`
+clause of `G_archive` (the body would still archive those ghosts). All
+operations only ever insert rows at Nat positions, so this property is
+preserved through the rely chain. -/
 def storageShape (db : Database) (cut next : Nat) : Prop :=
   cut ≤ next ∧
     liveCounterAt db next ∧
@@ -719,7 +727,9 @@ def storageShape (db : Database) (cut next : Nat) : Prop :=
     storageRowsLive db ∧
     (∀ n : Nat, liveLog db n ↔ cut ≤ n ∧ n < next) ∧
     (∀ n : Nat, archiveCovers db n ↔ n < cut) ∧
-    archiveIntervalsWellFormed db
+    archiveIntervalsWellFormed db ∧
+    (∀ n : Int, liveLog db n → 0 ≤ n) ∧
+    (∀ n : Int, archiveCovers db n → 0 ≤ n)
 
 def expandedLog (db : Database) (n : Int) : Prop :=
   liveLog db n ∨ archiveCovers db n
@@ -750,7 +760,7 @@ theorem logSystemInv_of_logSystemInvAtNext {db : Database} {next : Nat}
 theorem storageShape_expandedLog_iff {db : Database} {cut next : Nat}
     (hShape : storageShape db cut next) :
     ∀ n : Nat, expandedLog db n ↔ n < next := by
-  rcases hShape with ⟨hCut, _, _, _, _, hLive, hArchive, _⟩
+  rcases hShape with ⟨hCut, _, _, _, _, hLive, hArchive, _, _, _⟩
   intro n
   unfold expandedLog
   rw [hLive n, hArchive n]
@@ -764,8 +774,8 @@ theorem logSystemInv_expandedLog_prefix {db : Database} (hInv : logSystemInv db)
 theorem storageShape_cut_unique {db : Database} {cut₁ cut₂ next₁ next₂ : Nat}
     (h₁ : storageShape db cut₁ next₁) (h₂ : storageShape db cut₂ next₂) :
     cut₁ = cut₂ := by
-  rcases h₁ with ⟨_, _, _, _, _, _, hArchive₁, _⟩
-  rcases h₂ with ⟨_, _, _, _, _, _, hArchive₂, _⟩
+  rcases h₁ with ⟨_, _, _, _, _, _, hArchive₁, _, _, _⟩
+  rcases h₂ with ⟨_, _, _, _, _, _, hArchive₂, _, _, _⟩
   -- cut is determined by the iff: archiveCovers db n ↔ n < cut.
   rcases Nat.lt_or_ge cut₁ cut₂ with hLt | hGe
   · have hCov : archiveCovers db cut₁ := (hArchive₂ cut₁).2 hLt
@@ -780,8 +790,8 @@ theorem storageShape_cut_unique {db : Database} {cut₁ cut₂ next₁ next₂ :
 theorem storageShape_next_unique {db : Database} {cut₁ cut₂ next₁ next₂ : Nat}
     (h₁ : storageShape db cut₁ next₁) (h₂ : storageShape db cut₂ next₂) :
     next₁ = next₂ := by
-  rcases h₁ with ⟨_, _, _, hHaveNext₁, _, _, _, _⟩
-  rcases h₂ with ⟨_, hCounter₂, _, _, _, _, _, _⟩
+  rcases h₁ with ⟨_, _, _, hHaveNext₁, _, _, _, _, _, _⟩
+  rcases h₂ with ⟨_, hCounter₂, _, _, _, _, _, _, _, _⟩
   rcases hCounter₂ with ⟨row, hMem, hLive, hKey, hNext₂⟩
   have hInTable : rowInTable row counterTable := ⟨0, hKey⟩
   have hNext₁ := hHaveNext₁ row hMem hLive hInTable
@@ -858,7 +868,7 @@ theorem wellFormedTableFields_initialDb : wellFormedTableFields initialDb := by
 theorem storageShape_initialDb : storageShape initialDb 0 0 := by
   refine ⟨Nat.le_refl _, liveCounterAt_initialDb, counterRowsAtZero_initialDb,
     liveCountersHaveNext_initialDb, storageRowsLive_initialDb, ?_, ?_,
-    archiveIntervalsWellFormed_initialDb⟩
+    archiveIntervalsWellFormed_initialDb, ?_, ?_⟩
   · intro n
     constructor
     · intro h; exact absurd h (liveLog_initialDb_false (n : Int))
@@ -867,6 +877,8 @@ theorem storageShape_initialDb : storageShape initialDb 0 0 := by
     constructor
     · intro h; exact absurd h (archiveCovers_initialDb_false (n : Int))
     · intro h; omega
+  · intro n h; exact absurd h (liveLog_initialDb_false n)
+  · intro n h; exact absurd h (archiveCovers_initialDb_false n)
 
 theorem resultRowFor_initialDb_false (q : Nat) (n : Int) : ¬ resultRowFor initialDb q n := by
   rintro ⟨row, hMem, _hLive, hKey⟩

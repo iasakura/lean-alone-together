@@ -18,7 +18,21 @@ structure TxnSpec where
   G : Guarantee
 
 def sameResultRows (oldDb newDb : Database) : Prop :=
-  ∀ q n, resultRowFor newDb q n ↔ resultRowFor oldDb q n
+  ∀ q (n : Nat), resultRowFor newDb q (n : Int) ↔ resultRowFor oldDb q (n : Int)
+
+/-- `db` has no result rows for query `q`: no row in `db` has key
+`(resultTable q, _)`. This is the freshness precondition for
+`selectAllLogBody q`: the body's `.insert` of `resultRowLit q n` succeeds
+only if `(resultTable q, n) ∉ db`, and we propagate this property through
+the rely chain (`R_select q` = `G_insert ∨ G_archive`, neither of which
+adds result rows). -/
+def noResultRowsFor (q : Nat) (db : Database) : Prop :=
+  ∀ row n, row ∈ db → row.key? ≠ some (resultTable q, n)
+
+/-- `G_insert` / `G_archive` preserve the property "no rows at (resultTable q, _)
+exist", because neither body adds rows at any `resultTable` key. -/
+def preservesNoResultRows (oldDb newDb : Database) : Prop :=
+  ∀ q : Nat, noResultRowsFor q oldDb → noResultRowsFor q newDb
 
 def sameResultRowsExcept (q : Nat) (oldDb newDb : Database) : Prop :=
   ∀ q' n, q' ≠ q → (resultRowFor newDb q' n ↔ resultRowFor oldDb q' n)
@@ -49,12 +63,19 @@ def G_insertCore : Guarantee :=
         storageShape newDb cut (next + 1) ∧
         sameResultRows oldDb newDb ∧
         preservesArchiveKeyFreshness oldDb newDb ∧
-        preservesWellFormedTableFields oldDb newDb
+        preservesWellFormedTableFields oldDb newDb ∧
+        preservesNoResultRows oldDb newDb
 
 def G_insert : Guarantee := G_insertCore
 
 /-- `archiveLog` preserves `next` and may move `cut` forward to any point up to
-`next`. Result rows are untouched. -/
+`next`. Result rows are untouched.
+
+The trailing `cut = cut' → newDb = oldDb` clause expresses that an
+"archive step" with no actual compaction (cut frontier unchanged) is a no-op
+at the list level. This is needed to derive `relyNoUndo` for `R_select q`,
+where every round-trip step must have `cut` preserved (by monotonicity),
+and hence collapses to identity. -/
 def G_archiveCore : Guarantee :=
   fun oldDb newDb =>
     ∃ cut cut' next,
@@ -63,18 +84,28 @@ def G_archiveCore : Guarantee :=
         cut' ≤ next ∧
         storageShape newDb cut' next ∧
         sameResultRows oldDb newDb ∧
-        preservesWellFormedTableFields oldDb newDb
+        preservesWellFormedTableFields oldDb newDb ∧
+        preservesNoResultRows oldDb newDb ∧
+        (cut = cut' → newDb = oldDb)
 
 def G_archive : Guarantee := G_archiveCore
 
 /-- `selectAllLog q` does not change storage, leaves other query outputs alone,
-and adds a prefix of the log stream visible in its snapshot. -/
+and adds a prefix of the log stream visible in its snapshot.
+
+The trailing `sameResultRows oldDb newDb → newDb = oldDb` clause expresses that
+a select step preserving all result rows is the identity at the list level.
+This is needed to derive `relyNoUndo` for `R_archive`: in a round-trip chain,
+the result-row prefix grows monotonically in both directions, so it stays
+constant; under the body's freshness invariant (`noResultRowsFor q` carried as
+Ipre), each individual step has `sameResultRows` and is identity. -/
 def G_selectCore (q : Nat) : Guarantee :=
   fun oldDb newDb =>
     sameStorageShape oldDb newDb ∧
       sameResultRowsExcept q oldDb newDb ∧
       preservesArchiveKeyFreshness oldDb newDb ∧
       preservesWellFormedTableFields oldDb newDb ∧
+      (sameResultRows oldDb newDb → newDb = oldDb) ∧
       ∃ k : Nat,
         (∀ n : Nat, resultRowFor newDb q n ↔ resultRowFor oldDb q n ∨ n < k) ∧
           (∀ n : Nat, n < k → expandedLog oldDb n)
@@ -106,7 +137,7 @@ def archiveLogSpec (i : Nat) : TxnSpec :=
 
 def selectAllLogSpec (q : Nat) : TxnSpec :=
   { body := selectAllLogBody q
-    pre := logSystemInv
+    pre := fun db => logSystemInv db ∧ noResultRowsFor q db
     post := logSystemInv
     R := R_select q
     G := G_select q }
@@ -243,7 +274,7 @@ theorem G_insert_preserves_logSystemInv {oldDb newDb : Database}
     logSystemInv newDb := by
   have hCore := hG
   rcases hInv with ⟨_cut, _next, _hShape, hResults, hWF⟩
-  rcases hCore with ⟨cut, next, _hOldShape, hNewShape, hSame, _hPreserve, hWFPreserve⟩
+  rcases hCore with ⟨cut, next, _hOldShape, hNewShape, hSame, _hPreserve, hWFPreserve, _hPresNoRes⟩
   exact ⟨cut, next + 1, hNewShape, sameResultRows_resultPrefixAll hSame hResults, hWFPreserve hWF⟩
 
 theorem G_archive_preserves_logSystemInv {oldDb newDb : Database}
@@ -251,7 +282,7 @@ theorem G_archive_preserves_logSystemInv {oldDb newDb : Database}
     logSystemInv newDb := by
   have hCore := hG
   rcases hInv with ⟨_cut, _next, _hShape, hResults, hWF⟩
-  rcases hCore with ⟨_cut, cut', next, _hOldShape, _hMono, _hBound, hNewShape, hSame, hWFPreserve⟩
+  rcases hCore with ⟨_cut, cut', next, _hOldShape, _hMono, _hBound, hNewShape, hSame, hWFPreserve, _hPresNoRes, _hCutEq⟩
   exact ⟨cut', next, hNewShape, sameResultRows_resultPrefixAll hSame hResults, hWFPreserve hWF⟩
 
 theorem G_select_preserves_logSystemInv {oldDb newDb : Database} {q : Nat}
@@ -259,7 +290,7 @@ theorem G_select_preserves_logSystemInv {oldDb newDb : Database} {q : Nat}
     logSystemInv newDb := by
   have hCore := hG
   rcases hInv with ⟨cut, next, hShape, hResults, hWF⟩
-  rcases hCore with ⟨hSameShape, hSameExcept, _hPreserve, hWFPreserve, k, hNewQ, _hExpanded⟩
+  rcases hCore with ⟨hSameShape, hSameExcept, _hPreserve, hWFPreserve, _hSameResultsIdentity, k, hNewQ, _hExpanded⟩
   refine ⟨cut, next, ?_, ?_, hWFPreserve hWF⟩
   · exact (hSameShape cut next).1 hShape
   · intro q'
@@ -275,7 +306,7 @@ theorem G_archive_preserves_logSystemInvAtNext {oldDb newDb : Database} {next : 
     logSystemInvAtNext next newDb := by
   rcases hInv with ⟨cutOld, hShapeAt, hResults, hWF⟩
   have hCore := hG
-  rcases hCore with ⟨_cut, cut', next', hOldShape, _hMono, _hBound, hNewShape, hSame, hWFPreserve⟩
+  rcases hCore with ⟨_cut, cut', next', hOldShape, _hMono, _hBound, hNewShape, hSame, hWFPreserve, _hPresNoRes, _hCutEq⟩
   have hNext : next' = next := storageShape_next_unique hOldShape hShapeAt
   subst hNext
   exact ⟨cut', hNewShape, sameResultRows_resultPrefixAll hSame hResults, hWFPreserve hWF⟩
@@ -285,7 +316,7 @@ theorem G_select_preserves_logSystemInvAtNext {oldDb newDb : Database} {q next :
     logSystemInvAtNext next newDb := by
   rcases hInv with ⟨cut, hShape, hResults, hWF⟩
   have hCore := hG
-  rcases hCore with ⟨hSameShape, hSameExcept, _hPreserve, hWFPreserve, k, hNewQ, _hExpanded⟩
+  rcases hCore with ⟨hSameShape, hSameExcept, _hPreserve, hWFPreserve, _hSameResultsIdentity, k, hNewQ, _hExpanded⟩
   refine ⟨cut, ?_, ?_, hWFPreserve hWF⟩
   · exact (hSameShape cut next).1 hShape
   · intro q'
@@ -300,7 +331,7 @@ theorem G_insert_preserves_logSystemInvAtNext_succ {oldDb newDb : Database}
     logSystemInvAtNext (next + 1) newDb := by
   rcases hInv with ⟨cutOld, hShapeAt, hResults, hWF⟩
   have hCore := hG
-  rcases hCore with ⟨cut, next', hOldShape, hNewShape, hSame, _hPreserve, hWFPreserve⟩
+  rcases hCore with ⟨cut, next', hOldShape, hNewShape, hSame, _hPreserve, hWFPreserve, _hPresNoRes⟩
   have hNext : next' = next := storageShape_next_unique hOldShape hShapeAt
   subst hNext
   exact ⟨cut, hNewShape, sameResultRows_resultPrefixAll hSame hResults, hWFPreserve hWF⟩
@@ -351,7 +382,7 @@ theorem G_insert_preserves_archiveKeysFreshFrom {oldDb newDb : Database} {start 
     (hFresh : archiveKeysFreshFrom start oldDb)
     (hG : G_insert oldDb newDb) :
     archiveKeysFreshFrom start newDb := by
-  rcases hG with ⟨_cut, _next, _hOldShape, _hNewShape, _hSame, hPreserve, _hWFP⟩
+  rcases hG with ⟨_cut, _next, _hOldShape, _hNewShape, _hSame, hPreserve, _hWFP, _hPresNoRes⟩
   exact preservesArchiveKeyFreshness_archiveKeysFreshFrom hPreserve hFresh
 
 theorem G_select_preserves_archiveKeysFreshFrom {oldDb newDb : Database} {q start : Nat}
@@ -359,7 +390,7 @@ theorem G_select_preserves_archiveKeysFreshFrom {oldDb newDb : Database} {q star
     (hFresh : archiveKeysFreshFrom start oldDb)
     (hG : G_select q oldDb newDb) :
     archiveKeysFreshFrom start newDb := by
-  rcases hG with ⟨_hSameShape, _hSameExcept, hPreserve, _hWFP, _k, _hNewQ, _hExpanded⟩
+  rcases hG with ⟨_hSameShape, _hSameExcept, hPreserve, _hWFP, _hSameResultsIdentity, _k, _hNewQ, _hExpanded⟩
   exact preservesArchiveKeyFreshness_archiveKeysFreshFrom hPreserve hFresh
 
 theorem archiveIndexedInv_stable_R_archive (start : Nat) :
@@ -384,7 +415,7 @@ theorem G_insertCore_preserves_expandedLog {oldDb newDb : Database} {n : Nat}
     (hG : G_insertCore oldDb newDb)
     (hExpanded : expandedLog oldDb n) :
     expandedLog newDb n := by
-  rcases hG with ⟨cut, next, hOldShape, hNewShape, _hSameResults, _hPreserve, _hWFP⟩
+  rcases hG with ⟨cut, next, hOldShape, hNewShape, _hSameResults, _hPreserve, _hWFP, _hPresNoRes⟩
   have hOld := (storageShape_expandedLog_iff hOldShape n).1 hExpanded
   exact (storageShape_expandedLog_iff hNewShape n).2 (by omega)
 
@@ -392,7 +423,7 @@ theorem G_archiveCore_preserves_expandedLog {oldDb newDb : Database} {n : Nat}
     (hG : G_archiveCore oldDb newDb)
     (hExpanded : expandedLog oldDb n) :
     expandedLog newDb n := by
-  rcases hG with ⟨cut, cut', next, hOldShape, _hCutMono, _hCutBound, hNewShape, _hSameResults, _hWFP⟩
+  rcases hG with ⟨cut, cut', next, hOldShape, _hCutMono, _hCutBound, hNewShape, _hSameResults, _hWFP, _hPresNoRes, _hCutEq⟩
   have hOld := (storageShape_expandedLog_iff hOldShape n).1 hExpanded
   exact (storageShape_expandedLog_iff hNewShape n).2 hOld
 
@@ -412,7 +443,7 @@ theorem G_selectCore_preserves_expandedLog {oldDb newDb : Database} {q n : Nat}
     (hG : G_selectCore q oldDb newDb)
     (hExpanded : expandedLog oldDb n) :
     expandedLog newDb n := by
-  rcases hG with ⟨hSameShape, _hSameResults, _hPreserve, _hWFP, _k, _hNewQ, _hExpanded⟩
+  rcases hG with ⟨hSameShape, _hSameResults, _hPreserve, _hWFP, _hSameResultsIdentity, _k, _hNewQ, _hExpanded⟩
   exact sameStorageShape_preserves_expandedLog hSameShape hOldShape hExpanded
 
 theorem R_insert_preserves_expandedLog_step {oldDb newDb : Database} {n : Nat}
@@ -466,7 +497,7 @@ theorem R_archive_step_storageShape {oldDb newDb : Database}
     {cut next : Nat} (hOld : storageShape oldDb cut next) :
     storageShape newDb cut next ∨ storageShape newDb cut (next + 1) := by
   rcases hStep with hInsert | hSelect
-  · rcases hInsert with ⟨c', n', hOldShape', hNewShape', _, _, _⟩
+  · rcases hInsert with ⟨c', n', hOldShape', hNewShape', _, _, _, _⟩
     have hCut : c' = cut := storageShape_cut_unique hOldShape' hOld
     have hNext : n' = next := storageShape_next_unique hOldShape' hOld
     subst hCut; subst hNext
@@ -474,6 +505,35 @@ theorem R_archive_step_storageShape {oldDb newDb : Database}
   · rcases hSelect with ⟨_q, hSelect⟩
     rcases hSelect with ⟨hSameShape, _⟩
     exact Or.inl ((hSameShape cut next).1 hOld)
+
+/-- Each `R_archive` step preserves `cut` and either keeps or increments `next`.
+This version doesn't require `logSystemInv` and is used by `relyNoUndo_R_archive`. -/
+theorem R_archive_step_storageShape_no_inv {oldDb newDb : Database}
+    (hStep : R_archive oldDb newDb)
+    {cut next : Nat} (hOld : storageShape oldDb cut next) :
+    storageShape newDb cut next ∨ storageShape newDb cut (next + 1) := by
+  rcases hStep with hInsert | hSelect
+  · rcases hInsert with ⟨c', n', hOldShape', hNewShape', _, _, _, _⟩
+    have hCut : c' = cut := storageShape_cut_unique hOldShape' hOld
+    have hNext : n' = next := storageShape_next_unique hOldShape' hOld
+    subst hCut; subst hNext
+    exact Or.inr hNewShape'
+  · rcases hSelect with ⟨_q, hSelect⟩
+    rcases hSelect with ⟨hSameShape, _⟩
+    exact Or.inl ((hSameShape cut next).1 hOld)
+
+/-- MultiStep variant of `R_archive_step_storageShape_no_inv`. -/
+theorem R_archive_multiStep_storageShape_no_inv {oldDb newDb : Database}
+    (hReach : Logic.MultiStep R_archive oldDb newDb)
+    {cut next : Nat} (hOld : storageShape oldDb cut next) :
+    ∃ next', next ≤ next' ∧ storageShape newDb cut next' := by
+  induction hReach with
+  | refl => exact ⟨next, Nat.le_refl _, hOld⟩
+  | tail _hPrev hLast ih =>
+      rcases ih with ⟨midNext, hMidLe, hMidShape⟩
+      rcases R_archive_step_storageShape_no_inv hLast hMidShape with hSame | hAdv
+      · exact ⟨midNext, hMidLe, hSame⟩
+      · exact ⟨midNext + 1, by omega, hAdv⟩
 
 /-- `R_archive` multi-steps preserve `cut` and weakly increase `next`. -/
 theorem R_archive_multiStep_storageShape
@@ -549,6 +609,167 @@ theorem G_system_preserves_logSystemInv {oldDb newDb : Database} {q : Nat}
   · exact G_insert_preserves_logSystemInv hInv hInsert
   · exact G_archive_preserves_logSystemInv hInv hArchive
   · exact G_select_preserves_logSystemInv hInv hSelect
+
+/-! ## R_select_q storage-shape monotonicity (for relyNoUndo proof) -/
+
+/-- Each `R_select q` step preserves cut and weakly advances next/cut. Specifically:
+- `G_insert` requires `oldDb` to have shape (cut, next), and produces shape (cut, next+1).
+- `G_archive` requires shape (cut, next), produces shape (cut', next) with cut ≤ cut' ≤ next. -/
+theorem R_select_step_storageShape {q : Nat} {oldDb newDb : Database}
+    (hStep : R_select q oldDb newDb)
+    {cut next : Nat} (hOld : storageShape oldDb cut next) :
+    ∃ cut' next', cut ≤ cut' ∧ next ≤ next' ∧ storageShape newDb cut' next' := by
+  rcases hStep with hInsert | hArchive
+  · rcases hInsert with ⟨c', n', hOldShape', hNewShape, _, _, _, _⟩
+    have hCutEq : c' = cut := storageShape_cut_unique hOldShape' hOld
+    have hNextEq : n' = next := storageShape_next_unique hOldShape' hOld
+    refine ⟨cut, next + 1, Nat.le_refl _, ?_, ?_⟩
+    · omega
+    · rw [← hCutEq, ← hNextEq]; exact hNewShape
+  · rcases hArchive with ⟨c', c'', n', hOldShape', hCutMono, _hCutBound, hNewShape, _, _, _, _⟩
+    have hCutEq : c' = cut := storageShape_cut_unique hOldShape' hOld
+    have hNextEq : n' = next := storageShape_next_unique hOldShape' hOld
+    refine ⟨c'', next, ?_, Nat.le_refl _, ?_⟩
+    · rw [← hCutEq]; exact hCutMono
+    · rw [← hNextEq]; exact hNewShape
+
+/-- MultiStep variant of `R_select_step_storageShape`. -/
+theorem R_select_multiStep_storageShape {q : Nat} {oldDb newDb : Database}
+    (hReach : Logic.MultiStep (R_select q) oldDb newDb)
+    {cut next : Nat} (hOld : storageShape oldDb cut next) :
+    ∃ cut' next', cut ≤ cut' ∧ next ≤ next' ∧ storageShape newDb cut' next' := by
+  induction hReach with
+  | refl => exact ⟨cut, next, Nat.le_refl _, Nat.le_refl _, hOld⟩
+  | tail _hPrev hLast ih =>
+      rcases ih with ⟨midCut, midNext, hCutLe, hNextLe, hMidShape⟩
+      rcases R_select_step_storageShape hLast hMidShape with
+        ⟨newCut, newNext, hNewCutLe, hNewNextLe, hNewShape⟩
+      exact ⟨newCut, newNext, by omega, by omega, hNewShape⟩
+
+/-- Without a storage shape, no `R_select q` step is possible (both `G_insert` and
+`G_archive` require their `oldDb` to have a storage shape). -/
+theorem R_select_step_requires_shape {q : Nat} {oldDb newDb : Database}
+    (hStep : R_select q oldDb newDb) :
+    ∃ cut next, storageShape oldDb cut next := by
+  rcases hStep with hInsert | hArchive
+  · rcases hInsert with ⟨cut, next, hShape, _, _, _, _, _⟩
+    exact ⟨cut, next, hShape⟩
+  · rcases hArchive with ⟨cut, _, next, hShape, _, _, _, _, _, _, _⟩
+    exact ⟨cut, next, hShape⟩
+
+/-- If `oldDb` has no storage shape, then any `R_select q` MultiStep from it is `refl`. -/
+theorem R_select_multiStep_noShape {q : Nat} {oldDb newDb : Database}
+    (hReach : Logic.MultiStep (R_select q) oldDb newDb)
+    (hNoShape : ¬ ∃ cut next, storageShape oldDb cut next) :
+    newDb = oldDb := by
+  induction hReach with
+  | refl => rfl
+  | tail _hPrev hLast ih =>
+      have hMidEq := ih
+      subst hMidEq
+      exact absurd (R_select_step_requires_shape hLast) hNoShape
+
+/-- Under fixed storage shape (same cut, next at both ends), every step in an
+`R_select q` MultiStep chain has `cut = cut'` (G_archive) and is therefore the identity. -/
+theorem R_select_multiStep_identity_under_fixed_shape {q : Nat} {oldDb newDb : Database}
+    {cut next : Nat}
+    (hReach : Logic.MultiStep (R_select q) oldDb newDb)
+    (hOld : storageShape oldDb cut next)
+    (hNew : storageShape newDb cut next) :
+    newDb = oldDb := by
+  -- Strong induction: maintain a "current shape" parameter and show each step is identity.
+  induction hReach with
+  | refl => rfl
+  | tail hPrev hLast ih =>
+      -- midDb's shape: cut ≤ cutM, next ≤ nextM.
+      rcases R_select_multiStep_storageShape hPrev hOld with
+        ⟨cutM, nextM, hCutOM, hNextOM, hMidShape⟩
+      -- From step: cutM ≤ cutN, nextM ≤ nextN. newDb has (cutN, nextN).
+      rcases R_select_step_storageShape hLast hMidShape with
+        ⟨cutN, nextN, hCutMN, hNextMN, hNewShape'⟩
+      -- By uniqueness, (cutN, nextN) = (cut, next).
+      have hCutN : cutN = cut := storageShape_cut_unique hNewShape' hNew
+      have hNextN : nextN = next := storageShape_next_unique hNewShape' hNew
+      -- Combined: cut ≤ cutM ≤ cutN = cut, so cutM = cut. Similarly nextM = next.
+      have hCutM : cutM = cut := by omega
+      have hNextM : nextM = next := by omega
+      -- Rewrite midShape to have (cut, next).
+      have hMidShape' := hMidShape
+      rw [hCutM, hNextM] at hMidShape'
+      -- IH: midDb = oldDb.
+      have hMidEq := ih hMidShape'
+      -- Step hLast: from midDb to newDb. Both have shape (cut, next). Use G_archive's clause.
+      rcases hLast with hInsert | hArchive
+      · exfalso
+        rcases hInsert with ⟨c'', n'', hOldShape'', hNewShape'', _, _, _, _⟩
+        have hN' : n'' = next := storageShape_next_unique hOldShape'' hMidShape'
+        have hN'next : n'' + 1 = next := by
+          have := storageShape_next_unique hNewShape'' hNew
+          omega
+        omega
+      · rcases hArchive with ⟨c'', c''', n'', hOldShape'', _hCutMono, _hCutBound,
+          hNewShape'', _hSame, _hWFP, _hPresNoRes, hCutEqImpl⟩
+        have hC'' : c'' = cut := storageShape_cut_unique hOldShape'' hMidShape'
+        have hN'' : n'' = next := storageShape_next_unique hOldShape'' hMidShape'
+        have hC''' : c''' = cut := storageShape_cut_unique hNewShape'' hNew
+        have hCutEqWit : c'' = c''' := by omega
+        have hStepEq := hCutEqImpl hCutEqWit
+        rw [hStepEq]; exact hMidEq
+
+/-! ## Result-row preservation across `R_select q` -/
+
+/-- Single-step result-row preservation under `R_select q`: both `G_insert` and
+`G_archive` carry `sameResultRows`. -/
+theorem R_select_step_preserves_resultRowFor {oldDb newDb : Database} {q : Nat}
+    {q' : Nat} {n : Nat}
+    (hStep : R_select q oldDb newDb) :
+    resultRowFor oldDb q' (n : Int) ↔ resultRowFor newDb q' (n : Int) := by
+  rcases hStep with hInsert | hArchive
+  · rcases hInsert with ⟨_cut, _next, _hOldShape, _hNewShape, hSame, _, _, _⟩
+    exact (hSame q' n).symm
+  · rcases hArchive with ⟨_cut, _cut', _next, _hOldShape, _hMono, _hBound, _hNewShape,
+      hSame, _hWFP, _hPresNoRes, _hCutEq⟩
+    exact (hSame q' n).symm
+
+/-- MultiStep result-row preservation under `R_select q`. -/
+theorem R_select_multiStep_preserves_resultRowFor {oldDb newDb : Database} {q : Nat}
+    {q' : Nat} {n : Nat}
+    (hReach : Logic.MultiStep (R_select q) oldDb newDb) :
+    resultRowFor oldDb q' (n : Int) ↔ resultRowFor newDb q' (n : Int) := by
+  induction hReach with
+  | refl => exact Iff.rfl
+  | tail _hPrev hLast ih =>
+      exact ih.trans (R_select_step_preserves_resultRowFor (q := q) (q' := q') (n := n) hLast)
+
+/-- Single-step result-row preservation under `R_archive` at `Nat` positions.
+For negative-id positions, the spec's iff doesn't constrain, so we use only
+Nat positions in `relyNoUndo R_archive`. -/
+theorem R_archive_step_monotone_resultRowFor_nat {oldDb newDb : Database}
+    {q' : Nat} {n : Nat}
+    (hStep : R_archive oldDb newDb) :
+    resultRowFor oldDb q' (n : Int) → resultRowFor newDb q' (n : Int) := by
+  rcases hStep with hInsert | hSelect
+  · rcases hInsert with ⟨_cut, _next, _hOldShape, _hNewShape, hSame, _, _, _⟩
+    exact fun h => (hSame q' n).mpr h
+  · rcases hSelect with ⟨q'', hSelect⟩
+    by_cases hEq : q' = q''
+    · subst hEq
+      rcases hSelect with ⟨_hSameShape, _hSameExcept, _, _, _, k, hIff, _⟩
+      intro h
+      exact (hIff n).mpr (Or.inl h)
+    · rcases hSelect with ⟨_hSameShape, hSameExcept, _, _, _, _, _, _⟩
+      intro h
+      exact (hSameExcept q' (n : Int) hEq).mpr h
+
+/-- MultiStep version of `R_archive_step_monotone_resultRowFor_nat`. -/
+theorem R_archive_multiStep_monotone_resultRowFor_nat {oldDb newDb : Database}
+    {q' n : Nat}
+    (hReach : Logic.MultiStep R_archive oldDb newDb) :
+    resultRowFor oldDb q' (n : Int) → resultRowFor newDb q' (n : Int) := by
+  induction hReach with
+  | refl => exact id
+  | tail _hPrev hLast ih =>
+      exact fun h => R_archive_step_monotone_resultRowFor_nat (q' := q') (n := n) hLast (ih h)
 
 theorem G_system_preserves_logStorageFinalPost {oldDb newDb : Database} {q : Nat}
     (hInv : logSystemInv oldDb) (hG : G_system q oldDb newDb) :
@@ -752,12 +973,12 @@ theorem logStorageProgramSpec_of_indexedTxnSpecs (n m q : Nat)
       · cases hFalse
       · exact hSelectStep)
   have hSelectBase :
-      Logic.GlobalValid logSystemInv (R_select q) (selectAllLogTxn q)
-        (G_select q) logSystemInv := by
+      Logic.GlobalValid (fun db => logSystemInv db ∧ noResultRowsFor q db) (R_select q)
+        (selectAllLogTxn q) (G_select q) logSystemInv := by
     simpa [selectAllLogTxnSpec, txnSpecValid, txnSpecProgram, selectAllLogSpec,
       selectAllLogTxn] using hSelect
   have hSelect' :
-      Logic.GlobalValid logSystemInv
+      Logic.GlobalValid (fun db => logSystemInv db ∧ noResultRowsFor q db)
         (fun db db' => False ∨ (G_insert db db' ∨ G_archive db db'))
         (selectAllLogTxn q) (G_select q) logSystemInv :=
     Logic.globalValid_of_relySubset hSelectBase (by
@@ -767,7 +988,7 @@ theorem logStorageProgramSpec_of_indexedTxnSpecs (n m q : Nat)
       · exact hInsertArchive)
   have hPar :
       Logic.GlobalValid
-        (fun db => initialLogSystemInv db ∧ logSystemInv db)
+        (fun db => initialLogSystemInv db ∧ (logSystemInv db ∧ noResultRowsFor q db))
         (fun _ _ => False)
         (.par (.par (insertWorker n) (archiveWorker m)) (selectAllLogTxn q))
         (fun db db' =>
@@ -784,7 +1005,16 @@ theorem logStorageProgramSpec_of_indexedTxnSpecs (n m q : Nat)
     Logic.globalValid_conseq (by
       simpa [logStorageProgram] using hPar) (by
       intro db hInit
-      exact ⟨hInit, hInit.2⟩) (by
+      rcases hInit with ⟨hDb, hInv⟩
+      refine ⟨⟨hDb, hInv⟩, hInv, ?_⟩
+      -- Show noResultRowsFor q db: db = initialDb has no result rows.
+      subst hDb
+      intro row n hMem hKey
+      rw [mem_initialDb_iff] at hMem
+      subst hMem
+      rw [counterRow_key?] at hKey
+      have : counterTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+      exact resultTable_ne_counterTable q this.symm) (by
       intro _ _ hG
       exact hG)
   have hPost :

@@ -269,7 +269,8 @@ abbrev ArchiveLogPaperObligations (i : Nat) :=
     (archiveTxnId i) (archiveLogBody i)
 
 abbrev SelectAllLogPaperObligations (q : Nat) :=
-  TxnPaperObligationsSI (R_select q) logSystemInv (G_select q)
+  TxnPaperObligationsSI (R_select q)
+    (fun db => logSystemInv db ∧ noResultRowsFor q db) (G_select q)
     (selectTxnId q) (selectAllLogBody q)
 
 /-! ## Concrete symbolic effects -/
@@ -1039,17 +1040,86 @@ theorem rowFieldInt?_tableField_eq_table?_int_some {row : Row} {table : TableNam
 
 /-! ## Bridges from obligations to txnSpec -/
 
-/-- TODO: prove `relyNoUndo R_archive` from R_archive's monotonicity in `next`
-and result rows. The current spec of G_insert/G_select is content-only, so
-list equality may need to be derived via additional structural arguments
-or by tightening G's. Stubbed for now to allow the rest of the SI pipeline
-to compose. -/
-theorem relyNoUndo_R_archive : relyNoUndo R_archive := by
-  sorry
+/-- Helper for `relyNoUndo_R_archive`: a single `R_archive` step followed by a
+`MultiStep R_archive`-backward to the starting state forces the step to be the
+identity.
 
-/-- Same caveat as `relyNoUndo_R_archive`. -/
+Argument: chain monotonicity at Nat result-row positions (forward from one step
++ backward chain) plus round-trip pin gives `sameResultRows` (Nat) between A
+and B. Apply the new G_select clause for identity. The G_insert case is ruled
+out by storage-shape monotonicity (G_insert advances `next`; backward chain
+can't decrease). -/
+private theorem R_archive_step_round_trip_identity {A B : Database}
+    (hStep : R_archive A B)
+    (hBackward : Logic.MultiStep R_archive B A) :
+    B = A := by
+  rcases hStep with hInsert | hSelect
+  · -- G_insert: storage shape next advances, but backward chain only weakly grows. Contradiction.
+    exfalso
+    rcases hInsert with ⟨cut, next, hOldShape, hNewShape, _, _, _, _⟩
+    rcases R_archive_multiStep_storageShape_no_inv hBackward hNewShape with
+      ⟨nextA, hLe, hAShape⟩
+    have hNeq : nextA = next := storageShape_next_unique hAShape hOldShape
+    omega
+  · -- G_select_q: use the `sameResultRows → newDb = oldDb` clause.
+    rcases hSelect with ⟨q, hSelectQ⟩
+    have hStepAB : R_archive A B := Or.inr ⟨q, hSelectQ⟩
+    have hSameRes : ∀ q' (n : Nat),
+        resultRowFor B q' (n : Int) ↔ resultRowFor A q' (n : Int) := by
+      intro q' n
+      constructor
+      · intro h
+        exact R_archive_multiStep_monotone_resultRowFor_nat (q' := q') (n := n) hBackward h
+      · intro h
+        exact R_archive_step_monotone_resultRowFor_nat (q' := q') (n := n) hStepAB h
+    rcases hSelectQ with ⟨_hSameShape, _hSameExcept, _, _, hSameToId, _k, _hIff, _hExp⟩
+    exact hSameToId hSameRes
+
+/-- `relyNoUndo R_archive` via the strengthened `G_select` `sameResultRows → newDb = oldDb`
+clause. In a round-trip chain:
+- `next` is monotone (G_insert advances, G_select preserves). G_insert in the chain would
+  force a `next` advance that the backward chain can't undo (R_archive only grows `next`).
+- Hence each step is `G_select_q'`, and result rows are preserved at every step via the
+  forward/backward monotone iff combined with the new clause. -/
+theorem relyNoUndo_R_archive : relyNoUndo R_archive := by
+  intro A B hForward hBackward
+  induction hForward with
+  | refl => rfl
+  | tail hPrev hLast ih =>
+      have hBackward' : Logic.MultiStep R_archive _ A := Logic.MultiStep.cons hLast hBackward
+      have hAC : A = _ := ih hBackward'
+      subst hAC
+      exact (R_archive_step_round_trip_identity hLast hBackward).symm
+
+/-- `relyNoUndo (R_select q)` via the strengthened `G_archive` `cut = cut' → newDb = oldDb`
+clause. In a round-trip chain:
+- `next` is monotone (G_insert advances, G_archive preserves), so round-trip pins `next` constant
+  and excludes G_insert. All steps are G_archive.
+- `cut` is monotone (G_archive: cut ≤ cut'), so round-trip pins `cut` constant. Each step then
+  has `cut = cut'`, hence each is identity by the new clause.
+- If `A` has no storage shape, no R step from A is possible, so MultiStep is `refl`. -/
 theorem relyNoUndo_R_select (q : Nat) : relyNoUndo (R_select q) := by
-  sorry
+  intro A B hForward hBackward
+  by_cases hShapeA : ∃ cut next, storageShape A cut next
+  · -- Case 1: A has storage shape.
+    obtain ⟨cutA, nextA, hShapeA⟩ := hShapeA
+    obtain ⟨cutB, nextB, hCutAB, hNextAB, hShapeB⟩ :=
+      R_select_multiStep_storageShape hForward hShapeA
+    obtain ⟨cutA', nextA', hCutBA, hNextBA, hShapeA'⟩ :=
+      R_select_multiStep_storageShape hBackward hShapeB
+    have hCutA' : cutA' = cutA := storageShape_cut_unique hShapeA' hShapeA
+    have hNextA' : nextA' = nextA := storageShape_next_unique hShapeA' hShapeA
+    -- cutA ≤ cutB ≤ cutA' = cutA. Similarly for next. So cutA = cutB, nextA = nextB.
+    have hCutEq : cutA = cutB := by omega
+    have hNextEq : nextA = nextB := by omega
+    rw [← hCutEq] at hShapeB
+    rw [← hNextEq] at hShapeB
+    -- Now both A and B have storage shape (cutA, nextA).
+    -- All forward steps must preserve this shape; apply identity lemma.
+    exact (R_select_multiStep_identity_under_fixed_shape hForward hShapeA hShapeB).symm
+  · -- Case 2: A has no storage shape. hForward is refl.
+    have : B = A := R_select_multiStep_noShape hForward hShapeA
+    exact this.symm
 
 /-- Under False rely, a `.letE` with non-evaluating expression is stuck — no
 multistep transition leaves it. -/
@@ -1187,24 +1257,38 @@ theorem archiveLogTxnSpec_of_paperObligations (i : Nat)
 theorem selectAllLogTxnSpec_of_paperObligations (q : Nat)
     (hObligations : SelectAllLogPaperObligations q) :
     selectAllLogTxnSpec q := by
+  have hStableInfer :
+      Logic.stableAssertion (R_select q)
+        (fun db => logSystemInv db ∧ noResultRowsFor q db) := by
+    intro oldDb newDb hInv hStep
+    refine ⟨logSystemInv_stable_R_select q oldDb newDb hInv.1 hStep, ?_⟩
+    rcases hStep with hInsert | hArchive
+    · rcases hInsert with ⟨_, _, _, _, _, _, _, hPresNoRes⟩
+      exact hPresNoRes q hInv.2
+    · rcases hArchive with ⟨_, _, _, _, _, _, _, _, _, hPresNoRes, _⟩
+      exact hPresNoRes q hInv.2
   have hCommitPost :
       ∀ localDb visibleDb,
-        logSystemInv visibleDb →
-          txnSnapshotPost logSystemInv (R_select q) hObligations.effect localDb visibleDb →
+        (logSystemInv visibleDb ∧ noResultRowsFor q visibleDb) →
+          txnSnapshotPost (fun db => logSystemInv db ∧ noResultRowsFor q db)
+            (R_select q) hObligations.effect localDb visibleDb →
             logSystemInv (Database.flush localDb visibleDb) := by
     intro localDb visibleDb _hPre hPost
     have hG : G_select q visibleDb (Database.flush localDb visibleDb) :=
       hObligations.guarantee localDb visibleDb hPost
-    rcases hPost with ⟨snapDb', hSnapInv', hReach', _⟩
+    rcases hPost with ⟨snapDb', hSnapBoth, hReach', _⟩
     have hVisInv : logSystemInv visibleDb :=
-      logSystemInv_stable_multiStep (logSystemInv_stable_R_select q) hReach' hSnapInv'
+      logSystemInv_stable_multiStep (logSystemInv_stable_R_select q) hReach' hSnapBoth.1
     exact G_select_preserves_logSystemInv hVisInv hG
   have hMain := globalValid_snapshot_of_paperObligations_post
-    (R := R_select q) (Iinfer := logSystemInv) (Ipre := logSystemInv) (Ipost := logSystemInv)
+    (R := R_select q)
+    (Iinfer := fun db => logSystemInv db ∧ noResultRowsFor q db)
+    (Ipre := fun db => logSystemInv db ∧ noResultRowsFor q db)
+    (Ipost := logSystemInv)
     (G := G_select q) (txnId := selectTxnId q) (body := selectAllLogBody q)
     (relyNoUndo_R_select q)
-    (logSystemInv_stable_R_select q)
-    (logSystemInv_stable_R_select q)
+    hStableInfer
+    hStableInfer
     (logSystemInv_stable_R_select q)
     (fun _ h => h)
     hObligations
@@ -3601,15 +3685,14 @@ This is the paper-faithful VCG combinator — `viaLocalValid` is hidden inside
 theorem paperInfer_selectAllLogBody_final (q : Nat) :
     PaperInfer
       (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
-      (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
+      (selectTxnId q) (fun db => logSystemInv db ∧ noResultRowsFor q db)
+      SetLanguage.empty (selectAllLogBody q)
       (selectAllLogEffect (selectTxnId q) q) := by
   unfold selectAllLogBody
   refine PaperInfer.selectWithInvariant (env := emptySymEnv) ?_ ?_
   · -- stability of transformerPre under SI silent rely
     exact transformerPre_stable_relyMod_snapshot _ _
   · intro selected
-    -- Pre: transformerPre logSystemInv empty ld vd ∧ collectSelected vd rowVar (isStorageEntryExpr rowVar) = some selected
-    -- Body (after subst): foreach (.lit (.set selected)) doneVar entryVar (...)
     refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
     simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
       Expr.substFieldExprs_nil, Expr.subst_lit, Value.subst_toExpr,
@@ -3630,7 +3713,7 @@ theorem paperInfer_selectAllLogBody_final (q : Nat) :
       subst hRecordsEq
       intro ld vd finalCfg hPre hMulti hSkip
       rcases hPre with ⟨hPreI, hSelect⟩
-      have hInv : logSystemInv vd := hPreI.2
+      have hInv : logSystemInv vd := hPreI.2.1
       apply selectAllLogBody_foreach_invariant q vd hInv records
         hSelect [] records (List.nil_append _) ld vd finalCfg ?_ hMulti hSkip
       refine ⟨rfl, ?_⟩
@@ -3669,9 +3752,10 @@ theorem archiveLogIndexedEffect_qstable_final (i : Nat) :
 theorem selectAllLogEffect_qstable_final (q : Nat) :
     Logic.stableBiAssertion
       (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).commit)
-      (txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)) :=
-  txnSnapshotPost_stable_snapshot logSystemInv (R_select q)
-    (selectAllLogEffect (selectTxnId q) q)
+      (txnSnapshotPost (fun db => logSystemInv db ∧ noResultRowsFor q db) (R_select q)
+        (selectAllLogEffect (selectTxnId q) q)) :=
+  txnSnapshotPost_stable_snapshot (fun db => logSystemInv db ∧ noResultRowsFor q db)
+    (R_select q) (selectAllLogEffect (selectTxnId q) q)
 
 /-! ## Generic helpers -/
 
@@ -3947,7 +4031,8 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
     stableAssertion_multiStep (logSystemInvAtNext_stable_R_insert i) hReach hSnap
   rcases hVisAtNext with ⟨cut, hVisShape, hVisResults, hVisWF⟩
   rcases hVisShape with ⟨hCutLe, hVisCounter, hVisCounterAtZero, hVisHaveNext,
-    hVisStorageLive, hVisLiveLog, hVisArchive, hVisIntervals⟩
+    hVisStorageLive, hVisLiveLog, hVisArchive, hVisIntervals,
+    hVisLiveLogNonNeg, hVisArchiveCoversNonNeg⟩
   -- Snapshot has logSystemInvAtNext i
   have hPostBack : txnSnapshotPost (logSystemInvAtNext i) R_insert
       (insertLogEffect (insertTxnId i) i) localDb visibleDb :=
@@ -3975,12 +4060,12 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
     exact ⟨row, (hRows row).1 hRowDenote, hRowKey, hRowNext, hRowLive⟩
   -- For convenience, abbreviate the local key set
   -- The constructor for G_insertCore: cut, next = i.
-  refine ⟨cut, i, ?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨cut, i, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · -- storageShape visibleDb cut i
     exact ⟨hCutLe, hVisCounter, hVisCounterAtZero, hVisHaveNext, hVisStorageLive,
-      hVisLiveLog, hVisArchive, hVisIntervals⟩
+      hVisLiveLog, hVisArchive, hVisIntervals, hVisLiveLogNonNeg, hVisArchiveCoversNonNeg⟩
   · -- storageShape (flush) cut (i+1)
-    refine ⟨by omega, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    refine ⟨by omega, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · -- liveCounterAt (flush) (i+1)
       rcases hLocalHasCounter with ⟨counterRow, hCounterMem, hCounterKey, hCounterNext, hCounterLive⟩
       refine ⟨counterRow, ?_, hCounterLive, hCounterKey, hCounterNext⟩
@@ -4124,6 +4209,35 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
         · rw [hCounterR.1] at hKey
           have : counterTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
           exact counterTable_ne_archiveTable this
+    · -- liveLog (flush) only at non-negative n
+      intro n hLive
+      rcases liveLog_of_flush hLive with hVis | hLoc
+      · exact hVisLiveLogNonNeg n hVis
+      · -- local has live log at n: must be the inserted log row at i (Nat)
+        rcases hLoc with ⟨row, hMem, _hLive, hKey⟩
+        rcases hLocalRow row hMem with hLogR | hCounterR
+        · subst hLogR
+          rw [logRow_key?] at hKey
+          have hN : (i : Int) = n := (Prod.mk.inj (Option.some.inj hKey)).2
+          omega
+        · exfalso
+          rw [hCounterR.1] at hKey
+          have : counterTable = logTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_logTable this
+    · -- archiveCovers (flush) only at non-negative n
+      intro n hCov
+      rcases archiveCovers_of_flush hCov with hVis | hLoc
+      · exact hVisArchiveCoversNonNeg n hVis
+      · exfalso
+        rcases hLoc with ⟨row, _i', _lo, _hi, hMem, _hLive, hKey, _, _, _, _⟩
+        rcases hLocalRow row hMem with hLogR | hCounterR
+        · subst hLogR
+          rw [logRow_key?] at hKey
+          have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact logTable_ne_archiveTable this
+        · rw [hCounterR.1] at hKey
+          have : counterTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact counterTable_ne_archiveTable this
   · -- sameResultRows
     intro q n
     constructor
@@ -4158,6 +4272,19 @@ theorem insertLogIndexedEffect_guarantee_final (i : Nat) :
         exact ⟨logTable, i, logRow_key? (insertTxnId i) (i : Int),
           rowFieldInt?_logRow_table (insertTxnId i) (i : Int)⟩
       · exact ⟨counterTable, 0, hCounterR.1, hCounterR.2.1⟩
+  · -- preservesNoResultRows
+    intro q hOldNoRes row n hMem hKey
+    rw [mem_flush_iff] at hMem
+    rcases hMem with hG | hL
+    · exact hOldNoRes row n hG.1 hKey
+    · rcases hLocalRow row hL.1 with hLogR | hCounterR
+      · subst hLogR
+        rw [logRow_key?] at hKey
+        have : logTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+        exact resultTable_ne_logTable q this.symm
+      · rw [hCounterR.1] at hKey
+        have : counterTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+        exact resultTable_ne_counterTable q this.symm
 
 /-! ## Constructive min/max for the set of log keys in a finite database -/
 
@@ -4471,10 +4598,11 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
   have hLocalRowKey := archiveLogSnapshotPost_local_row_key i localDb visibleDb hPostWeak
   -- Useful: visible storage shape components
   rcases hVisShape with ⟨_hVisCutLe, hVisCounter, hVisCounterAtZero, hVisHaveNext,
-    hVisStorageLive, hVisLiveLog, hVisArchive, hVisIntervals⟩
+    hVisStorageLive, hVisLiveLog, hVisArchive, hVisIntervals,
+    hVisLiveLogNonNeg, hVisArchiveCoversNonNeg⟩
   have hVisShapeFull : storageShape visibleDb snapCut visNext :=
     ⟨_hVisCutLe, hVisCounter, hVisCounterAtZero, hVisHaveNext, hVisStorageLive,
-      hVisLiveLog, hVisArchive, hVisIntervals⟩
+      hVisLiveLog, hVisArchive, hVisIntervals, hVisLiveLogNonNeg, hVisArchiveCoversNonNeg⟩
   -- Local has no counter rows: hLocalRowKey gives archiveTable or logTable key.
   have hLocalNoCounterKey : ∀ id : Int, (counterTable, id) ∉ localDb.keyDom := by
     intro id hLocal
@@ -4488,9 +4616,9 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
       have : logTable = counterTable := (Prod.mk.inj (Option.some.inj hKey)).1
       exact counterTable_ne_logTable this.symm
   -- Provide G_archiveCore
-  refine ⟨snapCut, snapNext, visNext, hVisShapeFull, hSnapShape.1, hSnapNextLeVis, ?_, ?_, ?_⟩
+  refine ⟨snapCut, snapNext, visNext, hVisShapeFull, hSnapShape.1, hSnapNextLeVis, ?_, ?_, ?_, ?_, ?_⟩
   · -- storageShape (flush) snapNext visNext
-    refine ⟨hSnapNextLeVis, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    refine ⟨hSnapNextLeVis, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · -- liveCounterAt (flush) visNext
       rcases hVisCounter with ⟨row, hMem, hLive, hKey, hNext⟩
       refine ⟨row, ?_, hLive, hKey, hNext⟩
@@ -4792,6 +4920,79 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
           have : (src.markDeleted (archiveTxnId i)).del = true := rfl
           rw [this] at hLive
           exact Bool.noConfusion hLive
+    · -- liveLog (flush) non-negative
+      intro n hLive
+      rcases liveLog_of_flush hLive with hVis | hLoc
+      · exact hVisLiveLogNonNeg n hVis
+      · -- local has live log at n: contradiction (local rows are archive or log-delete markers)
+        rcases hLoc with ⟨row, hMem, hLiveRow, hKey⟩
+        rcases hLocalRowKey row hMem with hArch | ⟨_n', hLog⟩
+        · -- archive: contradicts key = (logTable, n)
+          rw [hArch] at hKey
+          exfalso
+          have : archiveTable = logTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact logTable_ne_archiveTable this.symm
+        · -- log delete marker: not live (del = true)
+          exfalso
+          rcases hPostWeak with ⟨snapDb', _hSnapInv', _hReach', hRows'⟩
+          have hDenote := (hRows' row).2 hMem
+          unfold archiveLogEffect at hDenote
+          rw [SetLanguage.denote_union] at hDenote
+          rcases hDenote with hInsert | hDelete
+          · rcases hInsert with ⟨_lo, _hi0, _hMin, _hMax, hRow⟩
+            subst hRow
+            rw [archiveRow_key?] at hLog
+            have : archiveTable = logTable := (Prod.mk.inj (Option.some.inj hLog)).1
+            exact logTable_ne_archiveTable this.symm
+          · rcases hDelete with ⟨src, _n', _lo, _hi0, _, _, _hSel, _, _, hRow⟩
+            subst hRow
+            unfold liveRow at hLiveRow
+            have : (src.markDeleted (archiveTxnId i)).del = true := rfl
+            rw [this] at hLiveRow
+            exact Bool.noConfusion hLiveRow
+    · -- archiveCovers (flush) non-negative
+      intro n hCov
+      rcases archiveCovers_of_flush hCov with hVis | hLoc
+      · exact hVisArchiveCoversNonNeg n hVis
+      · -- local has archive cover at n: must be the archive insert row
+        rcases hLoc with ⟨row, _idx, lo, hi, hMem, _hLive, hKey, hLo, hHi, hLe, hLt⟩
+        rcases hLocalRowKey row hMem with hArch | ⟨_n', hLog⟩
+        · -- archive insert: lo' ≥ 0 because lo' comes from snapshot's log id (Nat from snap shape)
+          rcases hPostWeak with ⟨snapDb', hSnapInv', _hReach', hRows'⟩
+          have hDenote := (hRows' row).2 hMem
+          unfold archiveLogEffect at hDenote
+          rw [SetLanguage.denote_union] at hDenote
+          rcases hDenote with hInsert | hDelete
+          · rcases hInsert with ⟨lo', hi0', hMin', _hMax', hRow⟩
+            subst hRow
+            rw [rowFieldInt?_archiveRow_lo] at hLo
+            rw [rowFieldInt?_archiveRow_hi] at hHi
+            have hLoEq : lo = lo' := (Option.some.inj hLo).symm
+            -- lo' is the min of snap's log ids. snap has no negative live logs.
+            rcases hMin' with ⟨⟨witMin, ⟨hWitMemMin, hWitKey⟩⟩, _⟩
+            rcases hSnapInv' with ⟨_, _, hSnapShape', _, _⟩
+            rcases hSnapShape' with ⟨_, _, _, _, hSnapStorageLive, _, _, _,
+              hSnapLiveLogNonNeg, _⟩
+            have hWitLive : liveRow witMin := hSnapStorageLive witMin hWitMemMin (Or.inr (Or.inl ⟨lo', hWitKey⟩))
+            have hSnapLogAt : liveLog snapDb' lo' :=
+              ⟨witMin, hWitMemMin, hWitLive, hWitKey⟩
+            have hLoNonNeg : 0 ≤ lo' := hSnapLiveLogNonNeg lo' hSnapLogAt
+            subst hLoEq
+            omega
+          · -- delete marker: contradicts hKey = (archiveTable, _) since markDeleted preserves key
+            exfalso
+            rcases hDelete with ⟨src, _n', _lo, _hi0, _, _, hSel, _, _, hRow⟩
+            subst hRow
+            rcases hSel with ⟨_, hSrcKey⟩
+            rw [markDeleted_key?] at hKey
+            rw [hSrcKey] at hKey
+            have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+            exact logTable_ne_archiveTable this
+        · -- log delete marker: contradicts hKey = (archiveTable, _)
+          exfalso
+          rw [hLog] at hKey
+          have : logTable = archiveTable := (Prod.mk.inj (Option.some.inj hKey)).1
+          exact logTable_ne_archiveTable this
   · -- sameResultRows: local has only archive/log keys, never resultTable
     intro q n
     constructor
@@ -4879,6 +5080,68 @@ theorem archiveLogIndexedEffect_guarantee_final (i : Nat) :
           have := (rowFieldInt?_eq_some_iff_lookup (row := src)
             (field := tableField) (v := logTable)).mp hSrcTab
           exact this
+  · -- preservesNoResultRows: archive body adds only archive/log keys, never resultTable.
+    intro q hOldNoRes row n hMem hKey
+    rw [mem_flush_iff] at hMem
+    rcases hMem with hG | hL
+    · exact hOldNoRes row n hG.1 hKey
+    · rcases hLocalRowKey row hL.1 with hArch | ⟨_n', hLog⟩
+      · rw [hArch] at hKey
+        have : archiveTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+        exact resultTable_ne_archiveTable q this.symm
+      · rw [hLog] at hKey
+        have : logTable = resultTable q := (Prod.mk.inj (Option.some.inj hKey)).1
+        exact resultTable_ne_logTable q this.symm
+  · -- cut = cut' → newDb = oldDb (new clause for relyNoUndo)
+    intro hCutEq
+    -- hCutEq : snapCut = snapNext. Need: flush localDb visibleDb = visibleDb.
+    -- Step 1: snapshot has no log rows. From snapCut = snapNext + storageShape:
+    --   * No live logs at Nat [snapCut, snapNext) (empty range).
+    --   * No live logs at non-Nat (new storageShape clause).
+    -- Combined with storageRowsLive, no log rows at all in snapshot.
+    have hNoLogRows : ∀ row, row ∈ snapshotDb → ∀ n : Int, row.key? ≠ some (logTable, n) := by
+      intro row hMemSnap n hKey
+      rcases hSnapShape with
+        ⟨_, _, _, _, hSnapStorageLive, hSnapLiveLogNat, _, _, hSnapLiveLogNonNeg, _⟩
+      have hInTable : rowInTable row logTable := ⟨n, hKey⟩
+      have hLive := hSnapStorageLive row hMemSnap (Or.inr (Or.inl hInTable))
+      have hLiveLogAt : liveLog snapshotDb n := ⟨row, hMemSnap, hLive, hKey⟩
+      have hNonNeg : 0 ≤ n := hSnapLiveLogNonNeg n hLiveLogAt
+      obtain ⟨m, hNEq⟩ : ∃ m : Nat, n = (m : Int) :=
+        ⟨n.toNat, (Int.toNat_of_nonneg hNonNeg).symm⟩
+      subst hNEq
+      have hLiveLogAtNat : liveLog snapshotDb ((m : Nat) : Int) := hLiveLogAt
+      have hRange := (hSnapLiveLogNat m).mp hLiveLogAtNat
+      omega
+    -- Step 2: localDb has no rows. Each row in localDb is denoted by archiveLogEffect,
+    -- which requires at least one log row in snapshot via selectedLogMin/Max.
+    have hLocalEmpty : localDb = [] := by
+      cases hLocal : localDb with
+      | nil => rfl
+      | cons head tail =>
+          exfalso
+          have hHeadMem : head ∈ localDb := by rw [hLocal]; exact List.mem_cons_self
+          have hDenote := (hRows head).2 hHeadMem
+          unfold archiveLogEffect at hDenote
+          rw [SetLanguage.denote_union] at hDenote
+          rcases hDenote with hInsert | hDelete
+          · rcases hInsert with ⟨_lo, _hi0, hMin', _, _⟩
+            rcases hMin' with ⟨⟨witMin, hWitMin⟩, _⟩
+            rcases hWitMin with ⟨hWitMem, hWitKey⟩
+            exact hNoLogRows witMin hWitMem _ hWitKey
+          · rcases hDelete with ⟨_src, _, _, _, hMin', _, _, _, _, _⟩
+            rcases hMin' with ⟨⟨witMin, hWitMin⟩, _⟩
+            rcases hWitMin with ⟨hWitMem, hWitKey⟩
+            exact hNoLogRows witMin hWitMem _ hWitKey
+    -- Step 3: flush [] visibleDb = visibleDb
+    rw [hLocalEmpty]
+    show Database.flush [] visibleDb = visibleDb
+    show List.filter _ visibleDb ++ List.filter _ [] = visibleDb
+    simp only [List.filter_nil, List.append_nil]
+    apply List.filter_eq_self.mpr
+    intro row _
+    simp [Database.keyDom]
+    cases row.key? <;> simp
 
 /-- Storage rows in a `wellFormedTableFields` database have keys disjoint
 from any `resultTable q`. -/
@@ -5071,8 +5334,8 @@ theorem selectAllLogSnapshotPost_sameStorageShape
   refine ⟨?_, ?_⟩
   · -- forward
     rintro ⟨hCut, hCounter, hCounterAtZero, hHaveNext, hStorageLive,
-      hLiveLog, hArchive, hIntervals⟩
-    refine ⟨hCut, (hCounterIff _).2 hCounter, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      hLiveLog, hArchive, hIntervals, hLiveLogNonNeg, hArchiveCoversNonNeg⟩
+    refine ⟨hCut, (hCounterIff _).2 hCounter, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · -- counterRowsAtZero flush
       intro row hMem hInTable
       rw [mem_flush_iff] at hMem
@@ -5104,10 +5367,32 @@ theorem selectAllLogSnapshotPost_sameStorageShape
       · exact hIntervals row i lo hi hG.1 hLive hKey hLo hHi
       · exact False.elim (selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
           hL.1 hKey (Or.inr (Or.inr rfl)))
+    · -- liveLog (flush) non-negative
+      intro n hLive
+      have hVisLive : liveLog visibleDb n := by
+        rcases hLive with ⟨row, hMem, hLiveRow, hKey⟩
+        rw [mem_flush_iff] at hMem
+        rcases hMem with hG | hL
+        · exact ⟨row, hG.1, hLiveRow, hKey⟩
+        · exfalso
+          exact selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+            hL.1 hKey (Or.inr (Or.inl rfl))
+      exact hLiveLogNonNeg n hVisLive
+    · -- archiveCovers (flush) non-negative
+      intro n hCov
+      have hVisCov : archiveCovers visibleDb n := by
+        rcases hCov with ⟨row, idx, lo, hi, hMem, hLiveRow, hKey, hLo, hHi, hLe, hLt⟩
+        rw [mem_flush_iff] at hMem
+        rcases hMem with hG | hL
+        · exact ⟨row, idx, lo, hi, hG.1, hLiveRow, hKey, hLo, hHi, hLe, hLt⟩
+        · exfalso
+          exact selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+            hL.1 hKey (Or.inr (Or.inr rfl))
+      exact hArchiveCoversNonNeg n hVisCov
   · -- backward
     rintro ⟨hCut, hCounter, hCounterAtZero, hHaveNext, hStorageLive,
-      hLiveLog, hArchive, hIntervals⟩
-    refine ⟨hCut, (hCounterIff next).1 hCounter, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      hLiveLog, hArchive, hIntervals, hLiveLogNonNeg, hArchiveCoversNonNeg⟩
+    refine ⟨hCut, (hCounterIff next).1 hCounter, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · -- counterRowsAtZero visible
       intro row hMem hInTable
       apply hCounterAtZero row _ hInTable
@@ -5142,6 +5427,26 @@ theorem selectAllLogSnapshotPost_sameStorageShape
       refine Or.inl ⟨hMem, ?_⟩
       rw [hKey]
       exact hArchClobber i
+    · -- liveLog visible non-negative (from flush's)
+      intro n hLive
+      have hFlushLive : liveLog (Database.flush localDb visibleDb) n := by
+        rcases hLive with ⟨row, hMem, hLiveRow, hKey⟩
+        refine ⟨row, ?_, hLiveRow, hKey⟩
+        rw [mem_flush_iff]
+        refine Or.inl ⟨hMem, ?_⟩
+        rw [hKey]
+        exact hLogClobber n
+      exact hLiveLogNonNeg n hFlushLive
+    · -- archiveCovers visible non-negative (from flush's)
+      intro n hCov
+      have hFlushCov : archiveCovers (Database.flush localDb visibleDb) n := by
+        rcases hCov with ⟨row, idx, lo, hi, hMem, hLiveRow, hKey, hLo, hHi, hLe, hLt⟩
+        refine ⟨row, idx, lo, hi, ?_, hLiveRow, hKey, hLo, hHi, hLe, hLt⟩
+        rw [mem_flush_iff]
+        refine Or.inl ⟨hMem, ?_⟩
+        rw [hKey]
+        exact hArchClobber idx
+      exact hArchiveCoversNonNeg n hFlushCov
 
 theorem selectAllLogSnapshotPost_preservesWellFormedTableFields
     (q : Nat) (localDb visibleDb : Database)
@@ -5162,12 +5467,18 @@ theorem selectAllLogSnapshotPost_preservesWellFormedTableFields
 theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
     ∀ localDb visibleDb,
       logSystemInv visibleDb →
-        txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
-            localDb visibleDb →
+        txnSnapshotPost (fun db => logSystemInv db ∧ noResultRowsFor q db) (R_select q)
+            (selectAllLogEffect (selectTxnId q) q) localDb visibleDb →
           G_selectCore q visibleDb (Database.flush localDb visibleDb) := by
   intro localDb visibleDb _hVisInv hPost
-  refine ⟨selectAllLogSnapshotPost_sameStorageShape q localDb visibleDb hPost,
-    ?_, ?_, selectAllLogSnapshotPost_preservesWellFormedTableFields q localDb visibleDb hPost, ?_⟩
+  -- Weaken hPost to use just logSystemInv for the helpers that don't need noResultRowsFor.
+  have hPostWeak : txnSnapshotPost logSystemInv (R_select q)
+      (selectAllLogEffect (selectTxnId q) q) localDb visibleDb := by
+    rcases hPost with ⟨snap, hSnapBoth, hReach, hRows⟩
+    exact ⟨snap, hSnapBoth.1, hReach, hRows⟩
+  refine ⟨selectAllLogSnapshotPost_sameStorageShape q localDb visibleDb hPostWeak,
+    ?_, ?_, selectAllLogSnapshotPost_preservesWellFormedTableFields q localDb visibleDb hPostWeak,
+    ?_, ?_⟩
   -- sameResultRowsExcept
   · intro q' n hNe
     constructor
@@ -5176,7 +5487,7 @@ theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
       · exact hOld
       · exfalso
         rcases hLocal with ⟨row, hMem, _hLive, hKey⟩
-        rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPost row
+        rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPostWeak row
           hMem with ⟨m, hEq⟩
         subst hEq
         rw [resultRowLit_key?] at hKey
@@ -5184,17 +5495,82 @@ theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
         exact hNe (resultTable_injective this).symm
     · intro hOld
       exact resultRowFor_flush_of_global
-        (selectAllLogSnapshotPost_otherQueryNoClobber q localDb visibleDb hPost hNe)
+        (selectAllLogSnapshotPost_otherQueryNoClobber q localDb visibleDb hPostWeak hNe)
         hOld
   -- preservesArchiveKeyFreshness
   · intro i hOldFresh row hMemNew hKey
     rw [mem_flush_iff] at hMemNew
     rcases hMemNew with hG | hL
     · exact hOldFresh row hG.1 hKey
-    · exact selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPost
+    · exact selectAllLogSnapshotPost_local_no_storage_key q localDb visibleDb hPostWeak
         hL.1 hKey (Or.inr (Or.inr rfl))
+  -- sameResultRows → newDb = oldDb (new clause for relyNoUndo)
+  · -- Use noResultRowsFor q snapshotDb (from strengthened Ipre) plus R_select_q-preservation
+    -- of resultRowFor to derive that visibleDb has no row at (resultTable q, _). Then any
+    -- localDb row at such a key creates a flush-vs-visibleDb resultRowFor mismatch,
+    -- contradicting `sameResultRows`. Hence localDb must be empty, and flush = visibleDb.
+    intro hSameResults
+    rcases hPost with ⟨snapshotDb, hSnapBoth, hReach, hRows⟩
+    have hSnapInv := hSnapBoth.1
+    have hSnapNoRes := hSnapBoth.2
+    have hLocalEmpty : localDb = [] := by
+      cases hLocal : localDb with
+      | nil => rfl
+      | cons headRow tailRows =>
+        exfalso
+        have hHeadMem : headRow ∈ localDb := by rw [hLocal]; exact List.mem_cons_self
+        rcases selectAllLogSnapshotPost_local_rows_are_results q localDb
+          visibleDb hPostWeak headRow hHeadMem with ⟨n, hEq⟩
+        -- Derive n ≥ 0 from snap's storageShape's no-negative clause.
+        have hDenote :
+            SetLanguage.denote (SetLanguage.Env.ofDatabases [] snapshotDb)
+              (selectAllLogEffect (selectTxnId q) q) headRow :=
+          (hRows headRow).2 hHeadMem
+        rw [hEq] at hDenote
+        have hExp : expandedLog snapshotDb n :=
+          (selectAllLogEffect_resultRowLit_iff_expanded q snapshotDb n hSnapInv).mp hDenote
+        have hNonNeg : 0 ≤ n := by
+          rcases hSnapInv with ⟨_, _, hShape, _, _⟩
+          rcases hExp with hLive | hCov
+          · rcases hShape with ⟨_, _, _, _, _, _, _, _, hLiveLogNonNeg, _⟩
+            exact hLiveLogNonNeg n hLive
+          · rcases hShape with ⟨_, _, _, _, _, _, _, _, _, hArchNonNeg⟩
+            exact hArchNonNeg n hCov
+        obtain ⟨m, hNEq⟩ : ∃ m : Nat, n = (m : Int) :=
+          ⟨n.toNat, (Int.toNat_of_nonneg hNonNeg).symm⟩
+        subst hNEq
+        -- headRow = resultRowLit q ((m : Nat) : Int) and is in localDb.
+        have hHeadMemLocal : resultRowLit (selectTxnId q) q ((m : Nat) : Int) ∈ localDb := by
+          rw [← hEq]; exact hHeadMem
+        -- Hence resultRowFor flush q m holds.
+        have hFlushHead : resultRowLit (selectTxnId q) q ((m : Nat) : Int) ∈
+            Database.flush localDb visibleDb := by
+          rw [mem_flush_iff]
+          refine Or.inr ⟨hHeadMemLocal, ?_⟩
+          simp [liveRow, resultRowLit, Row.fromInsert]
+        have hResFlush : resultRowFor (Database.flush localDb visibleDb) q m :=
+          ⟨_, hFlushHead, by simp [liveRow, resultRowLit, Row.fromInsert],
+            resultRowLit_key? _ _ _⟩
+        -- By sameResultRows, resultRowFor visibleDb q m holds.
+        have hResVis : resultRowFor visibleDb q m := (hSameResults q m).mp hResFlush
+        -- By R_select_q-preservation, resultRowFor snapshotDb q m holds.
+        have hResSnap : resultRowFor snapshotDb q m :=
+          (R_select_multiStep_preserves_resultRowFor (q := q) (q' := q) (n := m)
+            hReach).mpr hResVis
+        -- But snapshotDb satisfies noResultRowsFor q. Contradiction.
+        rcases hResSnap with ⟨row, hRowMem, _hLive, hRowKey⟩
+        exact hSnapNoRes row m hRowMem hRowKey
+    -- Conclude flush = visibleDb from localDb = [].
+    rw [hLocalEmpty]
+    show Database.flush [] visibleDb = visibleDb
+    show List.filter _ visibleDb ++ List.filter _ [] = visibleDb
+    simp only [List.filter_nil, List.append_nil]
+    apply List.filter_eq_self.mpr
+    intro row _
+    simp [Database.keyDom]
+    cases row.key? <;> simp
   -- prefix
-  · rcases selectAllLogSnapshotPost_local_result_prefix q localDb visibleDb hPost with
+  · rcases selectAllLogSnapshotPost_local_result_prefix q localDb visibleDb hPostWeak with
       ⟨k, hLocalPrefix⟩
     refine ⟨k, ?_, ?_⟩
     · intro n
@@ -5203,7 +5579,7 @@ theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
         rcases resultRowFor_of_flush hNew with hOld | hLocal
         · exact Or.inl hOld
         · have hMem :=
-            (selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPost n).1 hLocal
+            (selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPostWeak n).1 hLocal
           exact Or.inr ((hLocalPrefix n).1 hMem)
       · intro hOldOrPrefix
         rcases hOldOrPrefix with hOld | hPrefix
@@ -5213,10 +5589,10 @@ theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
           by_cases hLt : n < k
           · have hMem : resultRowLit (selectTxnId q) q n ∈ localDb := (hLocalPrefix n).2 hLt
             exact resultRowFor_flush_of_local
-              ((selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPost n).2 hMem)
+              ((selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPostWeak n).2 hMem)
           · apply resultRowFor_flush_of_global _ hOld
             intro hLocal
-            rcases selectAllLogSnapshotPost_local_keyDom_results q localDb visibleDb hPost _
+            rcases selectAllLogSnapshotPost_local_keyDom_results q localDb visibleDb hPostWeak _
               hLocal with ⟨m, hEq⟩
             have hPair : (resultTable q, (n : Int)) = (resultTable q, m) := hEq
             have hM : (n : Int) = m := (Prod.mk.inj hPair).2
@@ -5225,7 +5601,7 @@ theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
               unfold Database.keyDom at hLocal
               simp [List.mem_filterMap] at hLocal
               rcases hLocal with ⟨row, hMem, hKey⟩
-              rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPost row
+              rcases selectAllLogSnapshotPost_local_rows_are_results q localDb visibleDb hPostWeak row
                 hMem with ⟨m', hEq'⟩
               subst hEq'
               rw [resultRowLit_key?] at hKey
@@ -5238,24 +5614,23 @@ theorem selectAllLogEffect_guaranteeCore_final (q : Nat) :
             exact hLt ((hLocalPrefix n).1 hMemLocal)
         · have hMem : resultRowLit (selectTxnId q) q n ∈ localDb := (hLocalPrefix n).2 hPrefix
           exact resultRowFor_flush_of_local
-            ((selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPost n).2 hMem)
+            ((selectAllLogSnapshotPost_local_resultRowFor_iff q localDb visibleDb hPostWeak n).2 hMem)
     · intro n hlt
       have hMem : resultRowLit (selectTxnId q) q n ∈ localDb := (hLocalPrefix n).2 hlt
-      exact selectAllLogSnapshotPost_local_result_expanded_visible q localDb visibleDb hPost n hMem
+      exact selectAllLogSnapshotPost_local_result_expanded_visible q localDb visibleDb hPostWeak n hMem
 
 theorem selectAllLogEffect_guarantee_final (q : Nat) :
     ∀ localDb visibleDb,
-      txnSnapshotPost logSystemInv (R_select q) (selectAllLogEffect (selectTxnId q) q)
-          localDb visibleDb →
+      txnSnapshotPost (fun db => logSystemInv db ∧ noResultRowsFor q db) (R_select q)
+          (selectAllLogEffect (selectTxnId q) q) localDb visibleDb →
         G_select q visibleDb (Database.flush localDb visibleDb) := by
   intro localDb visibleDb hPost
-  -- G_select is now unconditional (= G_selectCore). Derive logSystemInv visibleDb
-  -- from txnSnapshotPost + stability under R_select.
-  rcases hPost with ⟨snapshotDb, hSnapInv, hReach, _hRows⟩
+  rcases hPost with ⟨snapshotDb, hSnapBoth, hReach, hRows⟩
+  have hSnapInv := hSnapBoth.1
   have hVisInv : logSystemInv visibleDb :=
     logSystemInv_stable_multiStep (logSystemInv_stable_R_select q) hReach hSnapInv
   exact selectAllLogEffect_guaranteeCore_final q localDb visibleDb hVisInv
-    ⟨snapshotDb, hSnapInv, hReach, _hRows⟩
+    ⟨snapshotDb, hSnapBoth, hReach, hRows⟩
 
 /-! ## Indexed archive leaf
 
