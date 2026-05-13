@@ -3027,7 +3027,27 @@ private def selectAllLogBody_doneContrib
 
 /-- Per-entry result effect lifted from `Row`-based to `RecordLit`-based form.
 Since `selectEntryResultEffect`'s logic depends only on entry's visible record
-(via `key?`, `lookup?`), the `byRecord` form takes a record directly. -/
+(via `key?`, `lookup?`), the `byRecord` form takes a record directly.
+
+**Paper alignment note (1710.09844v2.pdf, Appendix C p.45 SELECT case):**
+The paper's SELECT proof uses the inductive hypothesis on the body `c` with
+y free, stating "any binding of y can be used" — i.e., body's Hoare triple is
+universal in y. Our `PaperInfer.selectLazy` matches this with `hBody : ∀ y,
+PaperInfer ... (Fbody y)`.
+
+This narrow definition assumes `entry.key?` matches log or archive
+specifically (i.e., storage entries). The body's operational effect for
+non-storage `y` (entries with `entry.lookup? "table" = some (.int t)` where
+`t ∉ {logTable, archiveTable}` or `.bool _`) does NOT match this Fbody —
+the body still produces resultRows via the inner foreach in such cases.
+A fully paper-faithful Fbody would broaden the non-log case to any
+`t ≠ logTable` (plus bool/none cases), and require correspondingly broader
+proofs in `selectAllLogBody_foreach_invariant_byRecord`.
+
+This narrow form suffices for the eventual `_final` use case (where `sel`
+comes from `collectSelected ... isStorageEntryExpr`, guaranteeing all entries
+are log or archive), but the universal-`y` body proof for `PaperInfer.selectLazy`
+remains incomplete (see the `sorry` in `selectAllLogBody_foreach_invariant_byRecord`). -/
 private def selectEntryResultEffect_byRecord (q : Nat) (entry : RecordLit) :
     SetLanguage.SetExpr :=
   fun _localDb _globalDb row =>
@@ -3068,11 +3088,9 @@ private theorem selectAllLogEffect_byRecord_iff_with_selected
   unfold selectAllLogEffect_byRecord selectAllLogEffect_with_selected
   constructor
   · rintro ⟨entry, hEntry, hEff⟩
-    -- Get srcRow ∈ vd with srcRow.visible = entry via mem_selected_iff_storage_entry.
     rcases (mem_selected_iff_storage_entry hSelect hWF entry).mp hEntry with
       ⟨srcRow, hSrcMem, _hKeyOr, hSrcVis⟩
     refine ⟨entry, hEntry, srcRow, hSrcMem, hSrcVis, ?_⟩
-    -- Bridge `_byRecord entry row` to `selectEntryResultEffect q srcRow ld vd row`.
     unfold selectEntryResultEffect_byRecord at hEff
     unfold selectEntryResultEffect SetLanguage.SetExpr.union
     have hSrcKey : srcRow.key? = entry.key? := by
