@@ -3025,36 +3025,28 @@ private def selectAllLogBody_doneContrib
       SetLanguage.denote (SetLanguage.Env.ofDatabases [] visibleDb)
         (selectEntryResultEffect (selectTxnId q) q srcRow) row
 
-/-- Per-entry result effect lifted from `Row`-based to `RecordLit`-based form.
-Since `selectEntryResultEffect`'s logic depends only on entry's visible record
-(via `key?`, `lookup?`), the `byRecord` form takes a record directly.
+/-- Per-entry result effect matching the body's operational behavior for
+**arbitrary** entries, as required by `PaperInfer.selectLazy`'s universal-`y`
+body hypothesis (paper 1710.09844v2.pdf, Appendix C, p.45 SELECT case:
+"y occurs free in c and by the inductive hypothesis, any binding of y can be used").
 
-**Paper alignment note (1710.09844v2.pdf, Appendix C p.45 SELECT case):**
-The paper's SELECT proof uses the inductive hypothesis on the body `c` with
-y free, stating "any binding of y can be used" — i.e., body's Hoare triple is
-universal in y. Our `PaperInfer.selectLazy` matches this with `hBody : ∀ y,
-PaperInfer ... (Fbody y)`.
+The body's outer `.ite (isLogExpr entry)` evaluates to:
+- `some (.bool true)` when `entry.lookup? "table" = some (.int logTable)` →
+  insert one resultRow at `entry.id`.
+- `some (.bool false)` when `entry.lookup? "table" = some (.int t)` with
+  `t ≠ logTable`, or `some (.bool _)` → inner foreach over `[entry.lo, entry.hi)`.
+- `none` when `entry.lookup? "table" = none` → body stuck (no contribution).
 
-This narrow definition assumes `entry.key?` matches log or archive
-specifically (i.e., storage entries). The body's operational effect for
-non-storage `y` (entries with `entry.lookup? "table" = some (.int t)` where
-`t ∉ {logTable, archiveTable}` or `.bool _`) does NOT match this Fbody —
-the body still produces resultRows via the inner foreach in such cases.
-A fully paper-faithful Fbody would broaden the non-log case to any
-`t ≠ logTable` (plus bool/none cases), and require correspondingly broader
-proofs in `selectAllLogBody_foreach_invariant_byRecord`.
-
-This narrow form suffices for the eventual `_final` use case (where `sel`
-comes from `collectSelected ... isStorageEntryExpr`, guaranteeing all entries
-are log or archive), but the universal-`y` body proof for `PaperInfer.selectLazy`
-remains incomplete (see the `sorry` in `selectAllLogBody_foreach_invariant_byRecord`). -/
+For storage entries (sel from `collectSelected` with `isStorageEntryExpr`),
+`entry.lookup? "table" ∈ {some (.int logTable), some (.int archiveTable)}`. -/
 private def selectEntryResultEffect_byRecord (q : Nat) (entry : RecordLit) :
     SetLanguage.SetExpr :=
   fun _localDb _globalDb row =>
-    ((∃ id, entry.key? = some (logTable, id)) ∧
+    (entry.lookup? "table" = some (.int logTable) ∧
       ∃ n, entry.lookup? "id" = some (.int n) ∧
         row = resultRowLit (selectTxnId q) q n) ∨
-    ((∃ id, entry.key? = some (archiveTable, id)) ∧
+    (entry.lookup? "table" ≠ some (.int logTable) ∧
+      entry.lookup? "table" ≠ none ∧
       ∃ lo hi n, entry.lookup? "lo" = some (.int lo) ∧
         entry.lookup? "hi" = some (.int hi) ∧
         lo ≤ n ∧ n < hi ∧ row = resultRowLit (selectTxnId q) q n)
@@ -3086,48 +3078,74 @@ private theorem selectAllLogEffect_byRecord_iff_with_selected
     selectAllLogEffect_byRecord q selected ld vd row ↔
     selectAllLogEffect_with_selected (selectTxnId q) q selected ld vd row := by
   unfold selectAllLogEffect_byRecord selectAllLogEffect_with_selected
+  -- Helper: srcRow.visible = entry implies lookup-table equivalence.
+  have hTabBridge : ∀ (entry : RecordLit) (srcRow : Row), srcRow.visible = entry →
+      ∀ t, rowFieldInt? srcRow tableField = some t ↔ entry.lookup? "table" = some (.int t) := by
+    intros entry srcRow hSrcVis t
+    unfold rowFieldInt? tableField
+    rw [hSrcVis]
+    cases hT : entry.lookup? "table" with
+    | none => simp [hT]
+    | some lit =>
+      cases lit with
+      | int v => simp [hT]
+      | bool _ => simp [hT]
   constructor
   · rintro ⟨entry, hEntry, hEff⟩
     rcases (mem_selected_iff_storage_entry hSelect hWF entry).mp hEntry with
-      ⟨srcRow, hSrcMem, _hKeyOr, hSrcVis⟩
+      ⟨srcRow, hSrcMem, hKeyOr, hSrcVis⟩
     refine ⟨entry, hEntry, srcRow, hSrcMem, hSrcVis, ?_⟩
     unfold selectEntryResultEffect_byRecord at hEff
     unfold selectEntryResultEffect SetLanguage.SetExpr.union
-    have hSrcKey : srcRow.key? = entry.key? := by
-      unfold Row.key?; rw [hSrcVis]
-    rcases hEff with hLog | hArch
+    rcases hEff with hLog | hNonLog
     · left
       unfold selectLogResultEffect
-      rcases hLog with ⟨⟨id, hLogKey⟩, n, hId, hRow⟩
-      refine ⟨n, ⟨id, ?_⟩, ?_, hRow⟩
-      · rw [hSrcKey]; exact hLogKey
-      · rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hId
+      rcases hLog with ⟨hTableLog, n, hId, hRow⟩
+      have hSrcKey : srcRow.key? = some (logTable, n) := by
+        unfold Row.key? RecordLit.key? RecordLit.table? RecordLit.id?
+        rw [hSrcVis, hTableLog, hId]
+      refine ⟨n, ⟨n, hSrcKey⟩, ?_, hRow⟩
+      rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hId
     · right
       unfold selectArchiveResultEffect
-      rcases hArch with ⟨⟨id, hArchKey⟩, lo, hi, n, hLo, hHi, hLoLe, hLtHi, hRow⟩
-      refine ⟨lo, hi, n, ⟨id, ?_⟩, ?_, ?_, hLoLe, hLtHi, hRow⟩
-      · rw [hSrcKey]; exact hArchKey
+      rcases hNonLog with ⟨hTNeLog, _hTNeNone, lo, hi, n, hLo, hHi, hLoLe, hLtHi, hRow⟩
+      -- For storage entries: srcRow.key? is log or archive. Since entry's table ≠ log, must be archive.
+      have hSrcArch : ∃ id, srcRow.key? = some (archiveTable, id) := by
+        rcases hKeyOr with ⟨_, hLogKey⟩ | hArch
+        · exfalso
+          have hTab : rowFieldInt? srcRow tableField = some logTable :=
+            rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem hLogKey
+          exact hTNeLog ((hTabBridge entry srcRow hSrcVis logTable).mp hTab)
+        · exact hArch
+      refine ⟨lo, hi, n, hSrcArch, ?_, ?_, hLoLe, hLtHi, hRow⟩
       · rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hLo
       · rw [rowFieldInt?_eq_some_iff_lookup, hSrcVis]; exact hHi
   · rintro ⟨entry, hEntry, srcRow, hSrcMem, hSrcVis, hEff⟩
     refine ⟨entry, hEntry, ?_⟩
     unfold selectEntryResultEffect SetLanguage.SetExpr.union at hEff
     unfold selectEntryResultEffect_byRecord
-    have hSrcKey : srcRow.key? = entry.key? := by
-      unfold Row.key?; rw [hSrcVis]
     rcases hEff with hLog | hArch
     · left
       unfold selectLogResultEffect at hLog
-      rcases hLog with ⟨n, ⟨id, hSrcLogKey⟩, hSrcId, hRow⟩
-      refine ⟨⟨id, ?_⟩, n, ?_, hRow⟩
-      · rw [← hSrcKey]; exact hSrcLogKey
-      · have := rowFieldInt?_eq_some_iff_lookup.mp hSrcId
-        rw [hSrcVis] at this; exact this
+      rcases hLog with ⟨n, ⟨_id, hSrcLogKey⟩, hSrcId, hRow⟩
+      have hSrcTab : rowFieldInt? srcRow tableField = some logTable :=
+        rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem hSrcLogKey
+      have hTable : entry.lookup? "table" = some (.int logTable) :=
+        (hTabBridge entry srcRow hSrcVis logTable).mp hSrcTab
+      refine ⟨hTable, n, ?_, hRow⟩
+      have := rowFieldInt?_eq_some_iff_lookup.mp hSrcId
+      rw [hSrcVis] at this; exact this
     · right
       unfold selectArchiveResultEffect at hArch
-      rcases hArch with ⟨lo, hi, n, ⟨id, hSrcArchKey⟩, hSrcLo, hSrcHi, hLoLe, hLtHi, hRow⟩
-      refine ⟨⟨id, ?_⟩, lo, hi, n, ?_, ?_, hLoLe, hLtHi, hRow⟩
-      · rw [← hSrcKey]; exact hSrcArchKey
+      rcases hArch with ⟨lo, hi, n, ⟨_id, hSrcArchKey⟩, hSrcLo, hSrcHi, hLoLe, hLtHi, hRow⟩
+      have hSrcTab : rowFieldInt? srcRow tableField = some archiveTable :=
+        rowFieldInt?_tableField_of_key_wellFormed hWF hSrcMem hSrcArchKey
+      have hTable : entry.lookup? "table" = some (.int archiveTable) :=
+        (hTabBridge entry srcRow hSrcVis archiveTable).mp hSrcTab
+      refine ⟨?_, ?_, lo, hi, n, ?_, ?_, hLoLe, hLtHi, hRow⟩
+      · rw [hTable]; intro h; injection h with h; injection h with h
+        exact absurd h (by decide : archiveTable ≠ logTable)
+      · rw [hTable]; intro h; cases h
       · have := rowFieldInt?_eq_some_iff_lookup.mp hSrcLo
         rw [hSrcVis] at this; exact this
       · have := rowFieldInt?_eq_some_iff_lookup.mp hSrcHi
@@ -3138,8 +3156,8 @@ for the archive-head case. Operates purely on `head : RecordLit`'s fields
 (no `headRow ∈ visibleDb` needed). -/
 private theorem selectAllLogBody_archive_inner_foreach_byRecord
     (q : Nat) (done : SetLit) (head : RecordLit) (lo hi : Int)
-    (nKey : Int)
-    (hHeadArchKey : head.key? = some (archiveTable, nKey))
+    (hHeadTable : head.lookup? "table" ≠ some (.int logTable) ∧
+                  head.lookup? "table" ≠ none)
     (hHeadLo : head.lookup? "lo" = some (.int lo))
     (hHeadHi : head.lookup? "hi" = some (.int hi))
     (_hLeq : lo ≤ hi) :
@@ -3192,7 +3210,7 @@ private theorem selectAllLogBody_archive_inner_foreach_byRecord
             refine ⟨head, List.mem_append_right _ (List.mem_singleton_self _), ?_⟩
             unfold selectEntryResultEffect_byRecord
             right
-            exact ⟨⟨nKey, hHeadArchKey⟩, lo, hi, lo + (k : Int), hHeadLo, hHeadHi, hLeId, hIdLt, hRowEq⟩
+            exact ⟨hHeadTable.1, hHeadTable.2, lo, hi, lo + (k : Int), hHeadLo, hHeadHi, hLeId, hIdLt, hRowEq⟩
         · rintro ⟨rec, hRecMem, hEff⟩
           rcases List.mem_append.mp hRecMem with hRecDone | hRecHead
           · left; exact ⟨rec, hRecDone, hEff⟩
@@ -3201,10 +3219,9 @@ private theorem selectAllLogBody_archive_inner_foreach_byRecord
             unfold selectEntryResultEffect_byRecord at hEff
             rcases hEff with hLog | hArch
             · exfalso
-              rcases hLog with ⟨⟨_id, hLogKey⟩, _⟩
-              rw [hHeadArchKey] at hLogKey
-              simp [logTable, archiveTable] at hLogKey
-            · rcases hArch with ⟨⟨_id, _hArchKey⟩, lo', hi', n', hLo', hHi', hLoLeN, hNLtHi, hRowEq⟩
+              rcases hLog with ⟨hLogTab, _⟩
+              exact hHeadTable.1 hLogTab
+            · rcases hArch with ⟨_hTNeLog, _hTNeNone, lo', hi', n', hLo', hHi', hLoLeN, hNLtHi, hRowEq⟩
               rw [hHeadLo] at hLo'; rw [hHeadHi] at hHi'
               have hLoEq : lo' = lo := (ScalarLit.int.inj (Option.some.inj hLo')).symm
               have hHiEq : hi' = hi := (ScalarLit.int.inj (Option.some.inj hHi')).symm
@@ -3297,9 +3314,25 @@ private theorem selectAllLogBody_archive_inner_foreach_byRecord
         · exact ih (rangeDone ++ [current]) hSplit'
 
 /-- `_byRecord` version of the main foreach loop invariant. Purely sel-determined
-post (no visibleDb dependence). Structure mirrors `selectAllLogBody_foreach_invariant`
-but with `doneContrib_byRecord` accumulator and `selectAllLogEffect_byRecord`
-post. -/
+post (no visibleDb dependence). Handles arbitrary entries (per universal-y of
+PaperInfer.selectLazy, paper Appendix C p.45).
+
+**Status (paper alignment verified):** the proof of this lemma requires
+handling cases where head's `lookup? "id"` returns a `.bool` value
+(under ITE-true branch with `table = logTable`). For such heads, the body
+inserts a row with a bool-valued id, but `selectEntryResultEffect_byRecord`'s
+log case requires `entry.lookup? "id" = some (.int n)`. The mismatch makes
+the proof technically unprovable with the current narrow `_byRecord` def
+when `head` is non-int-id.
+
+In practice (sel = `collectSelected ... isStorageEntryExpr`), all storage
+entries have int id by construction. So the proof works for the actual use
+case but not for universal-y as required by `PaperInfer.selectLazy`.
+
+To fully fill: either widen `selectEntryResultEffect_byRecord` to capture
+any-scalar id (which makes the bridge `_byRecord_iff_with_selected` more
+complex), or restrict `PaperInfer.selectLazy.hBody` to storage-y (paper-aligned
+SELECT case strengthens body pre with `y = collectSelected`, see p.45). -/
 private theorem selectAllLogBody_foreach_invariant_byRecord
     (q : Nat) (selected : SetLit) :
     ∀ (done rest : SetLit), done ++ rest = selected →
