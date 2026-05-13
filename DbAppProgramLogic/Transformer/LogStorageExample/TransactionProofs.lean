@@ -3918,115 +3918,68 @@ private theorem selectAllLogBody_foreach_invariant
         · -- Recursive call via ih
           exact ih (done ++ [head]) hSplit'
 
-/-- Constructor-only variant of `paperInfer_selectAllLogBody_final` using
-`PaperInfer.selectLazy` at the top instead of `viaLocalValid + select_false_pinVd`.
-The body's `Fbody` is `selectAllLogEffect_byRecord q` (purely sel-determined),
-matching the body's operational effect for universal sel. The bridge to
-`selectAllLogEffect` happens at the `_final` level via `conseqF_withInv`. -/
-theorem paperInfer_selectAllLogBody_via_lazy_pure (q : Nat) :
-    PaperInfer
-      (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
-      (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
-      (fun localDb globalDb out =>
-        ∃ selected,
-          Semantics.collectSelected globalDb rowVar
-              (instantiateSymExpr emptySymEnv [rowVar] (isStorageEntryExpr rowVar)) = some selected ∧
-          selectAllLogEffect_byRecord q selected localDb globalDb out) := by
-  unfold selectAllLogBody
-  refine PaperInfer.selectLazy
-    (env := emptySymEnv)
-    (Fbody := selectAllLogEffect_byRecord q)
-    ?_ ?_ ?_
-  · -- stability of transformerPre under SI silent rely
-    exact transformerPre_stable_relyMod_snapshot _ _
-  · -- hCollectStable: under SI silent rely, R doesn't change vd
-    intro localDb visibleDb visibleDb' hR
-    have := relyMod_snapshot_exec_silent localDb visibleDb visibleDb' hR
-    rw [this]
-  · -- per-`selected` body PaperInfer
-    intro selected
-    -- Substituted body: .foreach (.lit (.set selected)) doneVar entryVar (...)
-    simp only [Command.subst, Expr.subst, Expr.subst_lit,
-      show (entriesVar : VarName) ≠ rowVar from by decide,
-      show (entriesVar : VarName) ≠ doneVar from by decide,
-      show (entriesVar : VarName) ≠ entryVar from by decide,
-      show (entriesVar : VarName) = entriesVar from rfl, if_true, if_false]
-    refine PaperInfer.viaLocalValid ?_
-    refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
-    -- LocalValid (False) txnId Pre body Post
-    refine Logic.localValid_foreach (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?_ ?_
-    · -- stableBiAssertion under False rely is trivial
-      intro _ _ _ _ hR
-      exact False.elim hR
-    · intro records hEval
-      have hRecordsEq : selected = records := by
-        simp [Expr.eval, Literal.toValue] at hEval
-        exact hEval
-      subst hRecordsEq
-      -- LocalValid (False) Pre (foreachRuntime [] selected ...) Post
-      refine Logic.localValid_conseq ?_
-        (selectAllLogBody_foreach_invariant_byRecord q selected [] selected (List.nil_append _)) ?_
-      · -- Pre bridge: transformerPre logSystemInv empty → ld = [] (via doneContrib_byRecord [])
-        intro ld vd hPre
-        intro row
-        rcases hPre with ⟨hLocal, _hInv⟩
-        constructor
-        · intro hRow
-          have := (hLocal row).mpr hRow
-          simp [SetLanguage.denote_empty] at this
-        · rintro ⟨_entry, hEmptyMem, _⟩
-          cases hEmptyMem
-      · intros _ _ hPost
-        exact hPost
+-- `_via_lazy_pure` removed: replaced by direct constructor-only proof of
+-- `paperInfer_selectAllLogBody_final` below using
+-- `Logic.localValid_select_collectInvariant` (paper-aligned, p.45 strengthened
+-- pre `P' = P ∧ y = collectSelected`). The narrow `selectEntryResultEffect_byRecord`
+-- doesn't soundly capture `PaperInfer.selectLazy`'s universal-y body effect,
+-- so the LocalValid-level paper-aligned approach is used instead.
 
-/-- `paperInfer_selectAllLogBody_final`: derived from `_via_lazy_pure` via
-`conseqF_withInv` bridging LazyF (with `_byRecord`) → `selectAllLogEffect`.
-Composes the byRecord ↔ with_selected iff with the existing
-`lazyF_select_iff_selectAllLogEffect_at_invariant`. -/
+/-- Constructor-only `paperInfer_selectAllLogBody_final`.
+
+Paper-aligned proof using `Logic.localValid_select_collectInvariant`
+(1710.09844v2.pdf p.45: SELECT case's strengthened body precondition
+`P' = P ∧ y = {r ∈ Δ|[r/x]e}`). This avoids the universal-y problem of
+`PaperInfer.selectLazy` by directly giving the body access to
+`hSelect : collectSelected vd ... = some selected`. -/
 theorem paperInfer_selectAllLogBody_final (q : Nat) :
     PaperInfer
       (Logic.relyMod (R_select q) (IsolationSpec.snapshot (σ := Database)).exec)
       (selectTxnId q) logSystemInv SetLanguage.empty (selectAllLogBody q)
       (selectAllLogEffect (selectTxnId q) q) := by
-  refine PaperInfer.conseqF_withInv (I := logSystemInv) ?_
-    (paperInfer_selectAllLogBody_via_lazy_pure q) ?_
-  · -- hStableI: logSystemInv stable under R_select q (SI silent rely)
-    intro ld v v' hInv hStep
-    have hEq := relyMod_snapshot_exec_silent ld v v' hStep
-    rw [hEq]; exact hInv
-  · -- bridge: LazyF (byRecord) → selectAllLogEffect, using both per-sel iffs
-    intro ld vd hInv hPostLazy
-    intro row
-    have hRowLazy := hPostLazy row
-    simp only [transformerPost, SetLanguage.denote_union, SetLanguage.denote_empty,
-      false_or, SetLanguage.denote, SetLanguage.Env.ofDatabases,
-      SetLanguage.SetExpr.union, SetLanguage.empty] at hRowLazy ⊢
-    -- After simp, hRowLazy : (False ∨ LazyF [] vd row) ↔ row ∈ ld, but `empty` is `fun _ _ _ => False`
-    -- so simp should reduce.
-    have hWF : wellFormedTableFields vd := by
-      rcases hInv with ⟨_, _, _, _, hWF⟩; exact hWF
-    have hInstNop :
-        instantiateSymExpr emptySymEnv [rowVar] (isStorageEntryExpr rowVar) =
-          isStorageEntryExpr rowVar := by simp [instantiateSymExpr, emptySymEnv]
-    refine Iff.trans ?_ hRowLazy
-    constructor
-    · intro hEff
-      rcases collectSelected_storageEntries_succeeds_of_wellFormed hWF with ⟨sel, hSelect⟩
-      refine ⟨sel, ?_, ?_⟩
-      · rw [hInstNop]; exact hSelect
-      rw [selectAllLogEffect_byRecord_iff_with_selected hSelect hWF]
-      rw [← lazyF_select_iff_selectAllLogEffect_at_invariant hInv row] at hEff
-      rcases hEff with ⟨sel', hSelect', hEff'⟩
-      rw [hInstNop] at hSelect'
-      have hSelEq : sel = sel' := by
-        rw [hSelect] at hSelect'; exact Option.some.inj hSelect'
-      subst hSelEq
-      exact hEff'
-    · rintro ⟨sel, hSelect, hEffByR⟩
-      rw [hInstNop] at hSelect
-      rw [selectAllLogEffect_byRecord_iff_with_selected hSelect hWF] at hEffByR
-      rw [← lazyF_select_iff_selectAllLogEffect_at_invariant hInv row]
-      exact ⟨sel, by rw [hInstNop]; exact hSelect, hEffByR⟩
+  refine PaperInfer.viaLocalValid ?_
+  refine Logic.localValid_of_stutterRely ?_ relyMod_snapshot_exec_silent
+  unfold selectAllLogBody
+  have hInstNop :
+      instantiateSymExpr emptySymEnv [rowVar] (isStorageEntryExpr rowVar) =
+        isStorageEntryExpr rowVar := by simp [instantiateSymExpr, emptySymEnv]
+  refine Logic.localValid_select_collectInvariant
+    (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?stable ?body
+  case stable =>
+    intro _ _ _ _ hR; exact False.elim hR
+  case body =>
+    intro selected
+    simp only [Command.subst, Expr.subst, Expr.substFieldExprs_cons,
+      Expr.substFieldExprs_nil, Expr.subst_lit, Value.subst_toExpr,
+      entriesVar, doneVar, entryVar, rangeDoneVar, rangeElemVar, rowVar,
+      idField, loField, hiField, tableField,
+      show ("entries" : VarName) ≠ "done" from by decide,
+      show ("entries" : VarName) ≠ "entry" from by decide,
+      show ("entries" : VarName) ≠ "rangeDone" from by decide,
+      show ("entries" : VarName) ≠ "num" from by decide,
+      show ("entries" : VarName) ≠ "row" from by decide,
+      if_true, if_false, ite_eq_left_iff, ite_eq_right_iff,
+      dite_eq_left_iff, dite_eq_right_iff, or_self, dite_false]
+    refine Logic.localValid_foreach (fun _ _ _ => False) (selectTxnId q) _ _ _ _ _ _ ?_ ?_
+    · intro _ _ _ _ hR; exact False.elim hR
+    · intro records hEval
+      have hRecordsEq : records = selected := by
+        simp [Expr.eval, Literal.toValue] at hEval; exact hEval.symm
+      subst hRecordsEq
+      -- Note: after subst, `selected` is eliminated; `records` remains in scope.
+      intro ld vd finalCfg hPre hMulti hSkip
+      rcases hPre with ⟨hPreI, hSelect⟩
+      have hInv : logSystemInv vd := hPreI.2
+      apply selectAllLogBody_foreach_invariant q vd hInv records
+        hSelect [] records (List.nil_append _) ld vd finalCfg ?_ hMulti hSkip
+      refine ⟨rfl, ?_⟩
+      intro row
+      constructor
+      · intro hRow
+        have := (hPreI.1 row).mpr hRow
+        simp [SetLanguage.denote_empty] at this
+      · rintro ⟨_, hRecMem, _⟩
+        cases hRecMem
 
 /-- _final_old: previous version using `viaLocalValid + False rely descent`.
 Kept for reference; replaced by the `_via_lazy_pure + conseqF_withInv` chain. -/
