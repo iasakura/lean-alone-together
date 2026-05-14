@@ -8,13 +8,6 @@ A Lean 4 formalization based on the program logic of `popl18.pdf` (Kaki et al., 
 - Inference of transaction effects, based on Sec. 5 — diverges from the paper in several places
 - An application-facing wrapper for request/handler/server correctness — not in the paper
 
-For a first pass through the codebase, start with [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md); this README focuses on the paper-to-Lean correspondence. Other entry points:
-
-- [docs/LANDMARKS.md](docs/LANDMARKS.md) — key definitions and theorems only
-- [docs/VCG_EXAMPLE.md](docs/VCG_EXAMPLE.md) — what side conditions the VCG emits and how to discharge them
-- [docs/EXAMPLES_GUIDE.md](docs/EXAMPLES_GUIDE.md) — where to read in `Examples.lean`
-- [docs/APP_PROOF_TEMPLATE.md](docs/APP_PROOF_TEMPLATE.md) — how to verify your own app
-
 This is not an end-to-end mechanization of the paper. In particular: the set language `S` of Fig. 7 is a shallow function-typed embedding rather than a deep syntactic language; Fig. 10's `S → FOL` translation is not implemented; there is no SMT integration; and several proof rules are restated in operationally convenient (but non-identical) forms. See "Differences from the paper" below.
 
 ## Repository layout
